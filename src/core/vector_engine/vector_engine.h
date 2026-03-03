@@ -40,6 +40,9 @@ public:
                const pomai::Metadata& meta);
     Status PutBatch(const std::vector<VectorId>& ids,
                     const std::vector<std::span<const float>>& vectors);
+    /** Batch ingestion (vector-of-vectors); single bulk path to runtime. */
+    Status PutBatch(const std::vector<VectorId>& ids,
+                    const std::vector<std::vector<float>>& vectors);
 
     // Point lookups -----------------------------------------------------------
     Status Get(VectorId id, std::vector<float>* out);
@@ -77,6 +80,9 @@ public:
                        std::uint32_t topk,
                        const SearchOptions& opts,
                        std::vector<pomai::SearchResult>* out);
+
+    /** Current active memtable bytes used for this membrane (for backpressure). */
+    std::size_t MemTableBytesUsed() const noexcept;
 
     const pomai::DBOptions& options() const { return opt_; }
     pomai::MembraneKind kind() const { return kind_; }

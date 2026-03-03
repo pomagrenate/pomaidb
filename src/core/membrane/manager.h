@@ -84,6 +84,9 @@ namespace pomai::core
         MembraneState *GetMembraneOrNull(std::string_view name);
         const MembraneState *GetMembraneOrNull(std::string_view name) const;
 
+        /** Backpressure helper: if enabled and over threshold, Freeze() before writes. */
+        Status MaybeApplyBackpressure(MembraneState* state);
+
         pomai::DBOptions base_;
         bool opened_ = false;
 

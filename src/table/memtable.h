@@ -59,6 +59,8 @@ public:
     size_t GetCount() const noexcept {
         return map_.size();       // atomic (seqlock writer is sole mutator)
     }
+    /** Approximate bytes used by active memtable (arena + map overhead). For pressure backpressure. */
+    std::size_t BytesUsed() const noexcept;
     void Clear();
 
     // ---- Cursor ----

@@ -145,6 +145,25 @@ Status VectorEngine::PutBatch(const std::vector<VectorId>& ids,
     return runtime_->PutBatch(ids, vectors);
 }
 
+Status VectorEngine::PutBatch(const std::vector<VectorId>& ids,
+                              const std::vector<std::vector<float>>& vectors) {
+    auto st = EnsureOpen();
+    if (!st.ok()) return st;
+    if (ids.size() != vectors.size()) {
+        return Status::InvalidArgument("vector_engine ids/vectors size mismatch");
+    }
+    for (const auto& v : vectors) {
+        st = ValidateVector(std::span<const float>(v));
+        if (!st.ok()) return st;
+    }
+    if (ids.empty()) return Status::Ok();
+    std::vector<std::span<const float>> spans;
+    spans.reserve(ids.size());
+    for (const auto& v : vectors)
+        spans.push_back(std::span<const float>(v));
+    return runtime_->PutBatch(ids, spans);
+}
+
 // Point lookups ---------------------------------------------------------------
 
 Status VectorEngine::Get(VectorId id, std::vector<float>* out) {
@@ -191,6 +210,10 @@ Status VectorEngine::Compact() {
     auto st = EnsureOpen();
     if (!st.ok()) return st;
     return runtime_->Compact();
+}
+
+std::size_t VectorEngine::MemTableBytesUsed() const noexcept {
+    return runtime_ ? runtime_->MemTableBytesUsed() : 0u;
 }
 
 // Snapshots & iteration -------------------------------------------------------

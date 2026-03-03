@@ -29,7 +29,8 @@ static pomai::Status ErrnoStatus(const char* op) {
 
 pomai::Status StorageEngine::Open(std::string_view path, std::uint32_t dim,
                                   palloc_heap_t* heap,
-                                  std::size_t flush_threshold_bytes) {
+                                  std::size_t flush_threshold_bytes,
+                                  bool use_quantization) {
     if (dim == 0) return pomai::Status::InvalidArgument("dim must be > 0");
     (void)Close();
 
@@ -37,6 +38,7 @@ pomai::Status StorageEngine::Open(std::string_view path, std::uint32_t dim,
     dim_ = dim;
     flush_threshold_ = flush_threshold_bytes;
     heap_ = heap;
+    use_quantization_ = use_quantization;
     buffer_ = std::vector<std::byte, BufferAlloc>(BufferAlloc(heap));
     pending_bytes_ = 0;
     index_.clear();
@@ -113,7 +115,8 @@ pomai::Status StorageEngine::Close() {
 pomai::Status StorageEngine::AppendToBuffer(const VectorRecordHeader& hdr,
                                             std::span<const std::byte> metadata,
                                             std::span<const float> vec) {
-    const std::size_t rec_len = RecordSize(hdr.dim, hdr.metadata_len);
+    const bool quant = (hdr.flags & VectorRecordHeader::kFlagQuantized) != 0;
+    const std::size_t rec_len = RecordSize(hdr.dim, hdr.metadata_len, quant);
     buffer_.resize(buffer_.size() + rec_len);
     std::byte* dst = buffer_.data() + buffer_.size() - rec_len;
     std::memcpy(dst, &hdr, sizeof(hdr));
@@ -124,6 +127,30 @@ pomai::Status StorageEngine::AppendToBuffer(const VectorRecordHeader& hdr,
     }
     if (!vec.empty()) {
         std::memcpy(dst, vec.data(), vec.size() * sizeof(float));
+    }
+    pending_bytes_ += rec_len;
+    return pomai::Status::Ok();
+}
+
+pomai::Status StorageEngine::AppendToBufferQuantized(const VectorRecordHeader& hdr,
+                                                     std::span<const std::byte> metadata,
+                                                     float min_val, float max_val,
+                                                     std::span<const std::uint8_t> qvec) {
+    const std::size_t rec_len = RecordSize(hdr.dim, hdr.metadata_len, true);
+    buffer_.resize(buffer_.size() + rec_len);
+    std::byte* dst = buffer_.data() + buffer_.size() - rec_len;
+    std::memcpy(dst, &hdr, sizeof(hdr));
+    dst += sizeof(hdr);
+    if (!metadata.empty()) {
+        std::memcpy(dst, metadata.data(), metadata.size());
+        dst += metadata.size();
+    }
+    std::memcpy(dst, &min_val, sizeof(min_val));
+    dst += sizeof(min_val);
+    std::memcpy(dst, &max_val, sizeof(max_val));
+    dst += sizeof(max_val);
+    if (!qvec.empty()) {
+        std::memcpy(dst, qvec.data(), qvec.size());
     }
     pending_bytes_ += rec_len;
     return pomai::Status::Ok();
@@ -146,10 +173,28 @@ pomai::Status StorageEngine::Append(pomai::VectorId id, std::span<const float> v
     std::span<const std::byte> ms(reinterpret_cast<const std::byte*>(meta_blob.data()),
                                   meta_blob.size());
 
-    pomai::Status st = AppendToBuffer(hdr, ms, vec);
+    pomai::Status st;
+    if (use_quantization_) {
+        float min_val = vec[0], max_val = vec[0];
+        for (std::size_t i = 1; i < vec.size(); ++i) {
+            if (vec[i] < min_val) min_val = vec[i];
+            if (vec[i] > max_val) max_val = vec[i];
+        }
+        float scale = (max_val - min_val <= 1e-9f) ? 0.0f : (255.0f / (max_val - min_val));
+        std::vector<std::uint8_t> qvec(vec.size());
+        for (std::size_t i = 0; i < vec.size(); ++i) {
+            float f = (vec[i] - min_val) * scale;
+            f = std::max(0.0f, std::min(255.0f, f + 0.5f));
+            qvec[i] = static_cast<std::uint8_t>(f);
+        }
+        hdr.flags |= VectorRecordHeader::kFlagQuantized;
+        st = AppendToBufferQuantized(hdr, ms, min_val, max_val, qvec);
+    } else {
+        st = AppendToBuffer(hdr, ms, vec);
+    }
     if (!st.ok()) return st;
 
-    const std::size_t rec_len = RecordSize(hdr.dim, hdr.metadata_len);
+    const std::size_t rec_len = RecordSize(hdr.dim, hdr.metadata_len, use_quantization_);
     const std::size_t buf_off = buffer_.size() - rec_len;
     IndexEntry e;
     e.offset = file_size_ + buf_off;
@@ -168,6 +213,74 @@ pomai::Status StorageEngine::Append(pomai::VectorId id, std::span<const float> v
     return pomai::Status::Ok();
 }
 
+pomai::Status StorageEngine::AppendBatch(std::span<const pomai::VectorId> ids,
+                                         std::span<const float> vectors,
+                                         std::uint32_t dim) {
+    if (!is_open())
+        return pomai::Status(pomai::ErrorCode::kFailedPrecondition, "not open");
+    if (dim == 0)
+        return pomai::Status::InvalidArgument("dim must be > 0");
+    if (ids.empty())
+        return pomai::Status::Ok();
+    if (vectors.size() != static_cast<std::size_t>(ids.size()) * dim)
+        return pomai::Status::InvalidArgument("AppendBatch: ids * dim mismatch");
+
+    if (!use_quantization_) {
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            std::span<const float> v(vectors.data() + static_cast<std::size_t>(i) * dim, dim);
+            pomai::Status st = Append(ids[i], v, nullptr);
+            if (!st.ok()) return st;
+        }
+        return pomai::Status::Ok();
+    }
+
+    // SQ8 batch: compute one min/max over entire batch, then quantize each vector (4x RAM reduction).
+    const std::size_t n_vec = ids.size();
+    const std::size_t dim_sz = static_cast<std::size_t>(dim);
+    float batch_min = vectors[0];
+    float batch_max = vectors[0];
+    for (std::size_t i = 0; i < n_vec * dim_sz; ++i) {
+        float f = vectors[i];
+        if (f < batch_min) batch_min = f;
+        if (f > batch_max) batch_max = f;
+    }
+    float scale = (batch_max - batch_min <= 1e-9f) ? 0.0f : (255.0f / (batch_max - batch_min));
+
+    std::vector<std::uint8_t> qvec(dim_sz);
+    for (std::size_t i = 0; i < n_vec; ++i) {
+        const float* src = vectors.data() + i * dim_sz;
+        for (std::size_t j = 0; j < dim_sz; ++j) {
+            float f = (src[j] - batch_min) * scale;
+            f = std::max(0.0f, std::min(255.0f, f + 0.5f));
+            qvec[j] = static_cast<std::uint8_t>(f);
+        }
+        VectorRecordHeader hdr{};
+        hdr.id = ids[i];
+        hdr.dim = dim;
+        hdr.flags = VectorRecordHeader::kFlagQuantized;
+        hdr.metadata_len = 0;
+        std::span<const std::byte> ms;
+        pomai::Status st = AppendToBufferQuantized(hdr, ms, batch_min, batch_max, qvec);
+        if (!st.ok()) return st;
+        const std::size_t rec_len = RecordSize(dim, 0, true);
+        const std::size_t buf_off = buffer_.size() - rec_len;
+        IndexEntry e;
+        e.offset = file_size_ + buf_off;
+        e.length = rec_len;
+        e.tombstone = false;
+        e.in_buffer = true;
+        index_.emplace_back(ids[i], e);
+    }
+
+    if (pending_bytes_ >= flush_threshold_) {
+        POMAI_LOG_DEBUG("StorageEngine::AppendBatch auto-flush: pending_bytes={} >= threshold={}",
+                        pending_bytes_, flush_threshold_);
+        pomai::Status st = Flush();
+        if (!st.ok()) return st;
+    }
+    return pomai::Status::Ok();
+}
+
 pomai::Status StorageEngine::Delete(pomai::VectorId id) {
     if (!is_open()) return pomai::Status(pomai::ErrorCode::kFailedPrecondition, "not open");
 
@@ -180,7 +293,7 @@ pomai::Status StorageEngine::Delete(pomai::VectorId id) {
     pomai::Status st = AppendToBuffer(hdr, {}, {});
     if (!st.ok()) return st;
 
-    const std::size_t rec_len = RecordSize(dim_, 0);
+    const std::size_t rec_len = RecordSize(dim_, 0, false);
     const std::size_t buf_off = buffer_.size() - rec_len;
     IndexEntry e;
     e.offset = file_size_ + buf_off;
@@ -247,7 +360,7 @@ pomai::Status StorageEngine::BuildIndexFromMmap() {
     std::size_t off = sizeof(StorageFileHeader);
     while (off + sizeof(VectorRecordHeader) <= map_size_) {
         const auto* h = reinterpret_cast<const VectorRecordHeader*>(base + off);
-        const std::size_t rec_len = RecordSize(h->dim, h->metadata_len);
+        const std::size_t rec_len = RecordSize(h->dim, h->metadata_len, h->is_quantized());
         if (off + rec_len > map_size_) break;
         index_.emplace_back(h->id, IndexEntry{off, rec_len, h->is_tombstone(), false});
         off += rec_len;
@@ -306,14 +419,28 @@ pomai::Status StorageEngine::Get(pomai::VectorId id, GetResult* out) const {
     const auto* h = reinterpret_cast<const VectorRecordHeader*>(rec);
     rec += sizeof(VectorRecordHeader) + h->metadata_len;
     out->dim = h->dim;
-    out->data = reinterpret_cast<const float*>(rec);
+    if (h->is_quantized()) {
+        float min_val, max_val;
+        std::memcpy(&min_val, rec, sizeof(min_val));
+        rec += sizeof(min_val);
+        std::memcpy(&max_val, rec, sizeof(max_val));
+        rec += sizeof(max_val);
+        const std::uint8_t* q = reinterpret_cast<const std::uint8_t*>(rec);
+        get_scratch_.resize(h->dim);
+        float inv_scale = (max_val - min_val <= 1e-9f) ? 0.0f : ((max_val - min_val) / 255.0f);
+        for (std::uint32_t j = 0; j < h->dim; ++j)
+            get_scratch_[j] = min_val + static_cast<float>(q[j]) * inv_scale;
+        out->data = get_scratch_.data();
+    } else {
+        out->data = reinterpret_cast<const float*>(rec);
+    }
     return pomai::Status::Ok();
 }
 
 #else
 
 pomai::Status StorageEngine::Open(std::string_view, std::uint32_t, palloc_heap_t*,
-                                  std::size_t) {
+                                  std::size_t, bool) {
     return pomai::Status::IOError("Windows: use CreateFile/CreateFileMapping");
 }
 pomai::Status StorageEngine::Close() {
@@ -324,6 +451,10 @@ pomai::Status StorageEngine::Close() {
     return pomai::Status::Ok();
 }
 pomai::Status StorageEngine::AppendToBuffer(const VectorRecordHeader&, std::span<const std::byte>, std::span<const float>) {
+    return pomai::Status::IOError("Windows not implemented");
+}
+pomai::Status StorageEngine::AppendToBufferQuantized(const VectorRecordHeader&, std::span<const std::byte>,
+                                                    float, float, std::span<const std::uint8_t>) {
     return pomai::Status::IOError("Windows not implemented");
 }
 pomai::Status StorageEngine::Append(pomai::VectorId, std::span<const float>, const pomai::Metadata*) {

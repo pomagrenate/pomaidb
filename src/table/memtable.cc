@@ -44,6 +44,17 @@ void Arena::Clear() {
     blocks_.clear();
 }
 
+std::size_t Arena::BytesUsed() const noexcept {
+    std::size_t total = 0;
+    for (const auto& b : blocks_)
+        total += b.used;
+    return total;
+}
+
+std::size_t MemTable::BytesUsed() const noexcept {
+    return arena_.BytesUsed();
+}
+
 // ------------------------------------------------
 // MemTable constructor
 // ------------------------------------------------

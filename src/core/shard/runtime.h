@@ -149,6 +149,9 @@ namespace pomai::core
 
         RuntimeStats GetStats() const noexcept;
 
+        /** Active memtable bytes used (for backpressure). Single-threaded: no lock. */
+        std::size_t MemTableBytesUsed() const noexcept;
+
 
     private:
         struct BackgroundJob;

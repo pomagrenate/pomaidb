@@ -37,6 +37,9 @@ namespace pomai
         kFp16 = 2,
     };
 
+    /** When true, vectors are stored as SQ8 (int8) with per-vector min/max for ~4x memory reduction. */
+    static constexpr bool kDefaultEnableQuantization = true;
+
     struct IndexParams
     {
         IndexType type = IndexType::kIvfFlat;
@@ -59,6 +62,14 @@ namespace pomai
         std::string path;
         uint32_t shard_count = 4;
         uint32_t dim = 512;
+        /** If true, use SQ8 scalar quantization in storage (4x compression). Default true for edge/memory-constrained builds. */
+        bool enable_quantization = kDefaultEnableQuantization;
+        /** Memtable flush threshold in MiB; when exceeded, auto-freeze triggers backpressure. 0 = use pressure percent of max. */
+        uint32_t memtable_flush_threshold_mb = 64u;
+        /** If true, when memtable exceeds threshold the vector engine will Freeze() before accepting more writes. */
+        bool auto_freeze_on_pressure = true;
+        /** Optional hard cap for memtable size in MiB (0 = unlimited, derive behavior from flush threshold only). */
+        uint32_t max_memtable_mb = 0;
         uint32_t search_threads = 0; // 0 => auto
         FsyncPolicy fsync = FsyncPolicy::kNever;
         IndexParams index_params;

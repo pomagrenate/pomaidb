@@ -22,6 +22,11 @@ namespace pomai::core
                  std::span<const uint8_t> codes,
                  float min_val, float inv_scale, float query_sum = 0.0f);
 
+    /** L2 squared between float query and SQ8 data (min/max dequantize). ADC: dequantize in SIMD path then L2 via SimSIMD. */
+    float L2SqSq8(std::span<const float> query,
+                  std::span<const std::uint8_t> data,
+                  float min_val, float max_val);
+
     // Distances for FP16 quantized codes
     float DotFp16(std::span<const float> query, std::span<const uint16_t> codes);
     float L2SqFp16(std::span<const float> query, std::span<const uint16_t> codes);

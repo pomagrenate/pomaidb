@@ -275,6 +275,10 @@ namespace pomai::core
         return s;
     }
 
+    std::size_t VectorRuntime::MemTableBytesUsed() const noexcept {
+        return mem_ ? mem_->BytesUsed() : 0u;
+    }
+
     pomai::Status VectorRuntime::Start()
     {
         if (started_)

@@ -102,6 +102,52 @@ int main() {
 
 Link against the PomaiDB static library and, when using the palloc integration, the palloc library. See the repository's build instructions for details.
 
+### Docker: run benchmarks
+
+Build the image, then run benchmarks in constrained (IoT/Edge) or server-style containers:
+
+```bash
+docker compose build
+docker compose up
+```
+
+Each service runs `benchmark_a` by default; when the benchmark finishes, the container exits. To run a single environment or a different benchmark:
+
+```bash
+# IoT (128 MB RAM, low-memory targets)
+docker compose run --rm pomai-iot-starvation
+
+# Edge (512 MB RAM)
+docker compose run --rm pomai-edge-gateway
+
+# Server (2 GB RAM, no CPU cap)
+docker compose run --rm pomai-server-lite
+```
+
+Override the default command to run another benchmark (e.g. `ingestion_bench`, `comprehensive_bench`, `rag_bench`, `ci_perf_bench`):
+
+```bash
+docker compose run --rm pomai-iot-starvation ingestion_bench
+```
+
+To get a shell and run benchmarks manually:
+
+```bash
+docker compose run --rm pomai-iot-starvation sh
+# inside container: benchmark_a, ingestion_bench, benchmark_a --list, etc.
+```
+
+Reports can be written to the host under `./bench` by overriding the command (see `docker-compose.yml` comment).
+
+For very small containers (e.g. 128 MiB for `pomai-iot-starvation`), PomaiDB uses **memtable backpressure** to leave RAM
+for the OS and other processes. You can tune this via:
+
+- `POMAI_MEMTABLE_FLUSH_THRESHOLD_MB` – approximate upper bound for memtable RAM (e.g. `48` for ~48 MiB)
+- `POMAI_BENCH_LOW_MEMORY=1` – shrink benchmark workloads and enable a conservative default threshold
+
+When the memtable grows beyond this threshold, PomaiDB automatically runs a blocking `Freeze()`, which slows ingestion
+just enough to avoid the OOM killer while keeping the OS responsive.
+
 ---
 
 ## Use Cases

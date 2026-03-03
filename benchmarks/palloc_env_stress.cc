@@ -147,6 +147,19 @@ static IngestResult IngestAndVerify(const std::string& db_path, size_t target_ve
   opts.shard_count = 1;
   opts.fsync = pomai::FsyncPolicy::kNever;
 
+  // Backpressure: cap memtable usage so we leave RAM headroom for OS / other processes.
+  if (const char* thr = std::getenv("POMAI_MEMTABLE_FLUSH_THRESHOLD_MB")) {
+    const long v = std::strtol(thr, nullptr, 10);
+    if (v > 0) {
+      opts.memtable_flush_threshold_mb = static_cast<std::uint32_t>(v);
+      opts.auto_freeze_on_pressure = true;
+    }
+  } else if (std::getenv("POMAI_BENCH_LOW_MEMORY") != nullptr) {
+    // Default low-memory profile (e.g. 128 MiB container): keep DB under ~half of total RAM.
+    opts.memtable_flush_threshold_mb = 48u;
+    opts.auto_freeze_on_pressure = true;
+  }
+
   std::unique_ptr<pomai::DB> db;
   auto st = pomai::DB::Open(opts, &db);
   if (!st.ok()) return out;
@@ -345,7 +358,7 @@ int main(int argc, char** argv) {
   int any_fail = 0;
   EnvReport report = {};
 
-  printf("Running: The IoT Starvation (256 MiB) ...\n");
+  printf("Running: The IoT Starvation (128 MiB container) ...\n");
   fflush(stdout);
   RunEnvA(&report);
   PrintReport(report);

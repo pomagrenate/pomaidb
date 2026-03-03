@@ -31,6 +31,15 @@ struct EmbeddedOptions {
     MetricType metric = MetricType::kL2;
     FsyncPolicy fsync = FsyncPolicy::kNever;
     IndexParams index_params;
+
+    /** Memtable backpressure: max size in MiB before rejecting Put (0 = from env or default). */
+    std::uint32_t max_memtable_mb = 0;
+    /** Pressure threshold as percent of max (0 = use 80). When exceeded, Put returns ResourceExhausted or auto-freeze runs. */
+    std::uint8_t pressure_threshold_percent = 0;
+    /** If true, when over threshold call Freeze() internally before allowing Put. Default true for edge to prevent OOM. */
+    bool auto_freeze_on_pressure = true;
+    /** Memtable flush threshold in MiB; when exceeded, auto-freeze runs. 0 = use pressure percent of max_memtable_mb. */
+    std::uint32_t memtable_flush_threshold_mb = 64u;
 };
 
 /**
@@ -57,16 +66,46 @@ public:
     /** Freeze: move active memtable to segment (single-instance). */
     Status Freeze();
 
-    /** Append one vector; direct path to storage_engine_->append(). */
+    /**
+     * If memtable is over pressure threshold, call Freeze() once. Safe to call periodically.
+     * Single-threaded backpressure: no lock; app can call from event loop to avoid ResourceExhausted.
+     */
+    Status TryFreezeIfPressured();
+
+    /** Current active memtable bytes used (for monitoring). */
+    std::size_t GetMemTableBytesUsed() const;
+
+    /** Append one vector; direct path to storage. */
     Status AddVector(VectorId id, std::span<const float> vec);
 
     /** Append one vector with metadata. */
     Status AddVector(VectorId id, std::span<const float> vec,
                     const Metadata& meta);
 
-    /** Batch append (sequential, single WAL segment). */
+    /** Batch append: single bulk path to storage (fewer syscalls, better throughput). */
     Status AddVectorBatch(const std::vector<VectorId>& ids,
                          const std::vector<std::span<const float>>& vectors);
+
+    /**
+     * PutBatch: batch ingestion API (vector-of-vectors overload).
+     * Prefer this over repeated AddVector for bulk loads; uses one bulk append path.
+     * Backward compatible: existing AddVector/AddVectorBatch unchanged.
+     */
+    Status PutBatch(const std::vector<VectorId>& ids,
+                    const std::vector<std::vector<float>>& vectors);
+
+    /**
+     * PutBatch: zero-copy batch API for embedded/edge callers.
+     * - ids: N vector IDs
+     * - vectors: flattened N * dimension buffer (id0[0..dim), id1[0..dim), ...)
+     * - dimension: per-vector dimension (must match EmbeddedOptions.dim)
+     *
+     * Visibility is RAM-first: vectors are appended into the in-memory arena and
+     * indexed immediately; disk flush happens later via StorageEngine::Flush().
+     */
+    Status PutBatch(std::span<const VectorId> ids,
+                    std::span<const float> vectors,
+                    std::size_t dimension);
 
     /** Get vector by id. */
     Status Get(VectorId id, std::vector<float>* out);
@@ -103,6 +142,14 @@ public:
 private:
     std::unique_ptr<StorageEngine> storage_engine_;
     bool opened_ = false;
+
+    /** When memtable exceeds threshold: return ResourceExhausted or Freeze() if auto. Single-threaded. */
+    Status MaybeApplyBackpressure();
+
+    // Memtable backpressure (set in Open from options or env). Single-threaded: no lock.
+    std::size_t max_memtable_bytes_ = 0;
+    std::size_t pressure_threshold_bytes_ = 0;
+    bool auto_freeze_on_pressure_ = false;
 };
 
 } // namespace pomai

@@ -8,6 +8,7 @@
 #include "core/rag/rag_engine.h"
 #include "pomai/iterator.h"  // For SnapshotIterator
 #include "storage/manifest/manifest.h"
+#include "util/logging.h"
 
 
 namespace pomai::core
@@ -258,6 +259,8 @@ namespace pomai::core
             return Status::NotFound("membrane not found");
         if (state->spec.kind != pomai::MembraneKind::kVector)
             return Status::InvalidArgument("VECTOR membrane required for PutVector");
+        auto st = MaybeApplyBackpressure(state);
+        if (!st.ok()) return st;
         return state->vector_engine->Put(id, vec);
     }
 
@@ -268,6 +271,8 @@ namespace pomai::core
             return Status::NotFound("membrane not found");
         if (state->spec.kind != pomai::MembraneKind::kVector)
             return Status::InvalidArgument("VECTOR membrane required for PutVector");
+        auto st = MaybeApplyBackpressure(state);
+        if (!st.ok()) return st;
         return state->vector_engine->Put(id, vec, meta);
     }
 
@@ -292,6 +297,8 @@ namespace pomai::core
         if (!state) return Status::NotFound("membrane not found");
         if (state->spec.kind != pomai::MembraneKind::kVector)
             return Status::InvalidArgument("VECTOR membrane required for PutBatch");
+        auto st = MaybeApplyBackpressure(state);
+        if (!st.ok()) return st;
         return state->vector_engine->PutBatch(ids, vectors);
     }
 
@@ -444,6 +451,27 @@ namespace pomai::core
         if (state->spec.kind != pomai::MembraneKind::kVector)
             return Status::InvalidArgument("VECTOR membrane required for iterator");
         return state->vector_engine->NewIterator(snap, out);
+    }
+
+    Status MembraneManager::MaybeApplyBackpressure(MembraneState* state)
+    {
+        if (!state || !state->vector_engine)
+            return Status::Ok();
+        if (!base_.auto_freeze_on_pressure)
+            return Status::Ok();
+        if (base_.memtable_flush_threshold_mb == 0)
+            return Status::Ok();
+
+        const std::size_t used_bytes = state->vector_engine->MemTableBytesUsed();
+        const std::size_t threshold_bytes =
+            static_cast<std::size_t>(base_.memtable_flush_threshold_mb) * 1024u * 1024u;
+        if (used_bytes < threshold_bytes)
+            return Status::Ok();
+
+        const unsigned used_mb = static_cast<unsigned>(used_bytes / (1024u * 1024u));
+        POMAI_LOG_WARN("Membrane '{}' memtable pressure ({} MB). Triggering Auto-Freeze.",
+                       state->spec.name, used_mb);
+        return state->vector_engine->Freeze();
     }
 
 } // namespace pomai::core

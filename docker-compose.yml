@@ -36,7 +36,8 @@ services:
     environment:
       - POMAI_DATA_DIR=/data
       - POMAI_REPORT_DIR=/bench
-      - POMAI_BENCH_LOW_MEMORY=1   # 128MB: run 5k/2k×5/20k instead of 100k/50k×50/1M
+      - POMAI_BENCH_LOW_MEMORY=1
+      - POMAI_MEMTABLE_FLUSH_THRESHOLD_MB=48
     command: ["benchmark_a"]
     # Optional: run and write report to /bench
     # command: ["sh", "-c", "benchmark_a 2>&1 | tee /bench/iot-starvation.log"]
