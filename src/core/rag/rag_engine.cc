@@ -82,7 +82,6 @@ namespace pomai::core
         }
 
         auto& shard = ShardFor(chunk.chunk_id);
-        std::lock_guard<std::mutex> lock(shard.mu);
 
         auto existing = shard.chunks.find(chunk.chunk_id);
         if (existing != shard.chunks.end()) {
@@ -128,7 +127,6 @@ namespace pomai::core
 
         for (const auto& shard_ptr : shards_) {
             const auto& shard = *shard_ptr;
-            std::lock_guard<std::mutex> lock(shard.mu);
             for (auto token : query.tokens) {
                 auto it = shard.postings.find(token);
                 if (it == shard.postings.end()) continue;
@@ -167,7 +165,6 @@ namespace pomai::core
         for (const auto& candidate : candidates) {
             if (hits.size() >= query.topk) break;
             const auto& shard = ShardFor(candidate.chunk_id);
-            std::lock_guard<std::mutex> lock(shard.mu);
             auto it = shard.chunks.find(candidate.chunk_id);
             if (it == shard.chunks.end()) continue;
             const RagRecord& record = it->second;

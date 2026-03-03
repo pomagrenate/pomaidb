@@ -6,7 +6,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <random>
-#include <thread>
 #include <vector>
 
 using namespace std::chrono;
@@ -60,7 +59,7 @@ int main(int argc, char** argv) {
     pomai::DBOptions opts;
     opts.path = "/tmp/ingestion_bench";
     opts.dim = dim;
-    opts.shard_count = std::thread::hardware_concurrency();
+    opts.shard_count = 4;  // Single-threaded; fixed shard count
     opts.fsync = pomai::FsyncPolicy::kNever;  // Disable for max throughput
     
     std::unique_ptr<pomai::DB> db;

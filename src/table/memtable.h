@@ -11,11 +11,9 @@
 // Public API is 100% backward-compatible.
 
 #pragma once
-#include <atomic>
 #include <cstdint>
 #include <span>
-#include <unordered_map>       // metadata_ still uses std::unordered_map (small, rare)
-#include <shared_mutex>        // kept for metadata_ only
+#include <unordered_map>
 #include "pomai/metadata.h"
 #include "pomai/status.h"
 #include "pomai/types.h"
@@ -32,31 +30,15 @@ struct XxHash64ForVectorId {
   }
 };
 
-// Seqlock – readers spin if a write is in progress, readers never block writers.
+// Single-threaded: no concurrency, plain counter for consistency checks.
 class Seqlock {
  public:
-  void BeginWrite() noexcept {
-    uint64_t s = seq_.load(std::memory_order_relaxed);
-    seq_.store(s | 1u, std::memory_order_release);   // mark odd = writing
-    std::atomic_thread_fence(std::memory_order_release);
-  }
-  void EndWrite() noexcept {
-    uint64_t s = seq_.load(std::memory_order_relaxed);
-    seq_.store((s + 1u) & ~uint64_t(1), std::memory_order_release); // advance to even
-  }
-  // Returns even sequence number snapped at read start.
-  uint64_t BeginRead() const noexcept {
-    uint64_t s;
-    do { s = seq_.load(std::memory_order_acquire); } while (s & 1u);
-    return s;
-  }
-  // Returns true if seq matches (read is consistent).
-  bool EndRead(uint64_t s) const noexcept {
-    std::atomic_thread_fence(std::memory_order_acquire);
-    return seq_.load(std::memory_order_relaxed) == s;
-  }
+  void BeginWrite() noexcept { seq_ |= 1u; }
+  void EndWrite() noexcept { seq_ = (seq_ + 1u) & ~uint64_t(1); }
+  uint64_t BeginRead() const noexcept { return seq_ & ~uint64_t(1); }
+  bool EndRead(uint64_t s) const noexcept { return seq_ == s; }
  private:
-  std::atomic<uint64_t> seq_{0};
+  uint64_t seq_{0};
 };
 
 class MemTable {
@@ -137,7 +119,6 @@ public:
             if (!is_deleted) vec = {ptr, dim_};
             const pomai::Metadata* meta_ptr = nullptr;
             if (!is_deleted) {
-                std::shared_lock lk(meta_mu_);
                 auto it = metadata_.find(id);
                 if (it != metadata_.end()) meta_ptr = &it->second;
             }
@@ -170,12 +151,7 @@ private:
     // XxHash64 gives better distribution than std::hash for sequential VectorIds (fewer collisions).
     mutable FlatHashMemMap<pomai::VectorId, float*, XxHash64ForVectorId> map_;
 
-    // Metadata is rare (only tenant-tagged vectors).
-    // Kept as unordered_map + shared_mutex to avoid over-engineering the common path.
     mutable std::unordered_map<pomai::VectorId, pomai::Metadata> metadata_;
-    mutable std::shared_mutex meta_mu_;
-
-    // seqlock_ is incremented on every Put/Delete to allow readers to detect races.
     Seqlock seqlock_;
 };
 

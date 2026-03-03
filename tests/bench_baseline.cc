@@ -1,10 +1,7 @@
-#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <random>
-#include <thread>
 #include <vector>
-#include <mutex>
 #include <algorithm>
 #include <iomanip>
 #include <filesystem>
@@ -14,9 +11,7 @@
 
 using namespace pomai;
 
-// Utils
-std::vector<float> RandomVector(uint32_t dim) {
-    static thread_local std::mt19937 gen(std::random_device{}());
+std::vector<float> RandomVector(uint32_t dim, std::mt19937& gen) {
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
     std::vector<float> v(dim);
     for (size_t i = 0; i < dim; ++i) v[i] = dist(gen);
@@ -25,20 +20,20 @@ std::vector<float> RandomVector(uint32_t dim) {
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
-    std::cout << "Starting Baseline Benchmark..." << std::endl;
+    std::cout << "Starting Baseline Benchmark (single-threaded)..." << std::endl;
 
-    const uint32_t dim = 128; // Reduced to run fast
+    const uint32_t dim = 128;
     const uint32_t n_shards = 4;
     const size_t initial_count = 50000;
-    const size_t upsert_count = 50000;
     const std::chrono::seconds duration(5);
+
+    std::mt19937 gen(12345);
 
     DBOptions opt;
     opt.path = "bench_baseline_db";
     opt.dim = dim;
     opt.shard_count = n_shards;
-    
-    // Cleanup
+
     std::filesystem::remove_all(opt.path);
 
     std::unique_ptr<DB> db;
@@ -47,77 +42,42 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Pre-fill
     std::cout << "Pre-filling " << initial_count << " vectors..." << std::endl;
-    {
-        std::vector<std::thread> loaders;
-        size_t chunk = initial_count / 4;
-        for (int i = 0; i < 4; ++i) {
-            loaders.emplace_back([&, i]() {
-                for (size_t j = 0; j < chunk; ++j) {
-                    VectorId id = i * chunk + j;
-                    auto v = RandomVector(dim);
-                    db->Put(id, v);
-                }
-            });
-        }
-        for (auto& t : loaders) t.join();
+    for (size_t j = 0; j < initial_count; ++j) {
+        VectorId id = static_cast<VectorId>(j);
+        auto v = RandomVector(dim, gen);
+        db->Put(id, v);
     }
     std::cout << "Pre-fill done." << std::endl;
 
-    std::atomic<bool> running{true};
-    std::atomic<size_t> search_ops{0};
-    std::atomic<size_t> write_ops{0};
+    size_t write_ops = 0;
+    size_t search_ops = 0;
     std::vector<double> latencies_ms;
-    std::mutex lat_mu;
+    latencies_ms.reserve(100000);
 
-    // Writer Thread
-    std::thread writer([&]() {
-        size_t id_base = initial_count;
-        while (running) {
-            VectorId id = id_base + write_ops.load();
-            auto v = RandomVector(dim);
-            db->Put(id, v);
-            write_ops++;
-            // Small sleep to simulate realistic ingestion, but keep pressure
-            // std::this_thread::sleep_for(std::chrono::microseconds(10)); 
-            // Actually, we want MAX pressure to show blocking
-        }
-    });
+    const auto deadline = std::chrono::steady_clock::now() + duration;
+    size_t id_base = initial_count;
 
-    // Reader Threads
-    int n_readers = 4;
-    std::vector<std::thread> readers;
-    for (int i = 0; i < n_readers; ++i) {
-        readers.emplace_back([&]() {
-            while (running) {
-                auto q = RandomVector(dim);
-                SearchResult res;
-                auto start = std::chrono::high_resolution_clock::now();
-                db->Search(q, 10, &res);
-                auto end = std::chrono::high_resolution_clock::now();
-                
-                double ms = std::chrono::duration<double, std::milli>(end - start).count();
-                {
-                    std::lock_guard<std::mutex> lk(lat_mu);
-                    if (latencies_ms.size() < 100000) // cap samples
-                        latencies_ms.push_back(ms);
-                }
-                search_ops++;
-            }
-        });
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto v = RandomVector(dim, gen);
+        db->Put(static_cast<VectorId>(id_base + write_ops), v);
+        ++write_ops;
+
+        auto q = RandomVector(dim, gen);
+        SearchResult res;
+        auto start = std::chrono::high_resolution_clock::now();
+        db->Search(q, 10, &res);
+        auto end = std::chrono::high_resolution_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(end - start).count();
+        if (latencies_ms.size() < 100000)
+            latencies_ms.push_back(ms);
+        ++search_ops;
     }
 
-    std::this_thread::sleep_for(duration);
-    running = false;
-    writer.join();
-    for (auto& t : readers) t.join();
-
-    // Stats
     std::sort(latencies_ms.begin(), latencies_ms.end());
-    double p50 = latencies_ms.empty() ? 0 : latencies_ms[latencies_ms.size() * 0.50];
-    double p95 = latencies_ms.empty() ? 0 : latencies_ms[latencies_ms.size() * 0.95];
-    double p99 = latencies_ms.empty() ? 0 : latencies_ms[latencies_ms.size() * 0.99];
+    double p50 = latencies_ms.empty() ? 0 : latencies_ms[latencies_ms.size() * 50 / 100];
+    double p95 = latencies_ms.empty() ? 0 : latencies_ms[latencies_ms.size() * 95 / 100];
+    double p99 = latencies_ms.empty() ? 0 : latencies_ms[latencies_ms.size() * 99 / 100];
 
     std::cout << "Results:" << std::endl;
     std::cout << "  Duration: " << duration.count() << "s" << std::endl;
@@ -127,10 +87,9 @@ int main(int argc, char** argv) {
     std::cout << "  Search Latency P95: " << p95 << " ms" << std::endl;
     std::cout << "  Search Latency P99: " << p99 << " ms" << std::endl;
 
-    // Output to markdown file
     {
         std::ofstream out("bench_baseline.md");
-        out << "# Baseline Benchmark\n";
+        out << "# Baseline Benchmark (single-threaded)\n";
         out << "| Metric | Value |\n";
         out << "|---|---|\n";
         out << "| Writes | " << write_ops << " |\n";

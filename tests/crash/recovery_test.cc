@@ -3,8 +3,6 @@
 #include "pomai/pomai.h"
 #include <fstream>
 #include <filesystem>
-#include <thread>
-#include <atomic>
 
 namespace fs = std::filesystem;
 
@@ -103,7 +101,7 @@ POMAI_TEST(IncompleteFlushRecovery) {
     }
 }
 
-// Test concurrent reads produce consistent results
+// Test sequential reads produce consistent results (single-threaded)
 POMAI_TEST(ConcurrentConsistency) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("concurrent_consistency");
@@ -113,43 +111,31 @@ POMAI_TEST(ConcurrentConsistency) {
 
     std::unique_ptr<DB> db;
     DB::Open(opt, &db);
-    
+
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
     spec.shard_count = 2;
     db->CreateMembrane(spec);
     db->OpenMembrane("default");
-    
-    // Pre-populate
+
     std::vector<float> v = {1.0f, 2.0f, 3.0f, 4.0f};
     for (int i = 0; i < 100; ++i) {
         db->Put("default", i, v);
     }
     db->Freeze("default");
-    
-    // Concurrent reads from multiple threads
-    std::vector<std::thread> threads;
-    std::atomic<int> failures{0};
-    
+
+    int failures = 0;
     for (int t = 0; t < 4; ++t) {
-        threads.emplace_back([&, t]() {
-            for (int i = 0; i < 25; ++i) {
-                VectorId id = (t * 25 + i) % 100;
-                std::vector<float> out;
-                auto st = db->Get("default", id, &out);
-                if (!st.ok() || out.size() != 4) {
-                    failures.fetch_add(1, std::memory_order_relaxed);
-                }
-            }
-        });
+        for (int i = 0; i < 25; ++i) {
+            VectorId id = (t * 25 + i) % 100;
+            std::vector<float> out;
+            auto st = db->Get("default", id, &out);
+            if (!st.ok() || out.size() != 4) ++failures;
+        }
     }
-    
-    for (auto& th : threads) {
-        th.join();
-    }
-    
-    POMAI_EXPECT_EQ(failures.load(), 0);
+
+    POMAI_EXPECT_EQ(failures, 0);
     db->Close();
 }
 

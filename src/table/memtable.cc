@@ -8,7 +8,6 @@
 #include "table/memtable.h"
 #include "palloc_compat.h"
 #include <cstring>
-#include <mutex>
 
 namespace pomai::table {
 
@@ -76,12 +75,9 @@ pomai::Status MemTable::Put(pomai::VectorId id, pomai::VectorView vec,
     map_.Put(id, dst);
     seqlock_.EndWrite();
 
-    // Metadata is rare — use its own shared_mutex.
     if (!meta.tenant.empty()) {
-        std::unique_lock lk(meta_mu_);
         metadata_[id] = meta;
     } else {
-        std::unique_lock lk(meta_mu_);
         metadata_.erase(id);
     }
     return pomai::Status::Ok();
@@ -126,10 +122,7 @@ pomai::Status MemTable::Delete(pomai::VectorId id) {
     map_.Put(id, nullptr); // nullptr = tombstone
     seqlock_.EndWrite();
 
-    {
-        std::unique_lock lk(meta_mu_);
-        metadata_.erase(id);
-    }
+    metadata_.erase(id);
     return pomai::Status::Ok();
 }
 
@@ -163,7 +156,6 @@ pomai::Status MemTable::Get(pomai::VectorId id, const float** out_vec,
     *out_vec = ptr;
 
     if (out_meta) {
-        std::shared_lock lk(meta_mu_);
         auto it = metadata_.find(id);
         *out_meta = (it != metadata_.end()) ? it->second : pomai::Metadata{};
     }
@@ -178,10 +170,7 @@ void MemTable::Clear() {
     map_.Clear();
     seqlock_.EndWrite();
 
-    {
-        std::unique_lock lk(meta_mu_);
-        metadata_.clear();
-    }
+    metadata_.clear();
     arena_.Clear();
 }
 
@@ -213,7 +202,6 @@ bool MemTable::Cursor::Next(CursorEntry* out) {
 
     const pomai::Metadata* meta_ptr = nullptr;
     if (!is_deleted) {
-        std::shared_lock lk(mem_->meta_mu_);
         auto it = mem_->metadata_.find(e.id);
         if (it != mem_->metadata_.end()) meta_ptr = &it->second;
     }

@@ -36,7 +36,6 @@ namespace pomai::util
 
     void Logger::Write(LogLevel level, std::source_location loc, const std::string& message)
     {
-        std::lock_guard<std::mutex> lock(mutex_);
 
         // 1. Timestamp
         auto now = std::chrono::system_clock::now();

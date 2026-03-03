@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <filesystem>
-#include <future>
 #include <limits>
 #include <queue>
 #include <string>
@@ -23,7 +22,6 @@
 
 namespace pomai::core {
 namespace {
-constexpr std::size_t kMailboxCap = 4096;
 constexpr std::size_t kArenaBlockBytes = 1u << 20;  // 1 MiB
 constexpr std::size_t kWalSegmentBytes = 64u << 20; // 64 MiB
 constexpr std::uint64_t kPersistEveryPuts = 50000;
@@ -107,7 +105,7 @@ Status VectorEngine::OpenLocked() {
     }
 
     if (!opt_.routing_enabled) {
-        routing_mode_.store(routing::RoutingMode::kDisabled);
+        routing_mode_ = routing::RoutingMode::kDisabled;
     } else {
         auto loaded = routing::LoadRoutingTable(opt_.path);
         if (loaded.has_value() && loaded->Valid() && loaded->dim == opt_.dim) {
@@ -118,38 +116,17 @@ Status VectorEngine::OpenLocked() {
             if (prev.has_value() && prev->Valid() && prev->dim == opt_.dim) {
                 routing_prev_ = std::make_shared<routing::RoutingTable>(std::move(*prev));
             }
-            routing_mode_.store(routing::RoutingMode::kReady);
+            routing_mode_ = routing::RoutingMode::kReady;
         } else {
             const std::uint32_t rk = std::max(1u, opt_.routing_k == 0 ? (2u * opt_.shard_count) : opt_.routing_k);
             warmup_target_ = rk * std::max(1u, opt_.routing_warmup_mult);
             warmup_reservoir_.reserve(static_cast<std::size_t>(warmup_target_) * opt_.dim);
-            routing_mode_.store(routing::RoutingMode::kWarmup);
+            routing_mode_ = routing::RoutingMode::kWarmup;
         }
     }
 
     shards_.clear();
     shards_.reserve(opt_.shard_count);
-
-    size_t threads = opt_.search_threads;
-    if (threads == 0) {
-        size_t hw = std::thread::hardware_concurrency();
-        if (hw == 0) {
-            hw = 1;
-        }
-        // Use all cores for search to maximize batch QPS.
-        threads = std::max(size_t(1), hw);
-    }
-    size_t segment_threads = std::max<size_t>(1, threads / 2);
-    if (threads > 1) {
-        search_pool_ = std::make_unique<util::ThreadPool>(threads);
-    } else {
-        search_pool_.reset();
-    }
-    if (segment_threads > 1) {
-        segment_pool_ = std::make_unique<util::ThreadPool>(segment_threads);
-    } else {
-        segment_pool_.reset();
-    }
 
     Status first_error = Status::Ok();
     for (std::uint32_t i = 0; i < opt_.shard_count; ++i) {
@@ -169,8 +146,7 @@ Status VectorEngine::OpenLocked() {
         std::filesystem::create_directories(shard_dir, ec);
 
         auto rt = std::make_unique<ShardRuntime>(i, shard_dir, opt_.dim, kind_, metric_, std::move(wal), std::move(mem),
-                                                 kMailboxCap, opt_.index_params, search_pool_.get(),
-                                                 segment_pool_.get());
+                                                 opt_.index_params);
         auto shard = std::make_unique<Shard>(std::move(rt));
 
         st = shard->Start();
@@ -183,8 +159,6 @@ Status VectorEngine::OpenLocked() {
 
     if (!first_error.ok()) {
         shards_.clear();
-        search_pool_.reset();
-        segment_pool_.reset();
         if (created_root_dir) {
             std::error_code ignore;
             std::filesystem::remove_all(opt_.path, ignore);
@@ -198,20 +172,18 @@ Status VectorEngine::OpenLocked() {
 
 Status VectorEngine::Close() {
     if (!opened_) return Status::Ok();
-    if (routing_mode_.load() == routing::RoutingMode::kReady && routing_mutable_) {
+    if (routing_mode_ == routing::RoutingMode::kReady && routing_mutable_) {
         shard_router_.Update([&]{
             (void)routing::SaveRoutingTableAtomic(opt_.path, *routing_mutable_, opt_.routing_keep_prev != 0);
         });
     }
     shards_.clear();
-    search_pool_.reset();
-    segment_pool_.reset();
     opened_ = false;
     return Status::Ok();
 }
 
 void VectorEngine::MaybeWarmupAndInitRouting(std::span<const float> vec) {
-    if (routing_mode_.load() != routing::RoutingMode::kWarmup) return;
+    if (routing_mode_ != routing::RoutingMode::kWarmup) return;
     if (warmup_count_ < warmup_target_) {
         warmup_reservoir_.insert(warmup_reservoir_.end(), vec.begin(), vec.end());
         ++warmup_count_;
@@ -219,21 +191,21 @@ void VectorEngine::MaybeWarmupAndInitRouting(std::span<const float> vec) {
     if (warmup_count_ < warmup_target_) return;
 
     shard_router_.Update([&]{
-        if (routing_mode_.load() == routing::RoutingMode::kReady) return;
+        if (routing_mode_ == routing::RoutingMode::kReady) return;
         const std::uint32_t rk = std::max(1u, opt_.routing_k == 0 ? (2u * opt_.shard_count) : opt_.routing_k);
         auto built = routing::BuildInitialTable(std::span<const float>(warmup_reservoir_.data(), warmup_reservoir_.size()),
                                                 warmup_count_, opt_.dim, rk, opt_.shard_count, 5, 12345);
         routing_prev_ = routing_current_;
         routing_mutable_ = std::make_shared<routing::RoutingTable>(built);
         routing_current_ = routing_mutable_;
-        routing_mode_.store(routing::RoutingMode::kReady);
+        routing_mode_ = routing::RoutingMode::kReady;
         (void)routing::SaveRoutingTableAtomic(opt_.path, built, opt_.routing_keep_prev != 0);
         POMAI_LOG_INFO("[routing] mode=READY warmup_size={} k={}", warmup_count_, built.k);
     });
 }
 
 std::uint32_t VectorEngine::RouteShardForVector(VectorId id, std::span<const float> vec) {
-    if (!opt_.routing_enabled || routing_mode_.load() != routing::RoutingMode::kReady || !routing_current_) {
+    if (!opt_.routing_enabled || routing_mode_ != routing::RoutingMode::kReady || !routing_current_) {
         if (opt_.routing_enabled) MaybeWarmupAndInitRouting(vec);
         return ShardOf(id, opt_.shard_count);
     }
@@ -253,20 +225,15 @@ std::uint32_t VectorEngine::RouteShardForVector(VectorId id, std::span<const flo
 
 void VectorEngine::MaybePersistRoutingAsync() {
     if (puts_since_persist_ < kPersistEveryPuts) return;
-    if (routing_persist_inflight_.load(std::memory_order_relaxed) || !routing_mutable_) return;
+    if (routing_persist_inflight_ || !routing_mutable_) return;
     puts_since_persist_ = 0;
-    routing_persist_inflight_.store(true, std::memory_order_relaxed);
+    routing_persist_inflight_ = true;
     auto snapshot = std::make_shared<routing::RoutingTable>(*routing_mutable_);
-    if (search_pool_) {
-        (void)search_pool_->Enqueue([this, snapshot]() {
-            auto st = routing::SaveRoutingTableAtomic(opt_.path, *snapshot, opt_.routing_keep_prev != 0);
-                POMAI_LOG_WARN("[routing] persist failed: {}", st.message());
-            routing_persist_inflight_.store(false, std::memory_order_release);
-            return Status::Ok();
-        });
-    } else {
-        routing_persist_inflight_.store(false, std::memory_order_relaxed);
+    auto st = routing::SaveRoutingTableAtomic(opt_.path, *snapshot, opt_.routing_keep_prev != 0);
+    if (!st.ok()) {
+        POMAI_LOG_WARN("[routing] persist failed: {}", st.message());
     }
+    routing_persist_inflight_ = false;
 }
 
 Status VectorEngine::Put(VectorId id, std::span<const float> vec) {
@@ -314,7 +281,7 @@ Status VectorEngine::PutBatch(const std::vector<VectorId>& ids, const std::vecto
 
     // Phase 2 Optimization: Batched Routing
     // instead of N lock acquisitions/seqlock increments, we do 1 per batch.
-    if (!opt_.routing_enabled || routing_mode_.load() != routing::RoutingMode::kReady || !routing_current_) {
+    if (!opt_.routing_enabled || routing_mode_ != routing::RoutingMode::kReady || !routing_current_) {
         for (size_t i = 0; i < ids.size(); ++i) {
             if (static_cast<uint32_t>(vectors[i].size()) != opt_.dim) {
                 return Status::InvalidArgument("vector_engine dim mismatch");
@@ -346,31 +313,11 @@ Status VectorEngine::PutBatch(const std::vector<VectorId>& ids, const std::vecto
         MaybePersistRoutingAsync();
     }
 
-    // Phase 2 Optimization: Parallel Ingestion
-    // Fan out to all shards concurrently using the search thread pool.
-    std::vector<std::future<Status>> futures;
-    futures.reserve(shard_count);
-
     for (uint32_t i = 0; i < shard_count; ++i) {
         if (shard_ids[i].empty()) continue;
-        
-        auto task = [this, i, ids_ptr = &shard_ids[i], vecs_ptr = &shard_vecs[i]]() {
-            return shards_[i]->PutBatch(*ids_ptr, *vecs_ptr);
-        };
-
-        if (search_pool_) {
-            futures.push_back(search_pool_->Enqueue(std::move(task)));
-        } else {
-            Status st = task();
-            if (!st.ok()) return st;
-        }
-    }
-
-    for (auto& f : futures) {
-        Status st = f.get();
+        Status st = shards_[i]->PutBatch(shard_ids[i], shard_vecs[i]);
         if (!st.ok()) return st;
     }
-
     return Status::Ok();
 }
 
@@ -440,23 +387,6 @@ Status VectorEngine::Freeze() {
     if (!opened_) return Status::InvalidArgument("vector_engine not opened");
     if (shards_.empty()) return Status::Ok();
 
-    // Phase 2: Parallel freeze — fan out to all shards concurrently.
-    // Each shard's freeze is handled by its own actor (RunLoop); we just
-    // enqueue the command from multiple threads simultaneously.
-    if (search_pool_ && shards_.size() > 1) {
-        std::vector<std::future<Status>> futs;
-        futs.reserve(shards_.size());
-        for (auto& s : shards_) {
-            futs.push_back(search_pool_->Enqueue([&s]() { return s->Freeze(); }));
-        }
-        for (auto& f : futs) {
-            Status st = f.get();
-            if (!st.ok()) return st;
-        }
-        return Status::Ok();
-    }
-
-    // Fallback: sequential (no thread pool or single shard).
     for (auto& s : shards_) {
         Status st = s->Freeze();
         if (!st.ok()) return st;
@@ -507,11 +437,11 @@ Status VectorEngine::Search(std::span<const float> query, std::uint32_t topk, po
 
 std::vector<std::uint32_t> VectorEngine::BuildProbeShards(std::span<const float> query,
                                                           const SearchOptions& opts) {
-    if (opts.force_fanout || routing_mode_.load() != routing::RoutingMode::kReady || !routing_current_) {
+    if (opts.force_fanout || routing_mode_ != routing::RoutingMode::kReady || !routing_current_) {
         std::vector<std::uint32_t> all(opt_.shard_count);
         for (std::uint32_t i = 0; i < opt_.shard_count; ++i) all[i] = i;
-        routed_probe_centroids_last_query_.store(0);
-        routed_shards_last_query_count_.store(opt_.shard_count);
+        routed_probe_centroids_last_query_ = 0;
+        routed_shards_last_query_count_ = opt_.shard_count;
         return all;
     }
 
@@ -542,8 +472,8 @@ std::vector<std::uint32_t> VectorEngine::BuildProbeShards(std::span<const float>
     for (auto sid : shard_set) out.push_back(sid);
     std::sort(out.begin(), out.end());
 
-    routed_probe_centroids_last_query_.store(probe);
-    routed_shards_last_query_count_.store(static_cast<std::uint32_t>(out.size()));
+    routed_probe_centroids_last_query_ = probe;
+    routed_shards_last_query_count_ = static_cast<std::uint32_t>(out.size());
     return out;
 }
 
@@ -570,33 +500,19 @@ Status VectorEngine::SearchInternal(std::span<const float> query,
 
     const auto probe_shards = BuildProbeShards(query, opts);
     std::vector<std::vector<pomai::SearchHit>> per(probe_shards.size());
-    std::vector<std::future<pomai::Status>> futures;
-    futures.reserve(probe_shards.size());
-
-    if (search_pool_ && use_pool && probe_shards.size() > 1) {
-        for (std::size_t i = 0; i < probe_shards.size(); ++i) {
-            const std::uint32_t sid = probe_shards[i];
-            futures.push_back(search_pool_->Enqueue([this, query, topk, opts, &per, sid, i] { return shards_[sid]->SearchLocal(query, topk, opts, &per[i]); }));
-        }
-    } else {
-        for (std::size_t i = 0; i < probe_shards.size(); ++i) {
-            const std::uint32_t sid = probe_shards[i];
-            futures.push_back(std::async(std::launch::deferred, [this, query, topk, opts, &per, sid, i] { return shards_[sid]->SearchLocal(query, topk, opts, &per[i]); }));
-        }
-    }
-
     std::uint64_t candidates_scanned = 0;
-    for (size_t i = 0; i < futures.size(); ++i) {
-        Status st = futures[i].get();
-        candidates_scanned += shards_[probe_shards[i]]->LastQueryCandidatesScanned();
+    for (std::size_t i = 0; i < probe_shards.size(); ++i) {
+        const std::uint32_t sid = probe_shards[i];
+        Status st = shards_[sid]->SearchLocal(query, topk, opts, &per[i]);
+        candidates_scanned += shards_[sid]->LastQueryCandidatesScanned();
         if (!st.ok()) {
-            out->errors.push_back({probe_shards[i], st.message()});
+            out->errors.push_back({static_cast<std::uint32_t>(sid), st.message()});
         }
     }
 
     out->hits = MergeTopK(per, topk);
-    out->routed_shards_count = routed_shards_last_query_count_.load();
-    out->routing_probe_centroids = routed_probe_centroids_last_query_.load();
+    out->routed_shards_count = routed_shards_last_query_count_;
+    out->routing_probe_centroids = routed_probe_centroids_last_query_;
     out->routed_buckets_count = candidates_scanned;
 
     if (opts.zero_copy) {
@@ -661,31 +577,13 @@ Status VectorEngine::SearchBatch(std::span<const float> queries, uint32_t num_qu
         }
     }
 
-    // 2. Dispatch tasks to shards
-    std::vector<std::future<Status>> futures;
     // shard_results[shard_id][query_index] -> hits
     std::vector<std::vector<std::vector<pomai::SearchHit>>> shard_results(opt_.shard_count);
 
     for (uint32_t sid = 0; sid < opt_.shard_count; ++sid) {
         if (queries_by_shard[sid].empty()) continue;
-        
         shard_results[sid].resize(num_queries);
-
-        auto task = [this, sid, queries, &queries_by_shard, topk, opts, &shard_results]() {
-            return shards_[sid]->SearchBatchLocal(queries, queries_by_shard[sid], topk, opts, &shard_results[sid]);
-        };
-
-        if (search_pool_) {
-            futures.push_back(search_pool_->Enqueue(task));
-        } else {
-            // Use std::async as fallback if no pool
-            futures.push_back(std::async(std::launch::async, task));
-        }
-    }
-    
-    // 3. Wait for all shard tasks
-    for (auto& f : futures) {
-        Status st = f.get();
+        Status st = shards_[sid]->SearchBatchLocal(queries, queries_by_shard[sid], topk, opts, &shard_results[sid]);
         if (!st.ok()) return st;
     }
 

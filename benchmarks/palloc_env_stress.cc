@@ -19,7 +19,6 @@
 #include <filesystem>
 #include <random>
 #include <string>
-#include <thread>
 
 #if defined(__linux__)
 #include <sys/resource.h>

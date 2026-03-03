@@ -112,8 +112,10 @@ public:
     pomai::Status Open(std::string_view path, std::uint32_t dim, palloc_heap_t* heap = nullptr,
                       std::size_t flush_threshold_bytes = kDefaultFlushThreshold);
     pomai::Status Close();
+    // Append: pushes to in-memory buffer only. Call Flush() explicitly from main loop.
     pomai::Status Append(pomai::VectorId id, std::span<const float> vec, const pomai::Metadata* meta = nullptr);
     pomai::Status Delete(pomai::VectorId id);
+    // Flush: called explicitly by main loop; writes entire buffer to disk sequentially.
     pomai::Status Flush();
 
     struct GetResult {
@@ -220,7 +222,6 @@ inline pomai::Status StorageEngine::Append(pomai::VectorId id, std::span<const f
     if (!st.ok()) return st;
     IndexEntry e; e.offset = file_size_ + (buffer_.size() - RecordSize(hdr.dim, hdr.metadata_len)); e.length = RecordSize(hdr.dim, hdr.metadata_len); e.tombstone = false; e.in_buffer = true;
     index_.emplace_back(id, e);
-    if (pending_bytes_ >= flush_threshold_) return Flush();
     return pomai::Status::Ok();
 }
 
@@ -231,7 +232,6 @@ inline pomai::Status StorageEngine::Delete(pomai::VectorId id) {
     if (!st.ok()) return st;
     IndexEntry e; e.offset = file_size_ + (buffer_.size() - RecordSize(dim_, 0)); e.length = RecordSize(dim_, 0); e.tombstone = true; e.in_buffer = true;
     index_.emplace_back(id, e);
-    if (pending_bytes_ >= flush_threshold_) return Flush();
     return pomai::Status::Ok();
 }
 
