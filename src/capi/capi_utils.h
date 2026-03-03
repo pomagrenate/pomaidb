@@ -4,7 +4,7 @@
 #include <string>
 
 #include "pomai/c_status.h"
-#include "pomai/pomai.h"
+#include "pomai/database.h"
 #include "pomai/snapshot.h"
 #include "pomai/iterator.h"
 
@@ -14,7 +14,7 @@ struct pomai_status_t {
 };
 
 struct pomai_db_t {
-    std::unique_ptr<pomai::DB> db;
+    std::unique_ptr<pomai::Database> db;
 };
 
 struct pomai_snapshot_t {
@@ -42,6 +42,8 @@ inline pomai_status_code_t ToCCode(pomai::ErrorCode code) {
         case pomai::ErrorCode::kPartial:
             return POMAI_STATUS_PARTIAL_FAILURE;
         case pomai::ErrorCode::kAborted:
+            return POMAI_STATUS_CORRUPTION;
+        case pomai::ErrorCode::kCorruption:
             return POMAI_STATUS_CORRUPTION;
         case pomai::ErrorCode::kPermissionDenied:
         case pomai::ErrorCode::kFailedPrecondition:

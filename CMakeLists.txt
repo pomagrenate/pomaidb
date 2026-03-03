@@ -53,6 +53,7 @@ message(STATUS "[pomai] Native HNSW: enabled")
 # =========================
 add_library(pomai STATIC
   src/api/db.cc
+  src/database.cc
   src/core/vector_engine/vector_engine.cc
   src/core/shard/shard.cc
   src/core/shard/runtime.cc
@@ -546,6 +547,7 @@ install(FILES
   include/pomai/c_status.h
   include/pomai/c_types.h
   include/pomai/c_version.h
+  include/pomai/database.h
   DESTINATION include/pomai)
 add_executable(palloc_perf_verify tests/palloc_perf_verify.cc)
 target_link_libraries(palloc_perf_verify PRIVATE pomai palloc-static pthread)

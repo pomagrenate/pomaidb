@@ -12,8 +12,8 @@
 
 #include "capi_utils.h"
 #include "core/memory/pin_manager.h"
+#include "pomai/database.h"
 #include "pomai/options.h"
-#include "pomai/rag.h"
 #include "pomai/version.h"
 
 namespace {
@@ -145,29 +145,25 @@ pomai_status_t* pomai_open(const pomai_options_t* opts, pomai_db_t** out_db) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "options.path must be non-empty");
     }
 
-    pomai::DBOptions cpp_opts;
-    cpp_opts.path = opts->path;
-    cpp_opts.shard_count = opts->shards;
-    cpp_opts.dim = opts->dim;
-    cpp_opts.search_threads = opts->search_threads;
-    cpp_opts.fsync = (opts->fsync_policy == POMAI_FSYNC_POLICY_ALWAYS)
+    pomai::EmbeddedOptions emb_opts;
+    emb_opts.path = opts->path;
+    emb_opts.dim = opts->dim;
+    emb_opts.fsync = (opts->fsync_policy == POMAI_FSYNC_POLICY_ALWAYS)
                          ? pomai::FsyncPolicy::kAlways
                          : pomai::FsyncPolicy::kNever;
-    cpp_opts.metric = (opts->metric == 1) ? pomai::MetricType::kInnerProduct : pomai::MetricType::kL2;
-    cpp_opts.index_params.adaptive_threshold = opts->adaptive_threshold;
-    
-    // Default to IVF, overwrite if HNSW.
+    emb_opts.metric = (opts->metric == 1) ? pomai::MetricType::kInnerProduct : pomai::MetricType::kL2;
+    emb_opts.index_params.adaptive_threshold = opts->adaptive_threshold;
     if (opts->index_type == 1) {
-        cpp_opts.index_params.type = pomai::IndexType::kHnsw;
-        cpp_opts.index_params.hnsw_m = opts->hnsw_m;
-        cpp_opts.index_params.hnsw_ef_construction = opts->hnsw_ef_construction;
-        cpp_opts.index_params.hnsw_ef_search = opts->hnsw_ef_search;
+        emb_opts.index_params.type = pomai::IndexType::kHnsw;
+        emb_opts.index_params.hnsw_m = opts->hnsw_m;
+        emb_opts.index_params.hnsw_ef_construction = opts->hnsw_ef_construction;
+        emb_opts.index_params.hnsw_ef_search = opts->hnsw_ef_search;
     } else {
-        cpp_opts.index_params.type = pomai::IndexType::kIvfFlat;
+        emb_opts.index_params.type = pomai::IndexType::kIvfFlat;
     }
 
-    std::unique_ptr<pomai::DB> db;
-    auto st = pomai::DB::Open(cpp_opts, &db);
+    auto db = std::make_unique<pomai::Database>();
+    auto st = db->Open(emb_opts);
     if (!st.ok()) {
         return ToCStatus(st);
     }
@@ -193,7 +189,7 @@ pomai_status_t* pomai_put(pomai_db_t* db, const pomai_upsert_t* item) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "upsert.struct_size is too small");
     }
     std::span<const float> vec(item->vector, item->dim);
-    return ToCStatus(db->db->Put(item->id, vec, ToMetadata(*item)));
+    return ToCStatus(db->db->AddVector(item->id, vec, ToMetadata(*item)));
 }
 
 pomai_status_t* pomai_put_batch(pomai_db_t* db, const pomai_upsert_t* items, size_t n) {
@@ -222,7 +218,7 @@ pomai_status_t* pomai_put_batch(pomai_db_t* db, const pomai_upsert_t* items, siz
         ids.push_back(items[i].id);
         vecs.emplace_back(items[i].vector, items[i].dim);
     }
-    return ToCStatus(db->db->PutBatch(ids, vecs));
+    return ToCStatus(db->db->AddVectorBatch(ids, vecs));
 }
 
 pomai_status_t* pomai_delete(pomai_db_t* db, uint64_t id) {
@@ -236,7 +232,7 @@ pomai_status_t* pomai_freeze(pomai_db_t* db) {
     if (db == nullptr) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null");
     }
-    return ToCStatus(db->db->Freeze(kDefaultMembrane));
+    return ToCStatus(db->db->Freeze());
 }
 
 pomai_status_t* pomai_get(pomai_db_t* db, uint64_t id, pomai_record_t** out_record) {
@@ -376,7 +372,7 @@ pomai_status_t* pomai_search_batch(pomai_db_t* db, const pomai_query_t* queries,
     }
 
     std::vector<pomai::SearchResult> batch_res;
-    auto st = db->db->SearchBatch(std::span<const float>(flat_queries.data(), flat_queries.size()), num_queries, topk, opts, &batch_res);
+    auto st = db->db->SearchBatch(std::span<const float>(flat_queries.data(), flat_queries.size()), static_cast<uint32_t>(num_queries), topk, opts, &batch_res);
     
     if (!st.ok() && st.code() != pomai::ErrorCode::kPartial) {
         return ToCStatus(st);
@@ -430,81 +426,30 @@ void pomai_search_results_free(pomai_search_results_t* results) {
     delete reinterpret_cast<SearchResultsWrapper*>(results);
 }
 
-// RAG
+// RAG (not supported in embedded Database backend)
 pomai_status_t* pomai_create_rag_membrane(pomai_db_t* db, const char* name, uint32_t dim, uint32_t shard_count) {
-    if (db == nullptr || name == nullptr || *name == '\0') {
-        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db and name must be non-null");
-    }
-    pomai::MembraneSpec spec;
-    spec.name = name;
-    spec.dim = dim;
-    spec.shard_count = shard_count > 0 ? shard_count : 1;
-    spec.kind = pomai::MembraneKind::kRag;
-    auto st = db->db->CreateMembrane(spec);
-    if (!st.ok() && st.code() != pomai::ErrorCode::kAlreadyExists) {
-        return ToCStatus(st);
-    }
-    st = db->db->OpenMembrane(name);
-    return ToCStatus(st);
+    (void)db;
+    (void)name;
+    (void)dim;
+    (void)shard_count;
+    return MakeStatus(POMAI_STATUS_UNIMPLEMENTED, "RAG membranes not available in embedded build");
 }
 
 pomai_status_t* pomai_put_chunk(pomai_db_t* db, const char* membrane_name, const pomai_rag_chunk_t* chunk) {
-    if (db == nullptr || membrane_name == nullptr || chunk == nullptr) {
-        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db, membrane_name, chunk must be non-null");
-    }
-    if (chunk->token_ids == nullptr || chunk->token_count == 0) {
-        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "chunk requires token_ids and token_count > 0");
-    }
-    pomai::RagChunk cpp_chunk;
-    cpp_chunk.chunk_id = chunk->chunk_id;
-    cpp_chunk.doc_id = chunk->doc_id;
-    cpp_chunk.tokens.assign(chunk->token_ids, chunk->token_ids + chunk->token_count);
-    if (chunk->vector != nullptr && chunk->dim > 0) {
-        cpp_chunk.vec = pomai::VectorView(chunk->vector, chunk->dim);
-    }
-    return ToCStatus(db->db->PutChunk(membrane_name, cpp_chunk));
+    (void)db;
+    (void)membrane_name;
+    (void)chunk;
+    return MakeStatus(POMAI_STATUS_UNIMPLEMENTED, "RAG put_chunk not available in embedded build");
 }
 
 pomai_status_t* pomai_search_rag(pomai_db_t* db, const char* membrane_name, const pomai_rag_query_t* query,
                                  const pomai_rag_search_options_t* opts, pomai_rag_search_result_t* out_result) {
-    if (db == nullptr || membrane_name == nullptr || query == nullptr || opts == nullptr || out_result == nullptr) {
-        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "rag search args must be non-null");
-    }
-    if ((query->token_ids == nullptr || query->token_count == 0) && (query->vector == nullptr || query->dim == 0)) {
-        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "query requires tokens or vector");
-    }
-    pomai::RagQuery cpp_query;
-    if (query->token_ids != nullptr && query->token_count > 0) {
-        cpp_query.tokens = std::span<const pomai::TokenId>(query->token_ids, query->token_count);
-    }
-    if (query->vector != nullptr && query->dim > 0) {
-        cpp_query.vec = pomai::VectorView(query->vector, query->dim);
-    }
-    cpp_query.topk = query->topk > 0 ? query->topk : 10u;
-
-    pomai::RagSearchOptions cpp_opts;
-    cpp_opts.candidate_budget = opts->candidate_budget;
-    cpp_opts.token_budget = opts->token_budget;
-    cpp_opts.enable_vector_rerank = opts->enable_vector_rerank;
-
-    pomai::RagSearchResult cpp_result;
-    auto st = db->db->SearchRag(membrane_name, cpp_query, cpp_opts, &cpp_result);
-    if (!st.ok()) {
-        return ToCStatus(st);
-    }
-
-    out_result->hit_count = cpp_result.hits.size();
-    out_result->hits = nullptr;
-    if (out_result->hit_count > 0) {
-        out_result->hits = new pomai_rag_hit_t[out_result->hit_count];
-        for (size_t i = 0; i < out_result->hit_count; ++i) {
-            out_result->hits[i].chunk_id = cpp_result.hits[i].chunk_id;
-            out_result->hits[i].doc_id = cpp_result.hits[i].doc_id;
-            out_result->hits[i].score = cpp_result.hits[i].score;
-            out_result->hits[i].token_matches = cpp_result.hits[i].token_matches;
-        }
-    }
-    return nullptr;
+    (void)db;
+    (void)membrane_name;
+    (void)query;
+    (void)opts;
+    (void)out_result;
+    return MakeStatus(POMAI_STATUS_UNIMPLEMENTED, "RAG search not available in embedded build");
 }
 
 void pomai_rag_search_result_free(pomai_rag_search_result_t* result) {
