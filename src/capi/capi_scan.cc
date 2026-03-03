@@ -6,8 +6,6 @@
 #include "capi_utils.h"
 
 namespace {
-constexpr const char* kDefaultMembrane = "__default__";
-
 constexpr uint32_t MinScanOptionsStructSize() {
     return static_cast<uint32_t>(offsetof(pomai_scan_options_t, has_start_id) + sizeof(bool));
 }
@@ -34,7 +32,7 @@ pomai_status_t* pomai_get_snapshot(pomai_db_t* db, pomai_snapshot_t** out_snap) 
     }
 
     std::shared_ptr<pomai::Snapshot> snap;
-    auto st = db->db->GetSnapshot(kDefaultMembrane, &snap);
+    auto st = db->db->GetSnapshot(&snap);
     if (!st.ok()) {
         return ToCStatus(st);
     }
@@ -65,7 +63,7 @@ pomai_status_t* pomai_scan(
     }
 
     std::unique_ptr<pomai::SnapshotIterator> iter;
-    auto st = db->db->NewIterator(kDefaultMembrane, snap->snap, &iter);
+    auto st = db->db->NewIterator(snap->snap, &iter);
     if (!st.ok()) {
         return ToCStatus(st);
     }

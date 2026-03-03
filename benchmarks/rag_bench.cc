@@ -7,7 +7,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <random>
-#include <thread>
 #include <vector>
 
 using namespace std::chrono;
@@ -49,7 +48,7 @@ int main(int argc, char** argv)
     pomai::DBOptions opts;
     opts.path = "/tmp/rag_bench";
     opts.dim = dim;
-    opts.shard_count = std::max(1u, static_cast<unsigned>(std::thread::hardware_concurrency()));
+    opts.shard_count = 4;  // Single-threaded; fixed shard count
     opts.fsync = pomai::FsyncPolicy::kNever;
 
     std::unique_ptr<pomai::DB> db;

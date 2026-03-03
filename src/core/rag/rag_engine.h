@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -45,7 +44,6 @@ namespace pomai::core
 
         struct RagShard
         {
-            mutable std::mutex mu;
             std::unordered_map<pomai::ChunkId, RagRecord> chunks;
             std::unordered_map<pomai::TokenId, std::vector<pomai::ChunkId>> postings;
         };

@@ -19,7 +19,6 @@
 #include <sstream>
 #include <string>
 #include <sys/resource.h>
-#include <thread>
 #include <tuple>
 #include <unordered_set>
 #include <vector>

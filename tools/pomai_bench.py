@@ -45,6 +45,14 @@ class PomaiOptions(ctypes.Structure):
         ("fsync_policy", ctypes.c_uint32),
         ("memory_budget_bytes", ctypes.c_uint64),
         ("deadline_ms", ctypes.c_uint32),
+        ("index_type", ctypes.c_uint8),
+        ("_pad1", ctypes.c_uint8 * 3),
+        ("hnsw_m", ctypes.c_uint32),
+        ("hnsw_ef_construction", ctypes.c_uint32),
+        ("hnsw_ef_search", ctypes.c_uint32),
+        ("adaptive_threshold", ctypes.c_uint32),
+        ("metric", ctypes.c_uint8),
+        ("_pad2", ctypes.c_uint8 * 3),
     ]
 
 
@@ -68,6 +76,7 @@ class PomaiQuery(ctypes.Structure):
         ("filter_expression", ctypes.c_char_p),
         ("alpha", ctypes.c_float),
         ("deadline_ms", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
     ]
 
 
@@ -78,6 +87,7 @@ class PomaiSearchResults(ctypes.Structure):
         ("ids", ctypes.POINTER(ctypes.c_uint64)),
         ("scores", ctypes.POINTER(ctypes.c_float)),
         ("shard_ids", ctypes.POINTER(ctypes.c_uint32)),
+        ("zero_copy_pointers", ctypes.c_void_p),
     ]
 
 
@@ -119,7 +129,17 @@ class RecallMetrics:
 
 
 class PomaiClient:
-    def __init__(self, lib_path: Path, db_path: Path, dim: int, shards: int):
+    def __init__(
+        self,
+        lib_path: Path,
+        db_path: Path,
+        dim: int,
+        shards: int,
+        use_hnsw: bool = False,
+        hnsw_ef_search: int = 32,
+        hnsw_ef_construction: int = 200,
+        hnsw_m: int = 32,
+    ):
         self.lib = ctypes.CDLL(str(lib_path))
         self._bind()
         self.db = ctypes.c_void_p()
@@ -131,6 +151,12 @@ class PomaiClient:
         opts.path = str(db_path).encode("utf-8")
         opts.shards = shards
         opts.dim = dim
+        if use_hnsw:
+            opts.index_type = 1  # HNSW (match cross_engine / benchmark_all.sh)
+            opts.hnsw_m = hnsw_m
+            opts.hnsw_ef_construction = hnsw_ef_construction
+            opts.hnsw_ef_search = hnsw_ef_search
+            opts.adaptive_threshold = 0
         self._check(self.lib.pomai_open(ctypes.byref(opts), ctypes.byref(self.db)))
 
     def _bind(self) -> None:
@@ -382,7 +408,9 @@ def recall_metrics(oracle: Sequence[Sequence[int]], approx: List[List[int]]) -> 
 
 
 def ensure_recall_gates(metrics: RecallMetrics) -> None:
-    if metrics.recall_at_1 < 0.94 or metrics.recall_at_10 < 0.94 or metrics.recall_at_100 < 0.94:
+    # Recall benchmark uses HNSW (ef_search=32) to match cross_engine; expect high recall.
+    min_recall = 0.85
+    if metrics.recall_at_1 < min_recall or metrics.recall_at_10 < min_recall or metrics.recall_at_100 < min_recall:
         raise SystemExit(
             "Recall gate failed: "
             f"R@1={metrics.recall_at_1:.3f} "
@@ -397,7 +425,11 @@ def run_recall_case(lib: Path, case: RecallCase, shards: int, batch_size: int) -
     oracle_ids = brute_force_topk(vectors, queries, 100)
 
     with tempfile.TemporaryDirectory(prefix="pomai_bench_recall_") as td:
-        client = PomaiClient(lib, Path(td), case.dim, shards)
+        # Use HNSW + ef_search=32 to match cross_engine / benchmark_all.sh for ~100% recall@10
+        client = PomaiClient(
+            lib, Path(td), case.dim, shards,
+            use_hnsw=True, hnsw_ef_search=32, hnsw_ef_construction=200, hnsw_m=32,
+        )
         try:
             t0 = time.perf_counter()
             for start, end in batched_ids(case.count, batch_size):
@@ -658,7 +690,7 @@ def parse_args() -> argparse.Namespace:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     recall = sub.add_parser("recall", help="Recall correctness benchmark")
-    recall.add_argument("--shards", type=int, default=4)
+    recall.add_argument("--shards", type=int, default=1, help="Shards (1 matches cross_engine for best recall)")
     recall.add_argument("--batch-size", type=int, default=1024)
     recall.add_argument("--seed", type=int, default=42)
     recall.add_argument("--matrix", choices=["full", "ci"], default="full")

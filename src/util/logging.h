@@ -5,7 +5,6 @@
 #include <source_location>
 #include <iostream>
 #include <chrono>
-#include <mutex>
 
 namespace pomai::util
 {
@@ -49,7 +48,6 @@ namespace pomai::util
         void Write(LogLevel level, std::source_location loc, const std::string& message);
 
         LogLevel min_level_;
-        std::mutex mutex_;
     };
 
 } // namespace pomai::util

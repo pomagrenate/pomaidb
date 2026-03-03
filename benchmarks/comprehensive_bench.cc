@@ -18,7 +18,6 @@
 #include <iomanip>
 #include <random>
 #include <string>
-#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -264,7 +263,7 @@ public:
         
         pomai::DBOptions opts;
         opts.dim = config_.dim;
-        opts.shard_count = std::thread::hardware_concurrency();
+        opts.shard_count = 4;  // Single-threaded event loop; fixed shards
         opts.path = "/tmp/pomai_bench_" + config_.dataset_size;
         opts.fsync = pomai::FsyncPolicy::kNever;  // Disable fsync for benchmark
         
@@ -312,96 +311,36 @@ public:
             db->Search(dataset_.queries[i], config_.topk, &search_result);
         }
         
-        // Phase 3: Benchmark search
-        printf("\n[3/3] Benchmarking search (%u queries, %d threads)...\n",
-               config_.num_queries, config_.num_threads);
-        
-        if (config_.num_threads == 1) {
-            // Single-threaded
-            auto search_start = high_resolution_clock::now();
-            
-            for (uint32_t qi = 0; qi < config_.num_queries; ++qi) {
-                auto q_start = high_resolution_clock::now();
-                
-                st = db->Search(dataset_.queries[qi], config_.topk, &search_result);
-                if (!st.ok()) {
-                    fprintf(stderr, "Search failed: %s\n", st.message());
-                    continue;
-                }
-                
-                auto q_end = high_resolution_clock::now();
-                double lat_us = duration<double, std::micro>(q_end - q_start).count();
-                results.search_latency.record(lat_us);
-                
-                // Compute recall for this query
-                double recall = compute_recall(search_result.hits, dataset_.ground_truth[qi]);
-                recall_sum_ += recall;
-                
-                if ((qi + 1) % 100 == 0) {
-                    printf("  Progress: %u/%u\r", qi + 1, config_.num_queries);
-                    fflush(stdout);
-                }
+        // Phase 3: Benchmark search (single-threaded)
+        printf("\n[3/3] Benchmarking search (%u queries)...\n", config_.num_queries);
+        auto search_start = high_resolution_clock::now();
+
+        for (uint32_t qi = 0; qi < config_.num_queries; ++qi) {
+            auto q_start = high_resolution_clock::now();
+
+            st = db->Search(dataset_.queries[qi], config_.topk, &search_result);
+            if (!st.ok()) {
+                fprintf(stderr, "Search failed: %s\n", st.message());
+                continue;
             }
-            printf("\n");
-            
-            auto search_end = high_resolution_clock::now();
-            double total_time = duration<double>(search_end - search_start).count();
-            results.throughput_qps = config_.num_queries / total_time;
-            
-        } else {
-            // Multi-threaded throughput test
-            std::atomic<uint32_t> query_idx{0};
-            std::vector<std::thread> threads;
-            std::vector<LatencyStats> per_thread_stats(config_.num_threads);
-            std::atomic<double> total_recall{0.0};
-            
-            auto search_start = high_resolution_clock::now();
-            
-            for (int t = 0; t < config_.num_threads; ++t) {
-                threads.emplace_back([&, t]() {
-                    pomai::SearchResult local_result;
-                    double local_recall_sum = 0.0;
-                    uint32_t queries_done = 0;
-                    
-                    while (true) {
-                        uint32_t qi = query_idx.fetch_add(1);
-                        if (qi >= config_.num_queries) break;
-                        
-                        auto q_start = high_resolution_clock::now();
-                        auto st = db->Search(dataset_.queries[qi], config_.topk, &local_result);
-                        auto q_end = high_resolution_clock::now();
-                        
-                        if (st.ok()) {
-                            double lat_us = duration<double, std::micro>(q_end - q_start).count();
-                            per_thread_stats[t].record(lat_us);
-                            
-                            double recall = compute_recall(local_result.hits, dataset_.ground_truth[qi]);
-                            local_recall_sum += recall;
-                            queries_done++;
-                        }
-                    }
-                    
-                    total_recall.fetch_add(local_recall_sum);
-                });
+
+            auto q_end = high_resolution_clock::now();
+            double lat_us = duration<double, std::micro>(q_end - q_start).count();
+            results.search_latency.record(lat_us);
+
+            double recall = compute_recall(search_result.hits, dataset_.ground_truth[qi]);
+            recall_sum_ += recall;
+
+            if ((qi + 1) % 100 == 0) {
+                printf("  Progress: %u/%u\r", qi + 1, config_.num_queries);
+                fflush(stdout);
             }
-            
-            for (auto& thread : threads) {
-                thread.join();
-            }
-            
-            auto search_end = high_resolution_clock::now();
-            double total_time = duration<double>(search_end - search_start).count();
-            results.throughput_qps = config_.num_queries / total_time;
-            
-            // Merge latencies
-            for (const auto& stats : per_thread_stats) {
-                for (double lat : stats.latencies_us) {
-                    results.search_latency.record(lat);
-                }
-            }
-            
-            recall_sum_ = total_recall.load();
         }
+        printf("\n");
+
+        auto search_end = high_resolution_clock::now();
+        double total_time = duration<double>(search_end - search_start).count();
+        results.throughput_qps = config_.num_queries / total_time;
         
         results.recall_at_k = recall_sum_ / config_.num_queries;
         
@@ -440,7 +379,7 @@ void print_usage() {
     printf("Usage: comprehensive_bench [options]\n");
     printf("Options:\n");
     printf("  --dataset <small|medium|large>  Dataset size (default: small)\n");
-    printf("  --threads <N>                   Concurrent threads (default: 1)\n");
+    printf("  --threads <N>                   Ignored (single-threaded)\n");
     printf("  --output <path>                 JSON output path (optional)\n");
     printf("\n");
     printf("Dataset sizes:\n");
@@ -480,7 +419,7 @@ int main(int argc, char** argv) {
            config.dataset_size.c_str(), config.num_vectors, config.dim);
     printf("Queries:     %u\n", config.num_queries);
     printf("Top-k:       %u\n", config.topk);
-    printf("Threads:     %d\n", config.num_threads);
+    printf("Mode:        single-threaded\n");
     printf("=============================================================\n");
     
     Benchmark bench(config);

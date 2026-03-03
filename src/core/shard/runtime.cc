@@ -2,13 +2,10 @@
 #include <filesystem>
 #include <cassert>
 #include <unordered_map>
-#ifdef __linux__
-#include <sched.h>   // sched_setaffinity, cpu_set_t — CPU affinity pinning
-#endif
 
 #include <algorithm>
-#include <cmath>
-#include <limits>
+#include <chrono>
+#include <deque>
 
 #include "core/distance.h"
 #include "core/index/ivf_coarse.h"
@@ -197,6 +194,7 @@ namespace pomai::core
         struct CompactState {
             Phase phase{Phase::kBuild};
             std::vector<std::shared_ptr<table::SegmentReader>> input_segments;
+            std::deque<std::vector<float>> compact_buffers; // Stable pointers for builder views
             std::priority_queue<CompactCursor, std::vector<CompactCursor>, std::greater<CompactCursor>> heap;
             VectorId last_id{std::numeric_limits<VectorId>::max()};
             bool is_first{true};
@@ -210,38 +208,31 @@ namespace pomai::core
             std::uint64_t tombstones_purged{0};
             std::uint64_t old_versions_dropped{0};
             std::uint64_t live_entries_kept{0};
-            std::list<std::vector<float>> compact_buffers;
         };
 
         BackgroundJob(Type t, FreezeState st) : type(t), state(std::move(st)) {}
         BackgroundJob(Type t, CompactState st) : type(t), state(std::move(st)) {}
 
         Type type;
-        std::promise<pomai::Status> done;
+        std::optional<pomai::Status> result;  // Set when phase == kDone (single-threaded)
         std::variant<FreezeState, CompactState> state;
     };
 
     ShardRuntime::ShardRuntime(std::uint32_t shard_id,
-                               std::string shard_dir, // Added
+                               std::string shard_dir,
                                std::uint32_t dim,
                                pomai::MembraneKind kind,
                                pomai::MetricType metric,
                                std::unique_ptr<storage::Wal> wal,
                                std::unique_ptr<table::MemTable> mem,
-                               std::size_t mailbox_cap,
-                               const pomai::IndexParams& index_params,
-                               pomai::util::ThreadPool* thread_pool,
-                               pomai::util::ThreadPool* segment_pool)
+                               const pomai::IndexParams& index_params)
         : shard_id_(shard_id),
-          shard_dir_(std::move(shard_dir)), // Added
+          shard_dir_(std::move(shard_dir)),
           dim_(dim),
           kind_(kind),
           metric_(metric),
           wal_(std::move(wal)),
           mem_(std::move(mem)),
-          mailbox_(mailbox_cap),
-          thread_pool_(thread_pool),
-          segment_pool_(segment_pool),
           index_params_(index_params)
     {
         pomai::index::IvfCoarse::Options opt;
@@ -254,63 +245,57 @@ namespace pomai::core
 
     ShardRuntime::~ShardRuntime()
     {
-        if (started_.load(std::memory_order_relaxed))
-        {
-            StopCmd c;
-            auto fut = c.done.get_future();
-            (void)Enqueue(Command{std::move(c)});
-            fut.wait();
+        if (started_ && palloc_heap_) {
+            palloc_heap_delete(palloc_heap_);
+            palloc_heap_ = nullptr;
         }
+        started_ = false;
     }
 
-    // Phase 4: lock-free stats snapshot
     ShardStats ShardRuntime::GetStats() const noexcept
     {
         ShardStats s;
         s.shard_id          = shard_id_;
-        s.ops_processed     = ops_processed_.load(std::memory_order_relaxed);
-        s.queue_depth       = static_cast<std::uint64_t>(mailbox_.Size());
-        s.candidates_scanned = last_query_candidates_scanned_.load(std::memory_order_relaxed);
-        auto mem = mem_.load(std::memory_order_acquire);
-        s.memtable_entries  = mem ? static_cast<std::uint64_t>(mem->GetCount()) : 0u;
+        s.ops_processed     = ops_processed_;
+        s.queue_depth       = 0u;
+        s.candidates_scanned = last_query_candidates_scanned_;
+        s.memtable_entries  = mem_ ? static_cast<std::uint64_t>(mem_->GetCount()) : 0u;
+
+        // 3. Telemetry Fusion
+        // Collect palloc heap stats for this shard.
+        if (palloc_heap_) {
+            size_t committed = 0;
+            size_t used = 0;
+            // mimalloc (palloc) doesn't have a direct per-heap stats struct yet in v2.x 
+            // but we can estimate via the heap internals if needed or rely on Merge
+            // For now, we'll mark it as available for fusion.
+            s.palloc_mem_committed = committed; 
+            s.palloc_mem_used = used;
+        }
         return s;
     }
 
     pomai::Status ShardRuntime::Start()
     {
-        if (started_.exchange(true))
+        if (started_)
             return pomai::Status::Busy("shard already started");
-        
-        // If we have replayed data in MemTable, rotate it to Frozen so it's visible in Snapshot.
-        // Use atomic load to get shared_ptr
-        auto m = mem_.load(std::memory_order_relaxed);
-        if (m && m->GetCount() > 0) {
+        started_ = true;
+
+        palloc_heap_ = palloc_heap_new();
+        mem_manager_.Initialize(palloc_heap_);
+#if defined(POMAI_USE_PALLOC) && POMAI_USE_PALLOC
+        palloc_option_set(palloc_option_reserve_huge_os_pages, 1024);
+#endif
+
+        if (mem_ && mem_->GetCount() > 0)
             (void)RotateMemTable();
-        }
 
         auto st = LoadSegments();
-        if (!st.ok()) return st;
-
-        worker_ = std::jthread([this]
-                               {
-                                // Phase 1 (Helio shared-nothing): pin this shard's thread
-                                // to a specific CPU core so its L1/L2 cache is dedicated.
-                                // Guarded for Linux/Android only; silently skipped elsewhere.
-#if defined(__linux__)
-                                {
-                                    const int nproc = static_cast<int>(
-                                        std::thread::hardware_concurrency());
-                                    if (nproc > 0) {
-                                        cpu_set_t cs;
-                                        CPU_ZERO(&cs);
-                                        CPU_SET(static_cast<int>(shard_id_) % nproc, &cs);
-                                        // Best-effort: ignore errors (e.g. Docker CPU restrictions)
-                                        (void)sched_setaffinity(0, sizeof(cs), &cs);
-                                    }
-                                }
-#endif
-                                RunLoop();
-                               });
+        if (!st.ok()) {
+            if (palloc_heap_) { palloc_heap_delete(palloc_heap_); palloc_heap_ = nullptr; }
+            started_ = false;
+            return st;
+        }
         return pomai::Status::Ok();
     }
 
@@ -332,24 +317,6 @@ namespace pomai::core
         }
 
         PublishSnapshot();
-        return pomai::Status::Ok();
-    }
-
-    pomai::Status ShardRuntime::Enqueue(Command &&cmd)
-    {
-        if (!started_.load(std::memory_order_relaxed))
-            return pomai::Status::Aborted("shard not started");
-        if (!mailbox_.PushBlocking(std::move(cmd)))
-            return pomai::Status::Aborted("mailbox closed");
-        return pomai::Status::Ok();
-    }
-
-    pomai::Status ShardRuntime::TryEnqueue(Command &&cmd)
-    {
-        if (!started_.load(std::memory_order_relaxed))
-            return pomai::Status::Aborted("shard not started");
-        if (!mailbox_.TryPush(std::move(cmd)))
-            return pomai::Status::ResourceExhausted("shard mailbox full");
         return pomai::Status::Ok();
     }
 
@@ -378,24 +345,14 @@ namespace pomai::core
             (void)seg;
         }
 
-        current_snapshot_.store(snap, std::memory_order_release);
+        current_snapshot_ = snap;
     }
 
     pomai::Status ShardRuntime::RotateMemTable()
     {
-        // Move mutable mem_ to frozen_mem_
-        // Since we are single writer, we can load relaxed.
-        auto old_mem = mem_.load(std::memory_order_relaxed);
-        if (old_mem->GetCount() == 0) return pomai::Status::Ok();
-        
-        // Push old shared_ptr to frozen
-        frozen_mem_.push_back(old_mem);
-        
-        // Create new MemTable
-        // engine.cc uses kArenaBlockBytes = 1MB. Assuming 1MB here too.
-        auto new_mem = std::make_shared<table::MemTable>(dim_, 1u << 20);
-        mem_.store(new_mem, std::memory_order_release);
-        
+        if (mem_->GetCount() == 0) return pomai::Status::Ok();
+        frozen_mem_.push_back(mem_);
+        mem_ = std::make_shared<table::MemTable>(dim_, 1u << 20, palloc_heap_);
         PublishSnapshot();
         return pomai::Status::Ok();
     }
@@ -416,17 +373,16 @@ namespace pomai::core
         }
         if (vec.size() != dim_)
             return pomai::Status::InvalidArgument("dim mismatch");
+        if (!started_)
+            return pomai::Status::Aborted("shard not started");
 
         PutCmd cmd;
         cmd.id = id;
         cmd.vec = pomai::VectorView(vec);
-        cmd.meta = meta; // Copy metadata
-        
-        auto f = cmd.done.get_future();
-        auto st = Enqueue(Command{std::move(cmd)});
-        if (!st.ok())
-            return st;
-        return f.get();
+        cmd.meta = meta;
+        pomai::Status st = HandlePut(cmd);
+        if (st.ok()) ++ops_processed_;
+        return st;
     }
 // ... (BatchPut skipped) ...
 
@@ -438,7 +394,7 @@ namespace pomai::core
         if (c.vec.dim != dim_)
             return pomai::Status::InvalidArgument("dim mismatch");
 
-        auto m = mem_.load(std::memory_order_relaxed);
+        std::shared_ptr<table::MemTable> m = mem_;
         if (frozen_mem_.size() >= kMaxFrozenMemtables && m->GetCount() >= kMemtableSoftLimit) {
             return pomai::Status::ResourceExhausted("too many frozen memtables; backpressure");
         }
@@ -466,42 +422,36 @@ namespace pomai::core
         if (kind_ != pomai::MembraneKind::kVector) {
             return pomai::Status::InvalidArgument("VECTOR membrane required for PutBatch");
         }
-        // Validation
         if (ids.size() != vectors.size())
             return pomai::Status::InvalidArgument("ids and vectors size mismatch");
         if (ids.empty())
             return pomai::Status::Ok();
-        
-        // Validate dimensions
         for (const auto& vec : vectors) {
             if (vec.size() != dim_)
                 return pomai::Status::InvalidArgument("dim mismatch");
         }
-        
+        if (!started_)
+            return pomai::Status::Aborted("shard not started");
+
         BatchPutCmd cmd;
         cmd.ids = ids;
         cmd.vectors.reserve(vectors.size());
-        for (const auto& vec : vectors) {
+        for (const auto& vec : vectors)
             cmd.vectors.emplace_back(vec);
-        }
-        
-        auto f = cmd.done.get_future();
-        auto st = Enqueue(Command{std::move(cmd)});
-        if (!st.ok())
-            return st;
-        return f.get();
+        pomai::Status st = HandleBatchPut(cmd);
+        if (st.ok()) ++ops_processed_;
+        return st;
     }
 
     pomai::Status ShardRuntime::Delete(pomai::VectorId id)
     {
+        if (!started_)
+            return pomai::Status::Aborted("shard not started");
         DelCmd c;
         c.id = id;
-        auto fut = c.done.get_future();
-
-        auto st = Enqueue(Command{std::move(c)});
-        if (!st.ok())
-            return st;
-        return fut.get();
+        pomai::Status st = HandleDel(c);
+        if (st.ok()) ++ops_processed_;
+        return st;
     }
 
     pomai::Status ShardRuntime::Get(pomai::VectorId id, std::vector<float> *out)
@@ -513,7 +463,7 @@ namespace pomai::core
     {
         if (!out) return Status::InvalidArgument("out is null");
 
-        auto active = mem_.load(std::memory_order_acquire);
+        auto active = mem_;
         auto snap = GetSnapshot();
         if (!snap) return Status::Aborted("shard not ready");
 
@@ -552,7 +502,7 @@ namespace pomai::core
     {
         if (!exists) return Status::InvalidArgument("exists is null");
 
-        auto active = mem_.load(std::memory_order_acquire);
+        auto active = mem_;
         auto snap = GetSnapshot();
         if (!snap) return Status::Aborted("shard not ready");
 
@@ -576,13 +526,15 @@ namespace pomai::core
              if (seg->FindRaw(id, &raw_payload, nullptr) == table::SegmentReader::FindResult::kFound) {
                  out->raw_data_ptr = raw_payload;
                  out->dim = seg->Dim();
-                 if (seg->IsQuantized()) {
-                     out->quant_min = seg->GetQuantizer()->GetGlobalMin();
-                     out->quant_inv_scale = seg->GetQuantizer()->GetGlobalInvScale();
-                 } else {
-                     out->quant_min = 0;
-                     out->quant_inv_scale = 1.0f;
-                 }
+                  out->quant_type = static_cast<int>(seg->GetQuantType());
+                  if (seg->GetQuantType() == pomai::QuantizationType::kSq8) {
+                      auto* sq8 = static_cast<const core::ScalarQuantizer8Bit*>(seg->GetQuantizer());
+                      out->quant_min = sq8->GetGlobalMin();
+                      out->quant_inv_scale = sq8->GetGlobalInvScale();
+                  } else {
+                      out->quant_min = 0;
+                      out->quant_inv_scale = 1.0f;
+                  }
                  out->session_id = 0; // Filled later
                  return pomai::Status::Ok();
              }
@@ -592,45 +544,34 @@ namespace pomai::core
 
     pomai::Status ShardRuntime::Flush()
     {
+        if (!started_) return pomai::Status::Aborted("shard not started");
         FlushCmd c;
-        auto fut = c.done.get_future();
-
-        auto st = Enqueue(Command{std::move(c)});
-        if (!st.ok())
-            return st;
-        return fut.get();
+        return HandleFlush(c);
     }
 
     pomai::Status ShardRuntime::Freeze()
     {
+        if (!started_) return pomai::Status::Aborted("shard not started");
         FreezeCmd c;
-        auto f = c.done.get_future();
-        auto st = Enqueue(Command{std::move(c)});
-        if (!st.ok()) return st;
-        return f.get();
+        auto st = HandleFreeze(c);
+        return st.has_value() ? *st : pomai::Status::Aborted("freeze not completed");
     }
 
     pomai::Status ShardRuntime::Compact()
     {
+        if (!started_) return pomai::Status::Aborted("shard not started");
         CompactCmd c;
-        auto f = c.done.get_future();
-        auto st = Enqueue(Command{std::move(c)});
-        if (!st.ok()) return st;
-        return f.get();
+        auto st = HandleCompact(c);
+        return st.has_value() ? *st : pomai::Status::Aborted("compact not completed");
     }
 
     pomai::Status ShardRuntime::NewIterator(std::unique_ptr<pomai::SnapshotIterator>* out)
     {
+        if (!started_) return pomai::Status::Aborted("shard not started");
         IteratorCmd cmd;
-        auto f = cmd.done.get_future();
-        auto st = Enqueue(Command{std::move(cmd)});
-        if (!st.ok())
-            return st;
-        
-        IteratorReply reply = f.get();
+        IteratorReply reply = HandleIterator(cmd);
         if (!reply.st.ok())
             return reply.st;
-        
         *out = std::move(reply.iterator);
         return pomai::Status::Ok();
     }
@@ -675,111 +616,7 @@ namespace pomai::core
     }
 
     // -------------------------
-    // Actor loop
-    // -------------------------
-
-    void ShardRuntime::RunLoop()
-    {
-        // Ensure cleanup on exit (exception or normal)
-        struct ScopeGuard {
-            ShardRuntime* rt;
-            ~ScopeGuard() {
-                rt->mailbox_.Close();
-                rt->started_.store(false);
-            }
-        } guard{this};
-
-        bool stop_now = false;
-        for (;;)
-        {
-            // Elite: Poll sharded executor for intrusive tasks and reset hot memory pools
-            executor_.Poll(32);
-            mem_manager_.ResetHotPools();
-            std::optional<Command> opt;
-            if (background_job_) {
-                opt = mailbox_.PopFor(kBackgroundPoll);
-                if (!opt.has_value()) {
-                    PumpBackgroundWork(kBackgroundBudget);
-                    if (stop_now) {
-                        break;
-                    }
-                    continue;
-                }
-            } else {
-                opt = mailbox_.PopBlocking();
-                if (!opt.has_value())
-                    break;
-            }
-
-            ops_processed_.fetch_add(1, std::memory_order_relaxed);
-
-            Command cmd = std::move(*opt);
-
-            std::visit(
-                [&](auto &arg)
-                {
-                    using T = std::decay_t<decltype(arg)>;
-                    if constexpr (std::is_same_v<T, PutCmd>)
-                    {
-                        arg.done.set_value(HandlePut(arg));
-                    }
-                    else if constexpr (std::is_same_v<T, DelCmd>)
-                    {
-                        arg.done.set_value(HandleDel(arg));
-                    }
-                    else if constexpr (std::is_same_v<T, BatchPutCmd>)
-                    {
-                        arg.done.set_value(HandleBatchPut(arg));
-                    }
-                    else if constexpr (std::is_same_v<T, FlushCmd>)
-                    {
-                        arg.done.set_value(HandleFlush(arg));
-                    }
-                    else if constexpr (std::is_same_v<T, FreezeCmd>)
-                    {
-                        auto st = HandleFreeze(arg);
-                        if (st.has_value()) {
-                            arg.done.set_value(*st);
-                        }
-                    }
-                    else if constexpr (std::is_same_v<T, CompactCmd>)
-                    {
-                        auto st = HandleCompact(arg);
-                        if (st.has_value()) {
-                            arg.done.set_value(*st);
-                        }
-                    }
-                    else if constexpr (std::is_same_v<T, IteratorCmd>)
-                    {
-                        arg.done.set_value(HandleIterator(arg));
-                    }
-                    else if constexpr (std::is_same_v<T, SearchCmd>)
-                    {
-                        arg.done.set_value(HandleSearch(arg));
-                    }
-                    else if constexpr (std::is_same_v<T, StopCmd>)
-                    {
-                        // Mailbox close handled by ScopeGuard or manual?
-                        // If we Close here, PopBlocking next loop returns nullopt.
-                        // But we want to break immediately.
-                        CancelBackgroundJob("shard stopping");
-                        arg.done.set_value();
-                        stop_now = true;
-                    }
-                },
-                cmd);
-
-            if (background_job_) {
-                PumpBackgroundWork(kBackgroundBudget);
-            }
-
-            if (stop_now)
-                break;
-        }
-    }
-
-    // -------------------------
-    // Handlers
+    // Handlers (single-threaded: invoked directly from Put/Delete/Search/etc.)
     // -------------------------
 
 
@@ -793,7 +630,7 @@ namespace pomai::core
         if (c.ids.size() != c.vectors.size())
             return pomai::Status::InvalidArgument("ids and vectors size mismatch");
 
-        auto m = mem_.load(std::memory_order_relaxed);
+        std::shared_ptr<table::MemTable> m = mem_;
         if (frozen_mem_.size() >= kMaxFrozenMemtables && m->GetCount() >= kMemtableSoftLimit) {
             return pomai::Status::ResourceExhausted("too many frozen memtables; backpressure");
         }
@@ -826,7 +663,7 @@ namespace pomai::core
             return st;
         ++wal_epoch_;
 
-        st = mem_.load(std::memory_order_relaxed)->Delete(c.id);
+        st = mem_->Delete(c.id);
         if (!st.ok())
             return st;
 
@@ -861,7 +698,7 @@ namespace pomai::core
         }
 
         // Step 1: Rotate Active → Frozen (idempotent if already empty)
-        if (mem_.load(std::memory_order_relaxed)->GetCount() > 0) {
+        if (mem_->GetCount() > 0) {
             auto st = RotateMemTable();
             if (!st.ok()) {
                 return pomai::Status::Internal(std::string("Freeze: RotateMemTable failed: ") + st.message());
@@ -877,17 +714,19 @@ namespace pomai::core
         state.target_frozen_count = frozen_mem_.size();
         state.wal_epoch_at_start = wal_epoch_;
         auto job = std::make_unique<BackgroundJob>(BackgroundJob::Type::kFreeze, std::move(state));
-        job->done = std::move(c.done);
-
         background_job_ = std::move(job);
-        return std::nullopt;
+        last_background_result_.reset();
+        while (background_job_) {
+            PumpBackgroundWork(std::chrono::hours(1));
+        }
+        return last_background_result_.has_value() ? last_background_result_ : std::optional<pomai::Status>(pomai::Status::Ok());
     }
 
     // -------------------------
     // HandleCompact: Budgeted background compaction
     // -------------------------
 
-    std::optional<pomai::Status> ShardRuntime::HandleCompact(CompactCmd & /*c*/)
+    std::optional<pomai::Status> ShardRuntime::HandleCompact(CompactCmd & c)
     {
         POMAI_LOG_INFO("[shard:{}] Starting background compaction", shard_id_);
         if (background_job_) return std::nullopt; // Keep in queue
@@ -909,35 +748,56 @@ namespace pomai::core
 
         // 2. Pick task
         auto task = compaction_manager_->PickCompaction(stats);
-        if (!task.valid) {
+        if (!task.valid && segments_.size() <= 1) {
             return pomai::Status::Ok(); // Nothing to compact
         }
 
-        // 3. Setup background job
-        BackgroundJob::CompactState state;
-        // For now, compact all segments in L0 since we are simplifying.
-        state.input_segments = segments_; 
-        background_job_ = std::make_unique<BackgroundJob>(BackgroundJob::Type::kCompact, std::move(state));
+        // If manual compaction and we have multiple segments, force L0->L1
+        if (!task.valid) {
+            task.input_level = 0;
+            task.output_level = 1;
+            task.valid = true;
+        }
 
-        return std::nullopt; // Async
+        BackgroundJob::CompactState state;
+        state.input_segments = segments_;
+        state.old_segments = segments_;
+        auto job = std::make_unique<BackgroundJob>(BackgroundJob::Type::kCompact, std::move(state));
+        background_job_ = std::move(job);
+        last_background_result_.reset();
+        while (background_job_) {
+            PumpBackgroundWork(std::chrono::hours(1));
+        }
+        return last_background_result_.has_value() ? last_background_result_ : std::optional<pomai::Status>(pomai::Status::Ok());
     }
 
     IteratorReply ShardRuntime::HandleIterator(IteratorCmd &c)
     {
         (void)c;  // unused parameter
         
-        // Create iterator with current snapshot (point-in-time view)
-        auto snapshot = current_snapshot_.load();
-        
-        if (!snapshot) {
+        // Snapshot must exist (created in Start/LoadSegments or after rotate).
+        auto base = current_snapshot_;
+        if (!base) {
             IteratorReply reply;
             reply.st = pomai::Status::Internal("HandleIterator: snapshot is null");
             return reply;
         }
+
+        // Include live memtable in the iterator view so unflushed data is visible.
+        // Otherwise NewIterator() would see 0 vectors when all data is still in mem_.
+        std::shared_ptr<ShardSnapshot> snapshot;
+        if (mem_ && mem_->GetCount() > 0) {
+            snapshot = std::make_shared<ShardSnapshot>();
+            snapshot->version = base->version;
+            snapshot->created_at = base->created_at;
+            snapshot->segments = base->segments;
+            snapshot->frozen_memtables = base->frozen_memtables;
+            snapshot->live_memtable = mem_;
+        } else {
+            snapshot = base;
+        }
         
-        // Create ShardIterator
         auto shard_iter = std::make_unique<ShardIterator>(snapshot);
-        
         IteratorReply reply;
         reply.st = pomai::Status::Ok();
         reply.iterator = std::move(shard_iter);
@@ -964,10 +824,8 @@ namespace pomai::core
 
     void ShardRuntime::CancelBackgroundJob(const std::string& reason)
     {
-        if (!background_job_) {
-            return;
-        }
-        background_job_->done.set_value(pomai::Status::Aborted(reason));
+        if (!background_job_) return;
+        last_background_result_ = pomai::Status::Aborted(reason);
         background_job_.reset();
     }
 
@@ -984,7 +842,7 @@ namespace pomai::core
         };
 
         auto complete_job = [&](const pomai::Status& st) {
-            background_job_->done.set_value(st);
+            last_background_result_ = st;
             background_job_.reset();
         };
 
@@ -996,6 +854,7 @@ namespace pomai::core
                 }
                 if (state.phase == BackgroundJob::Phase::kBuild) {
                     if (state.mem_index >= state.memtables.size()) {
+                        // std::cout << "[ShardRuntime] Freeze: Switching to CommitManifest" << std::endl;
                         state.phase = BackgroundJob::Phase::kCommitManifest;
                         continue;
                     }
@@ -1045,10 +904,12 @@ namespace pomai::core
                     bg_budget.Consume();
 
                     if (state.builder->Count() >= kMaxSegmentEntries) {
+                        // std::cout << "[ShardRuntime] Freeze: Segment full, finalizing" << std::endl;
                         state.memtable_done_after_finalize = false;
                         state.phase = BackgroundJob::Phase::kFinalizeSegment;
                     }
                 } else if (state.phase == BackgroundJob::Phase::kFinalizeSegment) {
+                    // std::cout << "[ShardRuntime] Freeze: Finalizing segment..." << std::endl;
                     auto st = state.builder->BuildIndex();
                     if (!st.ok()) {
                         complete_job(pomai::Status::Internal(std::string("Freeze: BuildIndex failed: ") + st.message()));
@@ -1171,7 +1032,7 @@ namespace pomai::core
                             pomai::Metadata meta;
                             auto res = state.input_segments[top.seg_idx]->FindAndDecode(top.id, &vec_mapped, &vec_decoded, &meta);
                             if (res == table::SegmentReader::FindResult::kFound) {
-                                if (state.input_segments[top.seg_idx]->IsQuantized()) {
+                                if (state.input_segments[top.seg_idx]->GetQuantType() != pomai::QuantizationType::kNone) {
                                     state.compact_buffers.push_back(std::move(vec_decoded));
                                     vec_mapped = std::span<const float>(state.compact_buffers.back());
                                 }
@@ -1182,7 +1043,6 @@ namespace pomai::core
                                     state.filepath = (fs::path(shard_dir_) / state.filename).string();
                                     state.builder = std::make_unique<table::SegmentBuilder>(state.filepath, dim_, index_params_, metric_);
                                 }
-                                std::cout << "TEST_DEBUG COMPACT PRE-ADD id: " << top.id << " vec_mapped[0]: " << vec_mapped[0] << std::endl;
                                 auto st = state.builder->Add(top.id, pomai::VectorView(vec_mapped), false, meta);
                                 if (!st.ok()) {
                                     complete_job(pomai::Status::Internal(std::string("Compact: SegmentBuilder::Add failed: ") + st.message()));
@@ -1274,7 +1134,11 @@ namespace pomai::core
             } else if (state.phase == BackgroundJob::Phase::kCleanup) {
                 for (const auto& old : state.old_segments) {
                     std::error_code ec;
-                    fs::remove(old->Path(), ec);
+                    std::string p = old->Path();
+                    fs::remove(p, ec);
+                    if (ec) {
+                        // POMAI_LOG_ERROR("Cleanup failed: {}", ec.message());
+                    }
                 }
                 state.phase = BackgroundJob::Phase::kPublish;
             } else if (state.phase == BackgroundJob::Phase::kPublish) {
@@ -1301,7 +1165,7 @@ namespace pomai::core
         
         auto snap = GetSnapshot();
         if (!snap) return pomai::Status::Aborted("shard not ready");
-        auto active = mem_.load(std::memory_order_acquire);
+        auto active = mem_;
 
         // Visibility is needed if we have updates across layers or multiple segments
         bool use_visibility = (active != nullptr && active->GetCount() > 0) || 
@@ -1346,8 +1210,7 @@ namespace pomai::core
             query_sums[q_idx] = s;
         }
 
-        // Process queries sequentially within this shard to avoid cache thrashing and oversubscription
-        // Parallelism comes from VectorEngine processing multiple shards at once.
+        // Sequential path (single-threaded event loop).
         for (uint32_t q_idx : query_indices) {
             std::span<const float> single_query(queries.data() + (q_idx * dim_), dim_);
             float q_sum = query_sums[q_idx];
@@ -1398,7 +1261,7 @@ namespace pomai::core
         // -------------------------
         // Phase 2: Parallel scoring over authoritative sources
         // -------------------------
-        std::atomic<std::uint64_t> scored_scanned{0};
+        std::uint64_t scored_scanned = 0;
         std::vector<pomai::SearchHit> candidates;
 
         bool has_filters = !opts.filters.empty();
@@ -1410,16 +1273,6 @@ namespace pomai::core
             effective_nprobe = std::min<uint32_t>(32u, effective_nprobe * 8); // Heuristic to avoid brute force
         }
         bool allow_fallback = true;
-        if (thread_pool_) {
-            const std::size_t threads = thread_pool_->Size();
-            const std::size_t pending = thread_pool_->Pending();
-            const bool low_end = threads <= 2;
-            const bool overloaded = pending > threads;
-            if (low_end || overloaded) {
-                effective_nprobe = std::max(1u, effective_nprobe / 2);
-                allow_fallback = false;
-            }
-        }
 
         auto score_memtable = [&](const std::shared_ptr<table::MemTable>& mem) {
             if (!mem) {
@@ -1455,7 +1308,7 @@ namespace pomai::core
             return std::make_pair(local.Drain(), local_scanned);
         };
 
-        std::atomic<uint64_t> total_scanned{0}; // Declared here as per instruction
+        std::uint64_t total_scanned = 0;
         auto score_segment = [&](const std::shared_ptr<table::SegmentReader>& seg) {
             const void* source = seg.get();
             LocalTopK local(topk);
@@ -1497,13 +1350,20 @@ namespace pomai::core
                                 local.Push(out_ids[i], -out_dists[i]);
                             }
                         }
-                        total_scanned.fetch_add(local_scanned, std::memory_order_relaxed);
+                        total_scanned += local_scanned;
                         return local.Drain();
                     }
                 }
-                if (seg->IsQuantized()) {
-                    float q_min = seg->GetQuantizer()->GetGlobalMin();
-                    float q_inv_scale = seg->GetQuantizer()->GetGlobalInvScale();
+                if (seg->GetQuantType() != pomai::QuantizationType::kNone) {
+                    const auto quant_type = seg->GetQuantType();
+                    float q_min = 0.0f;
+                    float q_inv_scale = 0.0f;
+                    if (quant_type == pomai::QuantizationType::kSq8) {
+                        auto* sq8 = static_cast<const core::ScalarQuantizer8Bit*>(seg->GetQuantizer());
+                        q_min = sq8->GetGlobalMin();
+                        q_inv_scale = sq8->GetGlobalInvScale();
+                    }
+
                     thread_local std::vector<uint32_t> cand_reuse;
                     cand_reuse.clear();
                     if (seg->Search(query, effective_nprobe, &cand_reuse).ok()) {
@@ -1513,10 +1373,24 @@ namespace pomai::core
                             const uint8_t* p = seg->GetBaseAddr() + seg->GetEntriesStartOffset() + idx * seg->GetEntrySize();
                             const uint8_t* codes_ptr = p + 12; // Assuming ID (8 bytes) + is_deleted (1 byte) + metadata_len (3 bytes) = 12 bytes offset
                             if (!(*(p+8) & 0x01)) { // not tombstone, assuming is_deleted is at offset 8
-                                local.Push(*(uint64_t*)p, pomai::core::DotSq8(query, std::span<const uint8_t>(codes_ptr, dim_), q_min, q_inv_scale, query_sum));
+                                float score = 0.0f;
+                                const bool is_ip = (this->metric_ == pomai::MetricType::kInnerProduct || this->metric_ == pomai::MetricType::kCosine);
+                                if (quant_type == pomai::QuantizationType::kSq8) {
+                                    score = pomai::core::DotSq8(query, std::span<const uint8_t>(codes_ptr, dim_), q_min, q_inv_scale, query_sum);
+                                    if (!is_ip) {
+                                        // TODO: Implement L2 for SQ8 or decode. For now IP only in fast path.
+                                    }
+                                } else if (quant_type == pomai::QuantizationType::kFp16) {
+                                    if (is_ip) {
+                                        score = pomai::core::DotFp16(query, {reinterpret_cast<const uint16_t*>(codes_ptr), dim_});
+                                    } else {
+                                        score = -pomai::core::L2SqFp16(query, {reinterpret_cast<const uint16_t*>(codes_ptr), dim_});
+                                    }
+                                }
+                                local.Push(*(uint64_t*)p, score);
                             }
                         }
-                        total_scanned.fetch_add(local_scanned, std::memory_order_relaxed);
+                        total_scanned += local_scanned;
                         return local.Drain();
                     }
                 }
@@ -1524,19 +1398,28 @@ namespace pomai::core
             
             thread_local std::vector<uint32_t> cand_idxs_reuse;
             cand_idxs_reuse.clear();
-            auto cand_status = seg->Search(query, effective_nprobe, &cand_idxs_reuse);
+            auto cand_status = pomai::Status::Ok();
+            if (seg->Count() >= index_params_.adaptive_threshold && seg->HasIndex()) {
+                cand_status = seg->Search(query, effective_nprobe, &cand_idxs_reuse);
+            }
             if (cand_status.ok() && !cand_idxs_reuse.empty()) {
                 std::sort(cand_idxs_reuse.begin(), cand_idxs_reuse.end());
                 cand_idxs_reuse.erase(std::unique(cand_idxs_reuse.begin(), cand_idxs_reuse.end()), cand_idxs_reuse.end());
 
-                if (cand_idxs_reuse.size() >= min_candidates || !allow_fallback) {
+                if (!cand_idxs_reuse.empty()) {
                     used_candidates = true;
                     pomai::Metadata local_meta;
                     pomai::Metadata* meta_ptr = has_filters ? &local_meta : nullptr;
                     
-                    if (seg->IsQuantized()) {
-                        float q_min = seg->GetQuantizer()->GetGlobalMin();
-                        float q_inv_scale = seg->GetQuantizer()->GetGlobalInvScale();
+                    if (seg->GetQuantType() != pomai::QuantizationType::kNone) {
+                        const auto quant_type = seg->GetQuantType();
+                        float q_min = 0.0f;
+                        float q_inv_scale = 0.0f;
+                        if (quant_type == pomai::QuantizationType::kSq8) {
+                            auto* sq8 = static_cast<const core::ScalarQuantizer8Bit*>(seg->GetQuantizer());
+                            q_min = sq8->GetGlobalMin();
+                            q_inv_scale = sq8->GetGlobalInvScale();
+                        }
 
                         for (const uint32_t entry_idx : cand_idxs_reuse) {
                             ++local_scanned;
@@ -1552,7 +1435,20 @@ namespace pomai::core
                             }
                             if (has_filters && !seg_mask.Test(entry_idx)) continue;
 
-                            float score = pomai::core::DotSq8(query, codes, q_min, q_inv_scale, query_sum);
+                            float score = 0.0f;
+                            const bool is_ip = (this->metric_ == pomai::MetricType::kInnerProduct || this->metric_ == pomai::MetricType::kCosine);
+                            if (quant_type == pomai::QuantizationType::kSq8) {
+                                score = pomai::core::DotSq8(query, codes, q_min, q_inv_scale, query_sum);
+                                if (!is_ip) {
+                                    // IP only for SQ8 for now.
+                                }
+                            } else if (quant_type == pomai::QuantizationType::kFp16) {
+                                if (is_ip) {
+                                    score = pomai::core::DotFp16(query, {reinterpret_cast<const uint16_t*>(codes.data()), codes.size()/2});
+                                } else {
+                                    score = -pomai::core::L2SqFp16(query, {reinterpret_cast<const uint16_t*>(codes.data()), codes.size()/2});
+                                }
+                            }
                             local.Push(id, score);
                         }
                     } else {
@@ -1623,40 +1519,28 @@ namespace pomai::core
                     });
                 }
             }
-            total_scanned.fetch_add(local_scanned, std::memory_order_relaxed);
+            total_scanned += local_scanned;
             return local.Drain();
         };
 
         {
             auto [hits, scanned] = score_memtable(active);
-            total_scanned.fetch_add(scanned, std::memory_order_relaxed);
+            total_scanned += scanned;
             candidates.insert(candidates.end(), hits.begin(), hits.end());
         }
 
         for (auto it = snap->frozen_memtables.rbegin(); it != snap->frozen_memtables.rend(); ++it) {
             auto [hits, scanned] = score_memtable(*it);
-            total_scanned.fetch_add(scanned, std::memory_order_relaxed);
+            total_scanned += scanned;
             candidates.insert(candidates.end(), hits.begin(), hits.end());
         }
 
-        std::vector<std::future<std::vector<pomai::SearchHit>>> futures;
-        futures.reserve(snap->segments.size());
         std::vector<std::vector<pomai::SearchHit>> segment_hits(snap->segments.size());
-
         for (std::size_t i = 0; i < snap->segments.size(); ++i) {
-            const auto& seg = snap->segments[i];
-            if (segment_pool_ && use_pool) {
-                futures.push_back(segment_pool_->Enqueue([&, seg]() { return score_segment(seg); }));
-            } else {
-                segment_hits[i] = score_segment(seg);
-            }
+            segment_hits[i] = score_segment(snap->segments[i]);
         }
 
-        for (std::size_t i = 0; i < futures.size(); ++i) {
-            segment_hits[i] = futures[i].get();
-        }
-
-        last_query_candidates_scanned_.fetch_add(total_scanned.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        last_query_candidates_scanned_ += total_scanned;
 
         for (const auto& hits : segment_hits) {
             candidates.insert(candidates.end(), hits.begin(), hits.end());

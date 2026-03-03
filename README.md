@@ -1,123 +1,123 @@
-# PomaiDB — Edge Vector Database
+# PomaiDB
 
-<div align="center">
-    <img src="./assets/logo.png" alt="PomaiDB Logo"/>
-</div>
+<img src="./assets/logo.png">
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![C++20](https://img.shields.io/badge/Standard-C%2B%2B20-red.svg)](https://en.cppreference.com/w/cpp/20)
-[![Platforms](https://img.shields.io/badge/Platforms-ARM64%20%7C%20x86__64-orange.svg)]()
-[![GitHub stars](https://img.shields.io/github/stars/AutoCookies/pomaidb?style=social)](https://github.com/AutoCookies/pomaidb)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**PomaiDB** is a **lean, high-performance embedded vector database** built in pure C++20 — designed specifically for **Edge AI** on resource-constrained devices: phones, Raspberry Pi, IoT boards, embedded systems, and even browsers via WASM.
+**The predictable vector database for the edge of things.**
 
-No servers. No cloud dependencies. No unnecessary layers.  
-Just fast, private, local vector search that runs directly on your device.
+PomaiDB is an **embedded, single-threaded vector database** written in C++20. It is built for environments where stability, hardware longevity, and deterministic behavior matter more than theoretical peak throughput. Single-threaded event-loop execution, zero-copy reads, and an append-only storage model keep your edge devices predictable—and your SD cards alive.
 
-> “A database should be like a Pomegranate: atomic grains of data, each protected by an immutable membrane.”
+---
 
-## 🎯 Purpose & Core Philosophy
+## Why PomaiDB?
 
-In the world of on-device AI, personal agents, offline RAG, and private long-term memory, existing vector databases are often too heavy, too server-oriented, or too memory-hungry.
+### SD-Card Savior
 
-**PomaiDB exists to solve exactly that problem:**
+Most databases punish flash storage with random writes. Wear leveling and write amplification on SD cards and eMMC lead to early failure and unpredictable latency. PomaiDB is designed around **append-only, log-structured storage**: new data is written sequentially at the tail. Deletes and updates are represented as tombstones. No random seeks, no in-place overwrites. **The I/O pattern your storage was built for.**
 
-- Be **truly embedded** — runs in-process, single binary, tiny footprint (~2–5 MB static possible)
-- Deliver **real-time performance** on low-power ARM64 hardware (Raspberry Pi, phones, Jetson Nano)
-- Guarantee **privacy & safety** — no network calls, crash-resilient, power-loss tolerant
-- Offer **zero-copy efficiency** — data moves from storage to search kernel without redundant copies
-- Stay **simple and predictable** — deterministic behavior, no background threads eating battery
+### Single-Threaded Sanity
 
-PomaiDB is built for developers who want **local-first, offline-capable AI** without compromising speed or reliability.
+No mutexes. No lock-free queues. No race conditions or deadlocks. PomaiDB runs a **strict single-threaded event loop**—similar in spirit to Redis or Node.js. Every operation (ingest, search, freeze, flush) runs to completion in order. You get deterministic latency, trivial reasoning about concurrency, and a hot path optimized for CPU cache locality without any locking overhead.
 
-## 💎 Key Design Pillars
+### Zero-OOM Guarantee
 
-- **Single-process embedded core** — no server, no external services
-- **Sharded actor model** — lock-free reads, dedicated writer per shard
-- **Atomic Freeze semantics** — readers always see a consistent, published snapshot
-- **Native ARM64 / NEON SIMD** — optimized brute-force distance computation
-- **Typed membranes** — `VECTOR` for embeddings, `RAG` for hybrid text + vector
-- **WAL + atomic manifest** — crash-safe, survives sudden power loss
-- **Minimal dependencies** — pure C++20 + CMake (FAISS optional for advanced indexing)
+PomaiDB integrates with **palloc**, a vector-first allocator that provides O(1) arena-style allocation and optional hard memory limits. Combined with the single-threaded design, you can bound memory usage and avoid the surprise OOMs that plague heap-heavy workloads on constrained devices.
 
-## ⚡ Quick Start (C++)
+---
+
+## Technical Highlights
+
+- **Architecture:** Shared-nothing, single-threaded event loop. One logical thread of execution; no worker threads, no thread pools in the core path.
+- **Storage:** Log-structured, append-only. Tombstone-based deletion; sequential flush of in-memory buffer to disk. Optional explicit `Flush()` from the application loop.
+- **Memory:** Powered by **palloc** (vector-first allocator). Arena-backed buffers for ingestion; optional hard limits for embedded and edge deployments.
+- **I/O:** Sequential write-behind; **mmap** zero-copy reads for persisted segments. Designed for SD-card and eMMC longevity first, NVMe-friendly by construction.
+- **Hardware:** Optimized for **ARM64** (Raspberry Pi, Orange Pi, Jetson) and **x64** servers. Single-threaded design avoids NUMA and core-pinning complexity.
+
+---
+
+## Installation & Usage
+
+### Build
+
+Requires a C++20 compiler and CMake 3.20+.
+
+```bash
+git clone --recursive https://github.com/YOUR_ORG/pomaidb.git
+cd pomaidb
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+```
+
+### Quick Start (C++20)
+
+Create a database, ingest vectors, and run a search. Vectors are written through an arena-backed buffer and, when you choose, flushed sequentially to disk.
 
 ```cpp
-#include <pomai/pomai.h>
+#include "pomai/pomai.h"
+#include <cstdio>
+#include <memory>
 #include <vector>
-#include <iostream>
 
 int main() {
     pomai::DBOptions opt;
-    opt.path = "./my-vault.pdb";
-    opt.dim = 384;                             // e.g. sentence-transformers/all-MiniLM-L6-v2
-    opt.shard_count = std::thread::hardware_concurrency();
+    opt.path = "/data/vectors";
+    opt.dim = 384;
+    opt.shard_count = 1;
+    opt.fsync = pomai::FsyncPolicy::kNever;
 
     std::unique_ptr<pomai::DB> db;
     auto st = pomai::DB::Open(opt, &db);
-    if (!st.ok()) {
-        std::cerr << "Open failed: " << st.ToString() << "\n";
-        return 1;
-    }
+    if (!st.ok()) return 1;
 
-    // Ingest a vector
-    std::vector<float> embedding(384, 0.42f); // your model output
-    db->Put(1337, embedding.data());
+    // Ingest: vectors are buffered in arena-backed storage
+    std::vector<float> vec(opt.dim, 0.1f);
+    st = db->Put(1, vec);
+    if (!st.ok()) return 1;
 
-    // Make data visible (atomic snapshot)
-    db->Freeze("__default__");
+    st = db->Put(2, vec);
+    if (!st.ok()) return 1;
 
-    // Search
-    pomai::SearchResult res;
-    db->Search(embedding.data(), 10, &res);
+    // Flush buffer to disk when you're ready (e.g. from your event loop)
+    st = db->Flush();
+    if (!st.ok()) return 1;
 
-    for (const auto& hit : res.hits) {
-        std::cout << "Hit: ID=" << hit.id << " | Score=" << hit.score << "\n";
-    }
+    // Freeze memtable to segment for search (optional; enables segment-based search)
+    st = db->Freeze("__default__");
+    if (!st.ok()) return 1;
 
+    // Query: zero-copy reads from mmap'd segments where possible
+    pomai::SearchResult result;
+    st = db->Search(vec, 5, &result);
+    if (!st.ok()) return 1;
+
+    for (const auto& hit : result.hits)
+        std::printf("id=%llu score=%.4f\n", static_cast<unsigned long long>(hit.id), hit.score);
+
+    db->Close();
     return 0;
 }
 ```
 
-## 🛡️ Why Edge-First Matters
-
-Most vector databases are built for cloud or powerful servers.  
-PomaiDB is built for **your device**:
-
-- Runs offline — no internet, no API keys
-- Survives battery death or sudden reboot
-- Minimizes SD card / flash wear (low write amplification)
-- Uses tiny memory footprint even with thousands of vectors
-- Optimized for ARM64 — native NEON for distance calculations
-
-## 📦 Build & Run
-
-```bash
-git clone https://github.com/AutoCookies/pomaidb
-cd pomaidb
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . -j
-```
-
-Run tests:
-```bash
-ctest
-```
-
-## 🤝 Contributing
-
-We welcome every idea that helps make PomaiDB more stable, faster, and more useful on real edge hardware.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
-
-## 📜 License
-
-Apache License 2.0 — free to use, modify, and distribute.
+Link against the PomaiDB static library and, when using the palloc integration, the palloc library. See the repository's build instructions for details.
 
 ---
 
-<p align="center">
-Made with ❤️ for builders who want <b>private, fast, local AI</b> on every device.<br/>
-<b>Star ⭐ if you're building the future of Edge AI!</b>
-</p>
+## Use Cases
+
+- **Camera & object detection:** Embed frames or crops, run similarity search on-device. Single-threaded ingestion fits naturally into a camera pipeline; append-only storage avoids wearing out SD cards in 24/7 deployments.
+- **Edge RAG:** Ingest document chunks and embeddings on the device; run retrieval-augmented generation with local vector search. Bounded memory and deterministic latency simplify deployment on Raspberry Pi, Orange Pi, and Jetson.
+- **Offline semantic search:** Index documents or media on a NAS or edge node. Sequential writes and mmap reads are friendly to both SSDs and consumer flash; no need for a separate search server.
+
+---
+
+## Discovery Tags
+
+**Keywords:** embedded vector database, single-threaded, C++20, append-only, log-structured, zero-copy, mmap, palloc, edge AI, IoT, Raspberry Pi, Orange Pi, Jetson, ARM64, SD card longevity, vector search, similarity search, RAG, semantic search.
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.

@@ -6,8 +6,8 @@
 // Seqlock protects readers.
 
 #include "table/memtable.h"
+#include "palloc_compat.h"
 #include <cstring>
-#include <mutex>
 
 namespace pomai::table {
 
@@ -16,24 +16,39 @@ static std::size_t AlignUp(std::size_t x, std::size_t a) {
 }
 
 void* Arena::Allocate(std::size_t n, std::size_t align) {
+    constexpr std::size_t kBlockAlign = 64;
     if (blocks_.empty() || AlignUp(blocks_.back().used, align) + n > block_bytes_) {
         Block b;
-        b.mem  = std::make_unique<std::byte[]>(block_bytes_);
+        if (heap_) {
+            b.mem = static_cast<std::byte*>(palloc_heap_malloc_aligned(heap_, block_bytes_, kBlockAlign));
+        } else {
+            b.mem = static_cast<std::byte*>(palloc_malloc_aligned(block_bytes_, kBlockAlign));
+        }
         b.used = 0;
-        blocks_.push_back(std::move(b));
+        blocks_.push_back(b);
     }
     auto& blk  = blocks_.back();
     blk.used   = AlignUp(blk.used, align);
-    void* p    = blk.mem.get() + blk.used;
+    void* p    = blk.mem + blk.used;
     blk.used  += n;
     return p;
+}
+
+void Arena::Clear() {
+    for (auto& b : blocks_) {
+        if (b.mem) {
+            palloc_free(b.mem);
+            b.mem = nullptr;
+        }
+    }
+    blocks_.clear();
 }
 
 // ------------------------------------------------
 // MemTable constructor
 // ------------------------------------------------
-MemTable::MemTable(std::uint32_t dim, std::size_t arena_block_bytes)
-    : dim_(dim), arena_(arena_block_bytes),
+MemTable::MemTable(std::uint32_t dim, std::size_t arena_block_bytes, palloc_heap_t* heap)
+    : dim_(dim), arena_(arena_block_bytes, heap),
       map_(/* initial_cap = */ 128)
 {}
 
@@ -60,12 +75,9 @@ pomai::Status MemTable::Put(pomai::VectorId id, pomai::VectorView vec,
     map_.Put(id, dst);
     seqlock_.EndWrite();
 
-    // Metadata is rare — use its own shared_mutex.
     if (!meta.tenant.empty()) {
-        std::unique_lock lk(meta_mu_);
         metadata_[id] = meta;
     } else {
-        std::unique_lock lk(meta_mu_);
         metadata_.erase(id);
     }
     return pomai::Status::Ok();
@@ -110,10 +122,7 @@ pomai::Status MemTable::Delete(pomai::VectorId id) {
     map_.Put(id, nullptr); // nullptr = tombstone
     seqlock_.EndWrite();
 
-    {
-        std::unique_lock lk(meta_mu_);
-        metadata_.erase(id);
-    }
+    metadata_.erase(id);
     return pomai::Status::Ok();
 }
 
@@ -147,7 +156,6 @@ pomai::Status MemTable::Get(pomai::VectorId id, const float** out_vec,
     *out_vec = ptr;
 
     if (out_meta) {
-        std::shared_lock lk(meta_mu_);
         auto it = metadata_.find(id);
         *out_meta = (it != metadata_.end()) ? it->second : pomai::Metadata{};
     }
@@ -162,10 +170,7 @@ void MemTable::Clear() {
     map_.Clear();
     seqlock_.EndWrite();
 
-    {
-        std::unique_lock lk(meta_mu_);
-        metadata_.clear();
-    }
+    metadata_.clear();
     arena_.Clear();
 }
 
@@ -197,7 +202,6 @@ bool MemTable::Cursor::Next(CursorEntry* out) {
 
     const pomai::Metadata* meta_ptr = nullptr;
     if (!is_deleted) {
-        std::shared_lock lk(mem_->meta_mu_);
         auto it = mem_->metadata_.find(e.id);
         if (it != mem_->metadata_.end()) meta_ptr = &it->second;
     }

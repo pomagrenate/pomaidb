@@ -3,7 +3,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <thread>
 #include <vector>
 
 #include "core/shard/runtime.h"
@@ -39,40 +38,23 @@ namespace
 
     auto mem = std::make_unique<pomai::table::MemTable>(dim, /*arena_block_bytes*/ (1u << 20));
 
-    // replay nếu có dữ liệu cũ (test idempotent)
     POMAI_EXPECT_OK(wal->ReplayInto(*mem));
 
     pomai::core::ShardRuntime rt(shard_id, path, dim, pomai::MembraneKind::kVector, pomai::MetricType::kL2, std::move(wal),
-                                 std::move(mem), /*mailbox_cap*/ (1u << 14), pomai::IndexParams{});
+                                 std::move(mem), pomai::IndexParams{});
     POMAI_EXPECT_OK(rt.Start());
 
+    // Single-threaded: sequential puts (no worker thread, no Enqueue).
     constexpr int kThreads = 4;
     constexpr int kOps = 2000;
 
-    std::vector<std::jthread> th;
-    th.reserve(kThreads);
-
-    for (int t = 0; t < kThreads; ++t)
-    {
-      th.emplace_back([&, t]
-                      {
-                for (int i = 0; i < kOps; ++i)
-                {
-                    const pomai::VectorId id = static_cast<pomai::VectorId>(t * 1'000'000 + i);
-                    auto v = MakeVec(dim, static_cast<float>(id % 1000) * 0.01f);
-
-                    pomai::core::PutCmd c;
-                    c.id = id;
-                    c.vec = pomai::VectorView(v.data(), dim);
-
-                    auto fut = c.done.get_future();
-                    POMAI_EXPECT_OK(rt.Enqueue(pomai::core::Command{std::move(c)}));
-                    POMAI_EXPECT_OK(fut.get());
-                } });
+    for (int t = 0; t < kThreads; ++t) {
+      for (int i = 0; i < kOps; ++i) {
+        const pomai::VectorId id = static_cast<pomai::VectorId>(t * 1'000'000 + i);
+        auto v = MakeVec(dim, static_cast<float>(id % 1000) * 0.01f);
+        POMAI_EXPECT_OK(rt.Put(id, v));
+      }
     }
-
-    for (auto &t : th)
-      t.join();
 
     // Search sanity
     auto q = MakeVec(dim, 0.0f);
