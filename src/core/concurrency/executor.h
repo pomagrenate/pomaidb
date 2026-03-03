@@ -1,4 +1,4 @@
-// executor.h — Shard-local task executor with "Gentle Yielding".
+// executor.h — Runtime-local task executor with "Gentle Yielding".
 // Inspired by ScyllaDB's stall-free patterns.
 // Copyright 2026 PomaiDB authors. MIT License.
 

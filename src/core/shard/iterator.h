@@ -8,15 +8,15 @@
 
 namespace pomai::core
 {
-    // ShardIterator: Concrete implementation of SnapshotIterator
+    // VectorIterator: Concrete implementation of SnapshotIterator
     //
     // Iterates over frozen memtables + segments in newest-first order.
     // Tracks seen IDs to skip duplicates and tombstones.
     
-    class ShardIterator : public SnapshotIterator
+    class VectorIterator : public SnapshotIterator
     {
     public:
-        explicit ShardIterator(std::shared_ptr<ShardSnapshot> snapshot);
+        explicit VectorIterator(std::shared_ptr<VectorSnapshot> snapshot);
 
         bool Next() override;
         VectorId id() const override;
@@ -25,7 +25,7 @@ namespace pomai::core
 
     private:
         // Snapshot (holds frozen memtables + segments)
-        std::shared_ptr<ShardSnapshot> snapshot_;
+        std::shared_ptr<VectorSnapshot> snapshot_;
 
         // Current position
         enum class Source { FROZEN_MEM, SEGMENT, DONE };

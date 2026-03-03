@@ -5,7 +5,7 @@
 
 namespace pomai::core
 {
-    ShardIterator::ShardIterator(std::shared_ptr<ShardSnapshot> snapshot)
+    VectorIterator::VectorIterator(std::shared_ptr<VectorSnapshot> snapshot)
         : snapshot_(std::move(snapshot)),
           source_(Source::FROZEN_MEM),
           source_idx_(0),
@@ -16,7 +16,7 @@ namespace pomai::core
         AdvanceToNextLive();
     }
 
-    bool ShardIterator::Next()
+    bool VectorIterator::Next()
     {
         if (!Valid()) return false;
         
@@ -30,17 +30,17 @@ namespace pomai::core
         return Valid();
     }
 
-    VectorId ShardIterator::id() const
+    VectorId VectorIterator::id() const
     {
         return current_id_;
     }
 
-    std::span<const float> ShardIterator::vector() const
+    std::span<const float> VectorIterator::vector() const
     {
         return current_vec_;
     }
 
-    bool ShardIterator::Valid() const
+    bool VectorIterator::Valid() const
     {
         return source_ != Source::DONE;
     }
@@ -49,7 +49,7 @@ namespace pomai::core
     // Private Helpers
     // -------------------------
 
-    void ShardIterator::AdvanceToNextLive()
+    void VectorIterator::AdvanceToNextLive()
     {
         while (true) {
             // Try to read from current source
@@ -92,7 +92,7 @@ namespace pomai::core
         }
     }
 
-    bool ShardIterator::TryReadFromFrozenMem()
+    bool VectorIterator::TryReadFromFrozenMem()
     {
         // Newest-first: live_memtable (if set), then frozen_memtables[0], [1], ...
         const bool has_live = snapshot_->live_memtable != nullptr;
@@ -133,7 +133,7 @@ namespace pomai::core
         }
     }
 
-    bool ShardIterator::TryReadFromSegment()
+    bool VectorIterator::TryReadFromSegment()
     {
         // Iterate through segments (newest first)
         while (source_idx_ < snapshot_->segments.size()) {

@@ -13,8 +13,8 @@
 namespace pomai::core::memory {
 
 /**
- * LocalPool: A specialized, per-shard memory pool.
- * Enhanced to use shard-private palloc heaps for zero-contention allocation.
+ * LocalPool: Runtime-local memory pool.
+ * Uses runtime-private palloc heaps for zero-contention allocation.
  */
 class LocalPool {
 public:
@@ -71,7 +71,7 @@ public:
 
 private:
     void AllocateNewSlab() {
-        // Allocate slab from the shard's private heap
+        // Allocate slab from the runtime's private heap
         void* slab = nullptr;
         if (heap_) {
             slab = palloc_heap_malloc_aligned(heap_, kSlabSize, 64);
@@ -88,9 +88,9 @@ private:
 };
 
 /**
- * ShardMemoryManager: High-level wrapper for shard-local memory resources.
+ * RuntimeMemoryManager: High-level wrapper for runtime-local memory resources.
  */
-class ShardMemoryManager {
+class RuntimeMemoryManager {
 public:
     void Initialize(palloc_heap_t* heap) {
         task_pool_.SetHeap(heap);

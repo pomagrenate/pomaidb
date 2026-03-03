@@ -131,7 +131,7 @@ namespace pomai::storage
             
             // Directory fsync for rename durability?
             // The caller (Manifest logic) should probably handle dir fsync or we do it here.
-            // ShardManifest::Commit does dir fsync. Global manifest should too.
+            // SegmentManifest::Commit does dir fsync. Global manifest should too.
             // Getting parent dir:
             fs::path p(final_path);
             return pomai::util::FsyncDir(p.parent_path().string());

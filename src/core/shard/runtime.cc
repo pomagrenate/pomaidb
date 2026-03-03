@@ -141,7 +141,7 @@ namespace pomai::core
             std::priority_queue<pomai::SearchHit, std::vector<pomai::SearchHit>, WorseHit> heap_;
         };
 
-    struct ShardRuntime::BackgroundJob {
+    struct VectorRuntime::BackgroundJob {
         enum class Type {
             kFreeze,
             kCompact
@@ -218,16 +218,16 @@ namespace pomai::core
         std::variant<FreezeState, CompactState> state;
     };
 
-    ShardRuntime::ShardRuntime(std::uint32_t shard_id,
-                               std::string shard_dir,
+    VectorRuntime::VectorRuntime(std::uint32_t runtime_id,
+                               std::string data_dir,
                                std::uint32_t dim,
                                pomai::MembraneKind kind,
                                pomai::MetricType metric,
                                std::unique_ptr<storage::Wal> wal,
                                std::unique_ptr<table::MemTable> mem,
                                const pomai::IndexParams& index_params)
-        : shard_id_(shard_id),
-          shard_dir_(std::move(shard_dir)),
+        : runtime_id_(runtime_id),
+          data_dir_(std::move(data_dir)),
           dim_(dim),
           kind_(kind),
           metric_(metric),
@@ -243,7 +243,7 @@ namespace pomai::core
         compaction_manager_ = std::make_unique<storage::CompactionManager>();
     }
 
-    ShardRuntime::~ShardRuntime()
+    VectorRuntime::~VectorRuntime()
     {
         if (started_ && palloc_heap_) {
             palloc_heap_delete(palloc_heap_);
@@ -252,10 +252,10 @@ namespace pomai::core
         started_ = false;
     }
 
-    ShardStats ShardRuntime::GetStats() const noexcept
+    RuntimeStats VectorRuntime::GetStats() const noexcept
     {
-        ShardStats s;
-        s.shard_id          = shard_id_;
+        RuntimeStats s;
+        s.runtime_id        = runtime_id_;
         s.ops_processed     = ops_processed_;
         s.queue_depth       = 0u;
         s.candidates_scanned = last_query_candidates_scanned_;
@@ -275,7 +275,7 @@ namespace pomai::core
         return s;
     }
 
-    pomai::Status ShardRuntime::Start()
+    pomai::Status VectorRuntime::Start()
     {
         if (started_)
             return pomai::Status::Busy("shard already started");
@@ -299,17 +299,17 @@ namespace pomai::core
         return pomai::Status::Ok();
     }
 
-    pomai::Status ShardRuntime::LoadSegments()
+    pomai::Status VectorRuntime::LoadSegments()
     {
         std::vector<std::string> seg_names;
-        auto st = ShardManifest::Load(shard_dir_, &seg_names);
+        auto st = SegmentManifest::Load(data_dir_, &seg_names);
         if (!st.ok()) return st;
         
-        POMAI_LOG_INFO("[shard:{}] Loading {} segments from {}", shard_id_, seg_names.size(), shard_dir_);
+        POMAI_LOG_INFO("[runtime:{}] Loading {} segments from {}", runtime_id_, seg_names.size(), data_dir_);
         
         segments_.clear();
         for (const auto& name : seg_names) {
-            std::string path = (fs::path(shard_dir_) / name).string();
+            std::string path = (fs::path(data_dir_) / name).string();
             std::unique_ptr<table::SegmentReader> reader;
             st = table::SegmentReader::Open(path, &reader);
             if (!st.ok()) return st;
@@ -323,9 +323,9 @@ namespace pomai::core
     // -------------------------
     // Snapshot & Rotation
     // -------------------------
-    void ShardRuntime::PublishSnapshot()
+    void VectorRuntime::PublishSnapshot()
     {
-        auto snap = std::make_shared<ShardSnapshot>();
+        auto snap = std::make_shared<VectorSnapshot>();
         snap->version = next_snapshot_version_++;
         snap->created_at = std::chrono::steady_clock::now();
         
@@ -348,7 +348,7 @@ namespace pomai::core
         current_snapshot_ = snap;
     }
 
-    pomai::Status ShardRuntime::RotateMemTable()
+    pomai::Status VectorRuntime::RotateMemTable()
     {
         if (mem_->GetCount() == 0) return pomai::Status::Ok();
         frozen_mem_.push_back(mem_);
@@ -361,12 +361,12 @@ namespace pomai::core
     // Sync wrappers
     // -------------------------
 
-    pomai::Status ShardRuntime::Put(pomai::VectorId id, std::span<const float> vec)
+    pomai::Status VectorRuntime::Put(pomai::VectorId id, std::span<const float> vec)
     {
         return Put(id, vec, pomai::Metadata());
     }
 
-    pomai::Status ShardRuntime::Put(pomai::VectorId id, std::span<const float> vec, const pomai::Metadata& meta)
+    pomai::Status VectorRuntime::Put(pomai::VectorId id, std::span<const float> vec, const pomai::Metadata& meta)
     {
         if (kind_ != pomai::MembraneKind::kVector) {
             return pomai::Status::InvalidArgument("VECTOR membrane required for Put");
@@ -386,7 +386,7 @@ namespace pomai::core
     }
 // ... (BatchPut skipped) ...
 
-    pomai::Status ShardRuntime::HandlePut(PutCmd &c)
+    pomai::Status VectorRuntime::HandlePut(PutCmd &c)
     {
         if (kind_ != pomai::MembraneKind::kVector) {
             return pomai::Status::InvalidArgument("VECTOR membrane required for Put");
@@ -416,7 +416,7 @@ namespace pomai::core
         return pomai::Status::Ok();
     }
 
-    pomai::Status ShardRuntime::PutBatch(const std::vector<pomai::VectorId>& ids,
+    pomai::Status VectorRuntime::PutBatch(const std::vector<pomai::VectorId>& ids,
                                           const std::vector<std::span<const float>>& vectors)
     {
         if (kind_ != pomai::MembraneKind::kVector) {
@@ -443,7 +443,7 @@ namespace pomai::core
         return st;
     }
 
-    pomai::Status ShardRuntime::Delete(pomai::VectorId id)
+    pomai::Status VectorRuntime::Delete(pomai::VectorId id)
     {
         if (!started_)
             return pomai::Status::Aborted("shard not started");
@@ -454,12 +454,12 @@ namespace pomai::core
         return st;
     }
 
-    pomai::Status ShardRuntime::Get(pomai::VectorId id, std::vector<float> *out)
+    pomai::Status VectorRuntime::Get(pomai::VectorId id, std::vector<float> *out)
     {
         return Get(id, out, nullptr);
     }
 
-    pomai::Status ShardRuntime::Get(pomai::VectorId id, std::vector<float> *out, pomai::Metadata* out_meta)
+    pomai::Status VectorRuntime::Get(pomai::VectorId id, std::vector<float> *out, pomai::Metadata* out_meta)
     {
         if (!out) return Status::InvalidArgument("out is null");
 
@@ -483,7 +483,7 @@ namespace pomai::core
 
     // ... Exists ...
 
-    pomai::Status ShardRuntime::GetFromSnapshot(std::shared_ptr<ShardSnapshot> snap, pomai::VectorId id, std::vector<float> *out, pomai::Metadata* out_meta) {
+    pomai::Status VectorRuntime::GetFromSnapshot(std::shared_ptr<VectorSnapshot> snap, pomai::VectorId id, std::vector<float> *out, pomai::Metadata* out_meta) {
         const auto lookup = LookupById(nullptr, snap, id, dim_);
         if (lookup.state == LookupState::kTombstone) {
             return Status::NotFound("tombstone");
@@ -498,7 +498,7 @@ namespace pomai::core
         return Status::NotFound("vector not found");
     }
 
-    pomai::Status ShardRuntime::Exists(pomai::VectorId id, bool *exists)
+    pomai::Status VectorRuntime::Exists(pomai::VectorId id, bool *exists)
     {
         if (!exists) return Status::InvalidArgument("exists is null");
 
@@ -513,12 +513,12 @@ namespace pomai::core
 
 
 
-    std::pair<pomai::Status, bool> ShardRuntime::ExistsInSnapshot(std::shared_ptr<ShardSnapshot> snap, pomai::VectorId id) {
+    std::pair<pomai::Status, bool> VectorRuntime::ExistsInSnapshot(std::shared_ptr<VectorSnapshot> snap, pomai::VectorId id) {
         const auto lookup = LookupById(nullptr, snap, id, dim_);
         return {Status::Ok(), lookup.state == LookupState::kFound};
     }
 
-    pomai::Status ShardRuntime::GetSemanticPointer(std::shared_ptr<ShardSnapshot> snap, pomai::VectorId id, pomai::SemanticPointer* out) {
+    pomai::Status VectorRuntime::GetSemanticPointer(std::shared_ptr<VectorSnapshot> snap, pomai::VectorId id, pomai::SemanticPointer* out) {
         if (!snap) return pomai::Status::InvalidArgument("snapshot null");
         // Look in segments only since memtables are not zero-copy aligned
         for (const auto& seg : snap->segments) {
@@ -542,14 +542,14 @@ namespace pomai::core
         return pomai::Status::NotFound("vector not in segments (might be in memtable or deleted)");
     }
 
-    pomai::Status ShardRuntime::Flush()
+    pomai::Status VectorRuntime::Flush()
     {
         if (!started_) return pomai::Status::Aborted("shard not started");
         FlushCmd c;
         return HandleFlush(c);
     }
 
-    pomai::Status ShardRuntime::Freeze()
+    pomai::Status VectorRuntime::Freeze()
     {
         if (!started_) return pomai::Status::Aborted("shard not started");
         FreezeCmd c;
@@ -557,7 +557,7 @@ namespace pomai::core
         return st.has_value() ? *st : pomai::Status::Aborted("freeze not completed");
     }
 
-    pomai::Status ShardRuntime::Compact()
+    pomai::Status VectorRuntime::Compact()
     {
         if (!started_) return pomai::Status::Aborted("shard not started");
         CompactCmd c;
@@ -565,7 +565,7 @@ namespace pomai::core
         return st.has_value() ? *st : pomai::Status::Aborted("compact not completed");
     }
 
-    pomai::Status ShardRuntime::NewIterator(std::unique_ptr<pomai::SnapshotIterator>* out)
+    pomai::Status VectorRuntime::NewIterator(std::unique_ptr<pomai::SnapshotIterator>* out)
     {
         if (!started_) return pomai::Status::Aborted("shard not started");
         IteratorCmd cmd;
@@ -576,21 +576,21 @@ namespace pomai::core
         return pomai::Status::Ok();
     }
 
-    pomai::Status ShardRuntime::NewIterator(std::shared_ptr<ShardSnapshot> snap, std::unique_ptr<pomai::SnapshotIterator>* out)
+    pomai::Status VectorRuntime::NewIterator(std::shared_ptr<VectorSnapshot> snap, std::unique_ptr<pomai::SnapshotIterator>* out)
     {
-        *out = std::make_unique<ShardIterator>(std::move(snap));
+        *out = std::make_unique<VectorIterator>(std::move(snap));
         return pomai::Status::Ok();
     }
 
     // LOCK-FREE SEARCH
-    pomai::Status ShardRuntime::Search(std::span<const float> query,
+    pomai::Status VectorRuntime::Search(std::span<const float> query,
                                        std::uint32_t topk,
                                        std::vector<pomai::SearchHit> *out)
     {
         return Search(query, topk, SearchOptions{}, out);
     }
 
-    pomai::Status ShardRuntime::Search(std::span<const float> query,
+    pomai::Status VectorRuntime::Search(std::span<const float> query,
                                        std::uint32_t topk,
                                        const SearchOptions& opts,
                                        std::vector<pomai::SearchHit> *out)
@@ -621,7 +621,7 @@ namespace pomai::core
 
 
 
-    pomai::Status ShardRuntime::HandleBatchPut(BatchPutCmd &c)
+    pomai::Status VectorRuntime::HandleBatchPut(BatchPutCmd &c)
     {
         if (kind_ != pomai::MembraneKind::kVector) {
             return pomai::Status::InvalidArgument("VECTOR membrane required for PutBatch");
@@ -656,7 +656,7 @@ namespace pomai::core
     
     // HandleGet and HandleExists removed.
 
-    pomai::Status ShardRuntime::HandleDel(DelCmd &c)
+    pomai::Status VectorRuntime::HandleDel(DelCmd &c)
     {
         auto st = wal_->AppendDelete(c.id);
         if (!st.ok())
@@ -681,9 +681,9 @@ namespace pomai::core
         return pomai::Status::Ok();
     }
 
-    pomai::Status ShardRuntime::HandleFlush(FlushCmd &)
+    pomai::Status VectorRuntime::HandleFlush(FlushCmd &)
     {
-        POMAI_LOG_INFO("[shard:{}] Flushing memtables to segment", shard_id_);
+        POMAI_LOG_INFO("[runtime:{}] Flushing memtables to segment", runtime_id_);
         return wal_->Flush();
     }
 
@@ -691,7 +691,7 @@ namespace pomai::core
     // HandleFreeze: Budgeted background freeze pipeline
     // -------------------------
 
-    std::optional<pomai::Status> ShardRuntime::HandleFreeze(FreezeCmd &c)
+    std::optional<pomai::Status> VectorRuntime::HandleFreeze(FreezeCmd &c)
     {
         if (background_job_) {
             return pomai::Status::Busy("background job already running");
@@ -726,9 +726,9 @@ namespace pomai::core
     // HandleCompact: Budgeted background compaction
     // -------------------------
 
-    std::optional<pomai::Status> ShardRuntime::HandleCompact(CompactCmd & c)
+    std::optional<pomai::Status> VectorRuntime::HandleCompact(CompactCmd & c)
     {
-        POMAI_LOG_INFO("[shard:{}] Starting background compaction", shard_id_);
+        POMAI_LOG_INFO("[runtime:{}] Starting background compaction", runtime_id_);
         if (background_job_) return std::nullopt; // Keep in queue
 
         // 1. Calculate stats for compaction manager
@@ -771,7 +771,7 @@ namespace pomai::core
         return last_background_result_.has_value() ? last_background_result_ : std::optional<pomai::Status>(pomai::Status::Ok());
     }
 
-    IteratorReply ShardRuntime::HandleIterator(IteratorCmd &c)
+    IteratorReply VectorRuntime::HandleIterator(IteratorCmd &c)
     {
         (void)c;  // unused parameter
         
@@ -785,9 +785,9 @@ namespace pomai::core
 
         // Include live memtable in the iterator view so unflushed data is visible.
         // Otherwise NewIterator() would see 0 vectors when all data is still in mem_.
-        std::shared_ptr<ShardSnapshot> snapshot;
+        std::shared_ptr<VectorSnapshot> snapshot;
         if (mem_ && mem_->GetCount() > 0) {
-            snapshot = std::make_shared<ShardSnapshot>();
+            snapshot = std::make_shared<VectorSnapshot>();
             snapshot->version = base->version;
             snapshot->created_at = base->created_at;
             snapshot->segments = base->segments;
@@ -797,14 +797,14 @@ namespace pomai::core
             snapshot = base;
         }
         
-        auto shard_iter = std::make_unique<ShardIterator>(snapshot);
+        auto shard_iter = std::make_unique<VectorIterator>(snapshot);
         IteratorReply reply;
         reply.st = pomai::Status::Ok();
         reply.iterator = std::move(shard_iter);
         return reply;
     }
 
-    SearchReply ShardRuntime::HandleSearch(SearchCmd &c)
+    SearchReply VectorRuntime::HandleSearch(SearchCmd &c)
     {
         SearchReply r;
         auto snap = GetSnapshot();
@@ -822,14 +822,14 @@ namespace pomai::core
         return r;
     }
 
-    void ShardRuntime::CancelBackgroundJob(const std::string& reason)
+    void VectorRuntime::CancelBackgroundJob(const std::string& reason)
     {
         if (!background_job_) return;
         last_background_result_ = pomai::Status::Aborted(reason);
         background_job_.reset();
     }
 
-    void ShardRuntime::PumpBackgroundWork(std::chrono::milliseconds budget)
+    void VectorRuntime::PumpBackgroundWork(std::chrono::milliseconds budget)
     {
         if (!background_job_) {
             return;
@@ -854,7 +854,7 @@ namespace pomai::core
                 }
                 if (state.phase == BackgroundJob::Phase::kBuild) {
                     if (state.mem_index >= state.memtables.size()) {
-                        // std::cout << "[ShardRuntime] Freeze: Switching to CommitManifest" << std::endl;
+                        // std::cout << "[VectorRuntime] Freeze: Switching to CommitManifest" << std::endl;
                         state.phase = BackgroundJob::Phase::kCommitManifest;
                         continue;
                     }
@@ -881,7 +881,7 @@ namespace pomai::core
                         state.filename = "seg_" + std::to_string(now) + "_" +
                                          std::to_string(state.mem_index) + "_" +
                                          std::to_string(state.segment_part) + ".dat";
-                        state.filepath = (fs::path(shard_dir_) / state.filename).string();
+                        state.filepath = (fs::path(data_dir_) / state.filename).string();
                         state.builder = std::make_unique<table::SegmentBuilder>(state.filepath, dim_, index_params_, metric_);
                     }
 
@@ -904,12 +904,12 @@ namespace pomai::core
                     bg_budget.Consume();
 
                     if (state.builder->Count() >= kMaxSegmentEntries) {
-                        // std::cout << "[ShardRuntime] Freeze: Segment full, finalizing" << std::endl;
+                        // std::cout << "[VectorRuntime] Freeze: Segment full, finalizing" << std::endl;
                         state.memtable_done_after_finalize = false;
                         state.phase = BackgroundJob::Phase::kFinalizeSegment;
                     }
                 } else if (state.phase == BackgroundJob::Phase::kFinalizeSegment) {
-                    // std::cout << "[ShardRuntime] Freeze: Finalizing segment..." << std::endl;
+                    // std::cout << "[VectorRuntime] Freeze: Finalizing segment..." << std::endl;
                     auto st = state.builder->BuildIndex();
                     if (!st.ok()) {
                         complete_job(pomai::Status::Internal(std::string("Freeze: BuildIndex failed: ") + st.message()));
@@ -920,7 +920,7 @@ namespace pomai::core
                         complete_job(pomai::Status::Internal(std::string("Freeze: SegmentBuilder::Finish failed: ") + st.message()));
                         return;
                     }
-                    st = pomai::util::FsyncDir(shard_dir_);
+                    st = pomai::util::FsyncDir(data_dir_);
                     if (!st.ok()) {
                         complete_job(pomai::Status::Internal(std::string("Freeze: FsyncDir after segment failed: ") + st.message()));
                         return;
@@ -950,9 +950,9 @@ namespace pomai::core
                     }
 
                     std::vector<std::string> seg_names;
-                    auto st = ShardManifest::Load(shard_dir_, &seg_names);
+                    auto st = SegmentManifest::Load(data_dir_, &seg_names);
                     if (!st.ok()) {
-                        complete_job(pomai::Status::Internal(std::string("Freeze: ShardManifest::Load failed: ") + st.message()));
+                        complete_job(pomai::Status::Internal(std::string("Freeze: SegmentManifest::Load failed: ") + st.message()));
                         return;
                     }
 
@@ -960,9 +960,9 @@ namespace pomai::core
                         seg_names.insert(seg_names.begin(), it->filename);
                     }
 
-                    st = ShardManifest::Commit(shard_dir_, seg_names);
+                    st = SegmentManifest::Commit(data_dir_, seg_names);
                     if (!st.ok()) {
-                        complete_job(pomai::Status::Internal(std::string("Freeze: ShardManifest::Commit failed: ") + st.message()));
+                        complete_job(pomai::Status::Internal(std::string("Freeze: SegmentManifest::Commit failed: ") + st.message()));
                         return;
                     }
                     state.phase = BackgroundJob::Phase::kInstall;
@@ -1040,7 +1040,7 @@ namespace pomai::core
                                     auto sys_now = std::chrono::system_clock::now().time_since_epoch().count();
                                     state.filename = "seg_" + std::to_string(sys_now) + "_compacted_" +
                                                      std::to_string(state.segment_part) + ".dat";
-                                    state.filepath = (fs::path(shard_dir_) / state.filename).string();
+                                    state.filepath = (fs::path(data_dir_) / state.filename).string();
                                     state.builder = std::make_unique<table::SegmentBuilder>(state.filepath, dim_, index_params_, metric_);
                                 }
                                 auto st = state.builder->Add(top.id, pomai::VectorView(vec_mapped), false, meta);
@@ -1095,7 +1095,7 @@ namespace pomai::core
                     complete_job(pomai::Status::Internal(std::string("Compact: SegmentBuilder::Finish failed: ") + st.message()));
                     return;
                 }
-                st = pomai::util::FsyncDir(shard_dir_);
+                st = pomai::util::FsyncDir(data_dir_);
                 if (!st.ok()) {
                     complete_job(pomai::Status::Internal(std::string("Compact: FsyncDir after segment failed: ") + st.message()));
                     return;
@@ -1119,9 +1119,9 @@ namespace pomai::core
                 for (auto it = state.built_segments.rbegin(); it != state.built_segments.rend(); ++it) {
                     seg_names.push_back(it->filename);
                 }
-                auto st = ShardManifest::Commit(shard_dir_, seg_names);
+                auto st = SegmentManifest::Commit(data_dir_, seg_names);
                 if (!st.ok()) {
-                    complete_job(pomai::Status::Internal(std::string("Compact: ShardManifest::Commit failed: ") + st.message()));
+                    complete_job(pomai::Status::Internal(std::string("Compact: SegmentManifest::Commit failed: ") + st.message()));
                     return;
                 }
                 state.phase = BackgroundJob::Phase::kInstall;
@@ -1153,7 +1153,7 @@ namespace pomai::core
         }
     }
 
-    pomai::Status ShardRuntime::SearchBatchLocal(std::span<const float> queries,
+    pomai::Status VectorRuntime::SearchBatchLocal(std::span<const float> queries,
                                                  const std::vector<uint32_t>& query_indices,
                                                  std::uint32_t topk,
                                                  const SearchOptions& opts,
@@ -1225,9 +1225,9 @@ namespace pomai::core
     // SearchLocalInternal: DB-grade 1-pass merge scan
     // -------------------------
 
-    pomai::Status ShardRuntime::SearchLocalInternal(
+    pomai::Status VectorRuntime::SearchLocalInternal(
             std::shared_ptr<table::MemTable> active,
-            std::shared_ptr<ShardSnapshot> snap,
+            std::shared_ptr<VectorSnapshot> snap,
             std::span<const float> query,
             float query_sum,
             std::uint32_t topk,

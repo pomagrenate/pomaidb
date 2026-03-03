@@ -7,7 +7,7 @@
 namespace pomai::core {
 
 LookupResult LookupById(const std::shared_ptr<table::MemTable>& active,
-                        const std::shared_ptr<ShardSnapshot>& snapshot,
+                        const std::shared_ptr<VectorSnapshot>& snapshot,
                         pomai::VectorId id,
                         std::uint32_t dim) {
     if (active) {

@@ -7,7 +7,7 @@
 
 namespace pomai::core
 {
-    struct ShardSnapshot
+    struct VectorSnapshot
     {
         // Snapshot holds shared ownership of immutable data.
         // Frozen memtables are read-only.

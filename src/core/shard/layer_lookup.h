@@ -25,10 +25,10 @@ struct LookupResult {
     pomai::PinnableSlice pinnable_vec; // Holds pinned memory if zero-copy
 };
 
-// Canonical newest-wins lookup across shard layers.
+// Canonical newest-wins lookup across layers.
 // Merge order: active memtable -> frozen memtables (newest->oldest) -> segments (newest->oldest).
 LookupResult LookupById(const std::shared_ptr<table::MemTable>& active,
-                        const std::shared_ptr<ShardSnapshot>& snapshot,
+                        const std::shared_ptr<VectorSnapshot>& snapshot,
                         pomai::VectorId id,
                         std::uint32_t dim);
 

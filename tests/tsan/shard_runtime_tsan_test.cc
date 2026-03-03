@@ -22,15 +22,15 @@ namespace
     return v;
   }
 
-  POMAI_TEST(ShardRuntime_TSAN_ActorSerializesCommands)
+  POMAI_TEST(VectorRuntime_TSAN_ActorSerializesCommands)
   {
     const std::uint32_t dim = 32;
-    const std::uint32_t shard_id = 0;
+    const std::uint32_t runtime_id = 0;
 
-    const std::string path = pomai::test::TempDir("pomai-shard_runtime_tsan_test");
+    const std::string path = pomai::test::TempDir("pomai-vector_runtime_tsan_test");
 
     auto wal = std::make_unique<pomai::storage::Wal>(
-        path, shard_id,
+        path, runtime_id,
         /*wal_segment_bytes*/ (1u << 20),
         /*fsync*/ pomai::FsyncPolicy::kNever);
 
@@ -40,8 +40,8 @@ namespace
 
     POMAI_EXPECT_OK(wal->ReplayInto(*mem));
 
-    pomai::core::ShardRuntime rt(shard_id, path, dim, pomai::MembraneKind::kVector, pomai::MetricType::kL2, std::move(wal),
-                                 std::move(mem), pomai::IndexParams{});
+    pomai::core::VectorRuntime rt(runtime_id, path, dim, pomai::MembraneKind::kVector, pomai::MetricType::kL2, std::move(wal),
+                                  std::move(mem), pomai::IndexParams{});
     POMAI_EXPECT_OK(rt.Start());
 
     // Single-threaded: sequential puts (no worker thread, no Enqueue).

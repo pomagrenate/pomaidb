@@ -55,7 +55,6 @@ add_library(pomai STATIC
   src/api/db.cc
   src/database.cc
   src/core/vector_engine/vector_engine.cc
-  src/core/shard/shard.cc
   src/core/shard/runtime.cc
   src/core/shard/layer_lookup.cc
   src/core/shard/iterator.cc

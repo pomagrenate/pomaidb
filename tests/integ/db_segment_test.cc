@@ -32,12 +32,12 @@ POMAI_TEST(DB_SegmentLoading_ReadTest) {
     
     POMAI_EXPECT_OK(pomai::storage::Manifest::CreateMembrane(root, spec));
     
-    // 2. Create Shard Directory
-    fs::path shard_dir = fs::path(root) / "membranes" / membrane / "shards" / "0";
-    fs::create_directories(shard_dir);
+    // 2. Create data directory (segment + manifest live here)
+    fs::path data_dir = fs::path(root) / "membranes" / membrane / "data";
+    fs::create_directories(data_dir);
     
     // 3. Create a segment file
-    std::string seg_path = (shard_dir / "seg_00001.dat").string();
+    std::string seg_path = (data_dir / "seg_00001.dat").string();
     pomai::table::SegmentBuilder builder(seg_path, dim);
     
     std::vector<float> vec1 = {1.0f, 0.0f, 0.0f, 0.0f};
@@ -49,7 +49,7 @@ POMAI_TEST(DB_SegmentLoading_ReadTest) {
     
     // Create manifest.current for this segment
     std::vector<std::string> segs = {"seg_00001.dat"};
-    POMAI_EXPECT_OK(pomai::core::ShardManifest::Commit(shard_dir.string(), segs));
+    POMAI_EXPECT_OK(pomai::core::SegmentManifest::Commit(data_dir.string(), segs));
     
     // 4. Open DB
     pomai::DBOptions opt;
@@ -167,9 +167,9 @@ POMAI_TEST(DB_FreezeAndCompact) {
     POMAI_EXPECT_EQ(st.code(), pomai::ErrorCode::kNotFound); // Still deleted
     
     // Scan directory to verify we have 1 segment (impl detail, strict but good)
-    fs::path shard_dir = fs::path(root) / "membranes" / membrane / "shards" / "0";
+    fs::path data_dir = fs::path(root) / "membranes" / membrane / "data";
     int seg_count = 0;
-    for (const auto& entry : fs::directory_iterator(shard_dir)) {
+    for (const auto& entry : fs::directory_iterator(data_dir)) {
         if (entry.path().extension() == ".dat") {
             seg_count++;
         }

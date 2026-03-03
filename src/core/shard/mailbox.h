@@ -1,4 +1,4 @@
-// mailbox.h — Lock-free MPSC ring buffer for PomaiDB ShardRuntime dispatch.
+// mailbox.h — Lock-free MPSC ring buffer for PomaiDB VectorRuntime dispatch.
 //
 // Phase 3 (Helio-style shared-nothing): Replaces the mutex-backed
 // BoundedMpscQueue with a true lock-free ring buffer. Multiple producers

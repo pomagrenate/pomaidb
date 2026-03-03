@@ -8,7 +8,6 @@
 
 #include "core/distance.h"
 #include "core/shard/runtime.h"
-#include "core/shard/shard.h"
 #include "core/snapshot_wrapper.h"
 #include "storage/wal/wal.h"
 #include "table/memtable.h"
@@ -22,8 +21,7 @@ constexpr std::size_t kWalSegmentBytes = 64u << 20; // 64 MiB
 
 } // namespace
 
-// Single-instance storage: one WAL, one MemTable (one Arena), one index.
-// No sharding, no routing, no locks.
+// Single-instance storage: one WAL, one MemTable, one VectorRuntime.
 class StorageEngine {
 public:
     StorageEngine() = default;
@@ -33,7 +31,7 @@ public:
     StorageEngine& operator=(const StorageEngine&) = delete;
 
     Status Open(const EmbeddedOptions& options) {
-        if (shard_) return Status::InvalidArgument("already opened");
+        if (runtime_) return Status::InvalidArgument("already opened");
 
         std::error_code ec;
         if (!std::filesystem::exists(options.path, ec)) {
@@ -56,87 +54,87 @@ public:
         st = wal->ReplayInto(*mem);
         if (!st.ok()) return st;
 
-        std::string shard_dir = options.path;
-        auto rt = std::make_unique<core::ShardRuntime>(
-            0u, std::move(shard_dir), options.dim,
+        std::string data_dir = options.path;
+        auto rt = std::make_unique<core::VectorRuntime>(
+            0u, std::move(data_dir), options.dim,
             MembraneKind::kVector, options.metric,
             std::move(wal), std::move(mem), options.index_params);
-        shard_ = std::make_unique<core::Shard>(std::move(rt));
-        return shard_->Start();
+        runtime_ = std::move(rt);
+        return runtime_->Start();
     }
 
-    void Close() { shard_.reset(); }
+    void Close() { runtime_.reset(); }
 
     Status Append(VectorId id, std::span<const float> vec) {
-        return shard_ ? shard_->Put(id, vec)
-                      : Status::InvalidArgument("not opened");
+        return runtime_ ? runtime_->Put(id, vec)
+                       : Status::InvalidArgument("not opened");
     }
 
     Status Append(VectorId id, std::span<const float> vec,
                   const Metadata& meta) {
-        return shard_ ? shard_->Put(id, vec, meta)
-                      : Status::InvalidArgument("not opened");
+        return runtime_ ? runtime_->Put(id, vec, meta)
+                        : Status::InvalidArgument("not opened");
     }
 
     Status AppendBatch(const std::vector<VectorId>& ids,
                        const std::vector<std::span<const float>>& vectors) {
-        return shard_ ? shard_->PutBatch(ids, vectors)
-                      : Status::InvalidArgument("not opened");
+        return runtime_ ? runtime_->PutBatch(ids, vectors)
+                        : Status::InvalidArgument("not opened");
     }
 
     Status Get(VectorId id, std::vector<float>* out,
                Metadata* out_meta) {
-        return shard_ ? shard_->Get(id, out, out_meta)
-                      : Status::InvalidArgument("not opened");
+        return runtime_ ? runtime_->Get(id, out, out_meta)
+                        : Status::InvalidArgument("not opened");
     }
 
     Status Exists(VectorId id, bool* exists) {
-        return shard_ ? shard_->Exists(id, exists)
-                      : Status::InvalidArgument("not opened");
+        return runtime_ ? runtime_->Exists(id, exists)
+                       : Status::InvalidArgument("not opened");
     }
 
     Status Delete(VectorId id) {
-        return shard_ ? shard_->Delete(id)
-                      : Status::InvalidArgument("not opened");
+        return runtime_ ? runtime_->Delete(id)
+                        : Status::InvalidArgument("not opened");
     }
 
     Status Flush() {
-        return shard_ ? shard_->Flush()
-                      : Status::InvalidArgument("not opened");
+        return runtime_ ? runtime_->Flush()
+                        : Status::InvalidArgument("not opened");
     }
 
     Status Freeze() {
-        return shard_ ? shard_->Freeze()
-                      : Status::InvalidArgument("not opened");
+        return runtime_ ? runtime_->Freeze()
+                        : Status::InvalidArgument("not opened");
     }
 
     Status GetSnapshot(std::shared_ptr<Snapshot>* out) {
-        if (!shard_) return Status::InvalidArgument("not opened");
+        if (!runtime_) return Status::InvalidArgument("not opened");
         if (!out) return Status::InvalidArgument("output is null");
-        auto internal = shard_->GetSnapshot();
+        auto internal = runtime_->GetSnapshot();
         *out = std::make_shared<core::SnapshotWrapper>(std::move(internal));
         return Status::Ok();
     }
 
     Status NewIterator(const std::shared_ptr<Snapshot>& snap,
                        std::unique_ptr<SnapshotIterator>* out) {
-        if (!shard_) return Status::InvalidArgument("not opened");
+        if (!runtime_) return Status::InvalidArgument("not opened");
         if (!out) return Status::InvalidArgument("output is null");
         if (!snap) return Status::InvalidArgument("snapshot is null");
         auto* wrapper = dynamic_cast<core::SnapshotWrapper*>(snap.get());
         if (!wrapper) return Status::InvalidArgument("invalid snapshot type");
-        return shard_->NewIterator(wrapper->GetInternal(), out);
+        return runtime_->NewIterator(wrapper->GetInternal(), out);
     }
 
     Status Search(std::span<const float> query, std::uint32_t topk,
                   const SearchOptions& opts,
                   SearchResult* out) {
-        if (!shard_) return Status::InvalidArgument("not opened");
+        if (!runtime_) return Status::InvalidArgument("not opened");
         if (!out) return Status::InvalidArgument("output is null");
         out->Clear();
         out->hits.clear();
         std::vector<SearchHit> hits;
-        auto st = shard_->SearchLocal(query, topk, opts, &hits);
+        auto st = runtime_->Search(query, topk, opts, &hits);
         if (!st.ok()) return st;
         out->hits = std::move(hits);
         out->routed_shards_count = 1;
@@ -147,7 +145,7 @@ public:
     Status SearchBatch(std::span<const float> queries, std::uint32_t num_queries,
                       std::uint32_t topk, const SearchOptions& opts,
                       std::vector<SearchResult>* out) {
-        if (!shard_) return Status::InvalidArgument("not opened");
+        if (!runtime_) return Status::InvalidArgument("not opened");
         if (!out) return Status::InvalidArgument("output is null");
         out->clear();
         out->resize(num_queries);
@@ -155,7 +153,7 @@ public:
         std::vector<uint32_t> indices(num_queries);
         for (uint32_t i = 0; i < num_queries; ++i) indices[i] = i;
         std::vector<std::vector<SearchHit>> per_query;
-        auto st = shard_->SearchBatchLocal(queries, indices, topk, opts, &per_query);
+        auto st = runtime_->SearchBatchLocal(queries, indices, topk, opts, &per_query);
         if (!st.ok()) return st;
         for (uint32_t i = 0; i < num_queries; ++i) {
             (*out)[i].hits = std::move(per_query[i]);
@@ -165,7 +163,7 @@ public:
     }
 
 private:
-    std::unique_ptr<core::Shard> shard_;
+    std::unique_ptr<core::VectorRuntime> runtime_;
 };
 
 // -----------------------------------------------------------------------------

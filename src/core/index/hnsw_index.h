@@ -1,6 +1,6 @@
 // hnsw_index.h — PomaiDB wrapper around faiss::IndexHNSWFlat.
 //
-// Phase 3: Wraps FAISS HNSW for use as a drop-in sidecar index per Shard.
+// Phase 3: Wraps FAISS HNSW for use as a drop-in sidecar index per runtime.
 // Activated via DBOptions::index_type = IndexType::kHNSW.
 // Backward-compatible: when not set, IvfFlatIndex is used as before.
 //
@@ -32,7 +32,7 @@ struct HnswOptions {
     int ef_search    = 64;    // Candidates during query. Tunable at query time.
 };
 
-/// Per-Shard HNSW index. Thread-safe for concurrent reads; single-writer Add().
+/// Per-runtime HNSW index. Thread-safe for concurrent reads; single-writer Add().
 class HnswIndex {
 public:
     /// Create an empty HNSW index (not yet trained/populated).

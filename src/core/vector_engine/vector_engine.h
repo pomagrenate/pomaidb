@@ -1,93 +1,100 @@
 #pragma once
+
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
-#include "pomai/options.h"
+#include "pomai/iterator.h"
 #include "pomai/metadata.h"
+#include "pomai/options.h"
 #include "pomai/search.h"
+#include "pomai/snapshot.h"
 #include "pomai/status.h"
 #include "pomai/types.h"
-#include "pomai/iterator.h"
-#include "pomai/snapshot.h"
-#include "core/routing/routing_table.h"
-#include "core/shard/router.h"  // Phase 4: seqlock ShardRouter
 
-namespace pomai::core
-{
+namespace pomai::core {
 
-    class Shard;
+class VectorRuntime;
 
-    class VectorEngine
-    {
-    public:
-        explicit VectorEngine(pomai::DBOptions opt, pomai::MembraneKind kind, pomai::MetricType metric);
-        ~VectorEngine();
+// Monolithic, single-threaded vector engine for one membrane.
+// One WAL, one MemTable, one VectorRuntime — no partitioning.
+class VectorEngine {
+public:
+    explicit VectorEngine(pomai::DBOptions opt,
+                          pomai::MembraneKind kind,
+                          pomai::MetricType metric);
+    ~VectorEngine();
 
-        VectorEngine(const VectorEngine &) = delete;
-        VectorEngine &operator=(const VectorEngine &) = delete;
+    VectorEngine(const VectorEngine&) = delete;
+    VectorEngine& operator=(const VectorEngine&) = delete;
 
-        Status Open();
-        Status Close();
+    Status Open();
+    Status Close();
 
-        Status Put(VectorId id, std::span<const float> vec);
-        Status Put(VectorId id, std::span<const float> vec, const pomai::Metadata& meta); // Overload
-        Status PutBatch(const std::vector<VectorId>& ids,
-                        const std::vector<std::span<const float>>& vectors);
-        Status Get(VectorId id, std::vector<float> *out);
-        Status Get(VectorId id, std::vector<float> *out, pomai::Metadata* out_meta); // Added
-        Status Exists(VectorId id, bool *exists);
-        Status Delete(VectorId id);
-        Status Flush();
-        Status Freeze();
-        Status Compact();
-        Status NewIterator(std::unique_ptr<pomai::SnapshotIterator> *out);
-        Status GetSnapshot(std::shared_ptr<pomai::Snapshot>* out);
-        Status NewIterator(const std::shared_ptr<pomai::Snapshot>& snap, std::unique_ptr<pomai::SnapshotIterator> *out);
+    // Ingestion ---------------------------------------------------------------
+    Status Put(VectorId id, std::span<const float> vec);
+    Status Put(VectorId id,
+               std::span<const float> vec,
+               const pomai::Metadata& meta);
+    Status PutBatch(const std::vector<VectorId>& ids,
+                    const std::vector<std::span<const float>>& vectors);
 
-        Status Search(std::span<const float> query, std::uint32_t topk, pomai::SearchResult *out);
-        Status Search(std::span<const float> query, std::uint32_t topk, const SearchOptions& opts,
-                      pomai::SearchResult *out);
-        Status SearchInternal(std::span<const float> query, std::uint32_t topk, const SearchOptions& opts,
-                              pomai::SearchResult *out, bool use_pool);
-        Status SearchBatch(std::span<const float> queries, uint32_t num_queries, 
-                           uint32_t topk, std::vector<pomai::SearchResult>* out);
-        Status SearchBatch(std::span<const float> queries, uint32_t num_queries, 
-                           uint32_t topk, const SearchOptions& opts, std::vector<pomai::SearchResult>* out);
+    // Point lookups -----------------------------------------------------------
+    Status Get(VectorId id, std::vector<float>* out);
+    Status Get(VectorId id,
+               std::vector<float>* out,
+               pomai::Metadata* out_meta);
+    Status Exists(VectorId id, bool* exists);
+    Status Delete(VectorId id);
 
-        const pomai::DBOptions &options() const { return opt_; }
-        pomai::MembraneKind kind() const { return kind_; }
-        pomai::MetricType metric() const { return metric_; }
+    // Maintenance -------------------------------------------------------------
+    Status Flush();
+    Status Freeze();
+    Status Compact();
 
-    private:
-        Status OpenLocked();
-        static std::uint32_t ShardOf(VectorId id, std::uint32_t shard_count);
-        std::uint32_t RouteShardForVector(VectorId id, std::span<const float> vec);
-        void MaybeWarmupAndInitRouting(std::span<const float> vec);
-        void MaybePersistRoutingAsync();
-        std::vector<std::uint32_t> BuildProbeShards(std::span<const float> query, const SearchOptions& opts);
+    // Snapshots & iteration ---------------------------------------------------
+    Status NewIterator(std::unique_ptr<pomai::SnapshotIterator>* out);
+    Status GetSnapshot(std::shared_ptr<pomai::Snapshot>* out);
+    Status NewIterator(const std::shared_ptr<pomai::Snapshot>& snap,
+                       std::unique_ptr<pomai::SnapshotIterator>* out);
 
-        pomai::DBOptions opt_;
-        pomai::MembraneKind kind_;
-        pomai::MetricType metric_;
-        bool opened_ = false;
+    // Search ------------------------------------------------------------------
+    Status Search(std::span<const float> query,
+                  std::uint32_t topk,
+                  pomai::SearchResult* out);
+    Status Search(std::span<const float> query,
+                  std::uint32_t topk,
+                  const SearchOptions& opts,
+                  pomai::SearchResult* out);
+    Status SearchBatch(std::span<const float> queries,
+                       std::uint32_t num_queries,
+                       std::uint32_t topk,
+                       std::vector<pomai::SearchResult>* out);
+    Status SearchBatch(std::span<const float> queries,
+                       std::uint32_t num_queries,
+                       std::uint32_t topk,
+                       const SearchOptions& opts,
+                       std::vector<pomai::SearchResult>* out);
 
-        std::vector<std::unique_ptr<Shard>> shards_;
+    const pomai::DBOptions& options() const { return opt_; }
+    pomai::MembraneKind kind() const { return kind_; }
+    pomai::MetricType metric() const { return metric_; }
 
-        routing::RoutingMode routing_mode_{routing::RoutingMode::kDisabled};
-        std::shared_ptr<routing::RoutingTable> routing_mutable_;
-        routing::RoutingTablePtr routing_current_;
-        routing::RoutingTablePtr routing_prev_;
-        core::ShardRouter shard_router_{1};
-        bool routing_persist_inflight_{false};
-        std::vector<float> warmup_reservoir_;
-        std::uint32_t warmup_count_ = 0;
-        std::uint32_t warmup_target_ = 0;
-        std::uint64_t puts_since_persist_ = 0;
-        std::uint32_t routed_shards_last_query_count_{0};
-        std::uint32_t routed_probe_centroids_last_query_{0};
-    };
+private:
+    Status OpenLocked();
+
+    Status EnsureOpen() const;
+    Status ValidateVector(std::span<const float> vec) const;
+
+    pomai::DBOptions opt_;
+    pomai::MembraneKind kind_;
+    pomai::MetricType metric_;
+    bool opened_{false};
+
+    std::unique_ptr<VectorRuntime> runtime_;
+};
 
 } // namespace pomai::core
+

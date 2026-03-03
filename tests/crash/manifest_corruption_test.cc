@@ -38,8 +38,8 @@ namespace
         }
 
         // 2. Locate and Corrupt Manifest
-        // Path: <db>/membranes/default/shards/0/manifest.current
-        std::string manifest_path = opt.path + "/membranes/default/shards/0/manifest.current";
+        // Path: <db>/membranes/default/data/manifest.current
+        std::string manifest_path = opt.path + "/membranes/default/data/manifest.current";
         POMAI_EXPECT_TRUE(fs::exists(manifest_path));
 
         // Corrupt by appending garbage

@@ -5,7 +5,7 @@
 #include <vector>
 #include <span>
 
-#include "core/shard/manifest.h"
+#include "core/shard/manifest.h"  // SegmentManifest
 #include "pomai/options.h"
 #include "pomai/pomai.h"
 #include "pomai/search.h"
@@ -30,8 +30,8 @@ POMAI_TEST(SearchNewestWins_DeterministicAndTombstone) {
 
     POMAI_EXPECT_OK(pomai::storage::Manifest::CreateMembrane(root, spec));
 
-    fs::path shard_dir = fs::path(root) / "membranes" / membrane / "shards" / "0";
-    fs::create_directories(shard_dir);
+    fs::path data_dir = fs::path(root) / "membranes" / membrane / "data";
+    fs::create_directories(data_dir);
 
     const pomai::VectorId target_id = 50000;
     const pomai::VectorId tomb_id = 60000;
@@ -41,13 +41,13 @@ POMAI_TEST(SearchNewestWins_DeterministicAndTombstone) {
     std::vector<float> vec_tomb = {0.0f, 0.0f, 1.0f, 0.0f};
     std::vector<float> vec_filler = {0.0f, 0.0f, 0.0f, 0.0f};
 
-    std::string old_path = (shard_dir / "seg_old.dat").string();
+    std::string old_path = (data_dir / "seg_old.dat").string();
     pomai::table::SegmentBuilder old_builder(old_path, dim);
     POMAI_EXPECT_OK(old_builder.Add(target_id, pomai::VectorView(std::span<const float>(vec_old)), false));
     POMAI_EXPECT_OK(old_builder.Add(tomb_id, pomai::VectorView(std::span<const float>(vec_tomb)), false));
     POMAI_EXPECT_OK(old_builder.Finish());
 
-    std::string new_path = (shard_dir / "seg_new.dat").string();
+    std::string new_path = (data_dir / "seg_new.dat").string();
     pomai::table::SegmentBuilder new_builder(new_path, dim);
     for (pomai::VectorId id = 0; id < target_id; ++id) {
         if (id == tomb_id) {
@@ -60,7 +60,7 @@ POMAI_TEST(SearchNewestWins_DeterministicAndTombstone) {
     POMAI_EXPECT_OK(new_builder.Finish());
 
     std::vector<std::string> segs = {"seg_new.dat", "seg_old.dat"};
-    POMAI_EXPECT_OK(pomai::core::ShardManifest::Commit(shard_dir.string(), segs));
+    POMAI_EXPECT_OK(pomai::core::SegmentManifest::Commit(data_dir.string(), segs));
 
     pomai::DBOptions opt;
     opt.path = root;

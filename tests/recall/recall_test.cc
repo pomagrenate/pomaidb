@@ -61,7 +61,7 @@ POMAI_TEST(Recall_Clustered_Basic) {
     std::cout << "[RecallTest] Generating dataset..." << std::endl;
     auto ds = pomai::test::GenerateDataset(dopt);
     
-    // 2. Setup Shard
+    // 2. Setup runtime
     std::string path = pomai::test::TempDir("recall_test_harness");
     uint32_t shard_id = 0;
     
@@ -71,11 +71,11 @@ POMAI_TEST(Recall_Clustered_Basic) {
     auto mem = std::make_unique<MemTable>(dopt.dim, 1u << 20);
 
     pomai::IndexParams index_opts;
-    ShardRuntime rt(shard_id, path, dopt.dim, pomai::MembraneKind::kVector, pomai::MetricType::kInnerProduct, std::move(wal),
+    VectorRuntime rt(shard_id, path, dopt.dim, pomai::MembraneKind::kVector, pomai::MetricType::kInnerProduct, std::move(wal),
                     std::move(mem), index_opts);
     POMAI_EXPECT_OK(rt.Start());
     
-    // Keep a separate MemTable for Oracle that is NOT managed by ShardRuntime
+    // Keep a separate MemTable for Oracle that is NOT managed by VectorRuntime
     auto oracle_mem = std::make_unique<MemTable>(dopt.dim, 1u << 20);
     
     // 3. Ingest (Split into 5 segments to test parallelism)
@@ -159,7 +159,7 @@ POMAI_TEST(Recall_Uniform_Hard) {
     std::cout << "[RecallTest] Generating UNIFORM dataset..." << std::endl;
     auto ds = pomai::test::GenerateDataset(dopt);
     
-    // 2. Setup Shard
+    // 2. Setup runtime
     std::string path = pomai::test::TempDir("recall_test_uniform");
     uint32_t shard_id = 0;
     
@@ -168,7 +168,7 @@ POMAI_TEST(Recall_Uniform_Hard) {
     
     auto mem = std::make_unique<MemTable>(dopt.dim, 1u << 20);
     
-    ShardRuntime rt(shard_id, path, dopt.dim, pomai::MembraneKind::kVector, pomai::MetricType::kInnerProduct, std::move(wal),
+    VectorRuntime rt(shard_id, path, dopt.dim, pomai::MembraneKind::kVector, pomai::MetricType::kInnerProduct, std::move(wal),
                     std::move(mem), pomai::IndexParams{});
     POMAI_EXPECT_OK(rt.Start());
     

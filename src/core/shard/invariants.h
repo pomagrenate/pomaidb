@@ -7,9 +7,9 @@ namespace pomai::core::invariants
     // =========================================================================
 
     // INVARIANT 1: Snapshot Immutability
-    // All data structures in ShardSnapshot are immutable after publication.
+    // All data structures in VectorSnapshot are immutable after publication.
     // Frozen memtables and segments must NOT be modified after being added to snapshot.
-    // Enforced by: std::shared_ptr const access + ShardRuntime assertions.
+    // Enforced by: std::shared_ptr const access + VectorRuntime assertions.
 
     // INVARIANT 2: Snapshot Ordering
     // Snapshots represent a prefix of WAL history.
