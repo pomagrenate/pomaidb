@@ -11,14 +11,17 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(POMAI_BUILD_TESTS "Build tests" OFF)
 option(POMAI_BUILD_BENCH "Build benchmarks" OFF)
+# Prefer integer (SQ8/FP16) distance paths where data is quantized; reduces float use on embedded.
+option(POMAI_PREFER_INTEGER_MATH "Prefer integer/SQ8/FP16 paths for distance (embedded)" ON)
 
 # =========================
 # Phase 3: palloc (git submodule at third_party/palloc)
 # =========================
 option(POMAI_USE_PALLOC "Use palloc as global allocator (PA_OVERRIDE=ON)" ON)
 
-# Ensure POMAI_USE_PALLOC is defined for source code (0 or 1)
+# Ensure POMAI_USE_PALLOC and POMAI_PREFER_INTEGER_MATH are defined for source code (0 or 1)
 add_compile_definitions(POMAI_USE_PALLOC=$<BOOL:${POMAI_USE_PALLOC}>)
+add_compile_definitions(POMAI_PREFER_INTEGER_MATH=$<BOOL:${POMAI_PREFER_INTEGER_MATH}>)
 
 if (POMAI_USE_PALLOC)
   if (NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/CMakeLists.txt)
@@ -202,6 +205,10 @@ target_include_directories(pomai_c_static
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+if (POMAI_USE_PALLOC)
+  target_include_directories(pomai_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/include)
+  target_include_directories(pomai_c_static PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/include)
+endif()
 
 if (MSVC)
   target_compile_options(pomai_c PRIVATE /W4 /permissive-)

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 
+#include "palloc_compat.h"
 #include "capi_utils.h"
 
 namespace {
@@ -37,12 +38,17 @@ pomai_status_t* pomai_get_snapshot(pomai_db_t* db, pomai_snapshot_t** out_snap) 
         return ToCStatus(st);
     }
 
-    *out_snap = new pomai_snapshot_t{std::move(snap)};
+    void* raw = palloc_malloc_aligned(sizeof(pomai_snapshot_t), alignof(pomai_snapshot_t));
+    if (!raw) return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "snapshot handle allocation failed");
+    *out_snap = new (raw) pomai_snapshot_t{std::move(snap)};
     return nullptr;
 }
 
 void pomai_snapshot_free(pomai_snapshot_t* snap) {
-    delete snap;
+    if (snap) {
+        snap->~pomai_snapshot_t();
+        palloc_free(snap);
+    }
 }
 
 pomai_status_t* pomai_scan(
@@ -78,7 +84,9 @@ pomai_status_t* pomai_scan(
         return MakeStatus(POMAI_STATUS_DEADLINE_EXCEEDED, "deadline exceeded during scan initialization");
     }
 
-    *out_iter = new pomai_iter_t{std::move(iter)};
+    void* raw = palloc_malloc_aligned(sizeof(pomai_iter_t), alignof(pomai_iter_t));
+    if (!raw) return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "iterator handle allocation failed");
+    *out_iter = new (raw) pomai_iter_t{std::move(iter)};
     return nullptr;
 }
 
@@ -122,7 +130,10 @@ pomai_status_t* pomai_iter_get_record(const pomai_iter_t* iter, pomai_record_vie
 }
 
 void pomai_iter_free(pomai_iter_t* iter) {
-    delete iter;
+    if (iter) {
+        iter->~pomai_iter_t();
+        palloc_free(iter);
+    }
 }
 
 }  // extern "C"

@@ -23,6 +23,8 @@
 #include <optional>
 #include <thread>
 
+#include "palloc_compat.h"
+
 namespace pomai::core {
 
 template <class T>
@@ -31,13 +33,13 @@ public:
     explicit BoundedMpscQueue(std::size_t capacity)
         : mask_(RoundUpPow2(capacity) - 1),
           head_(0), tail_(0),
-          buffer_(new Slot[mask_ + 1])
+          buffer_(static_cast<Slot*>(palloc_malloc_aligned((mask_ + 1) * sizeof(Slot), alignof(Slot))))
     {
         for (std::size_t i = 0; i <= mask_; ++i)
             buffer_[i].sequence.store(i, std::memory_order_relaxed);
     }
 
-    ~BoundedMpscQueue() { delete[] buffer_; }
+    ~BoundedMpscQueue() { palloc_free(buffer_); }
 
     // Non-copyable / non-movable
     BoundedMpscQueue(const BoundedMpscQueue&) = delete;

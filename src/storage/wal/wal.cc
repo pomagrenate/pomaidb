@@ -1,11 +1,12 @@
 #include "storage/wal/wal.h"
 
-#include <filesystem>
-#include <vector>
-#include <cstring>
 #include <cerrno>
+#include <cstring>
+#include <filesystem>
 #include <sys/uio.h>
+#include <vector>
 
+#include "palloc_compat.h"
 #include "table/memtable.h"
 #include "util/crc32c.h"
 #include "util/posix_file.h"
@@ -56,18 +57,21 @@ namespace pomai::storage
     Wal::Wal(std::string db_path,
              std::uint32_t shard_id,
              std::size_t segment_bytes,
-             pomai::FsyncPolicy fsync)
+             pomai::FsyncPolicy fsync,
+             palloc_heap_t* heap)
         : db_path_(std::move(db_path)),
           shard_id_(shard_id),
           segment_bytes_(segment_bytes),
-          fsync_(fsync) {}
+          fsync_(fsync),
+          heap_(heap) {}
 
     Wal::~Wal()
     {
         if (impl_)
         {
             (void)impl_->file.Close();
-            delete impl_;
+            impl_->~Impl();
+            palloc_free(impl_);
             impl_ = nullptr;
         }
     }
@@ -85,13 +89,18 @@ namespace pomai::storage
         while (fs::exists(SegmentPath(gen_)))
             ++gen_;
 
-        impl_ = new Impl();
+        void* raw = heap_
+            ? palloc_heap_malloc_aligned(heap_, sizeof(Impl), alignof(Impl))
+            : palloc_malloc_aligned(sizeof(Impl), alignof(Impl));
+        if (!raw) return pomai::Status::IOError("WAL Impl allocation failed");
+        impl_ = new (raw) Impl();
         impl_->path = SegmentPath(gen_);
 
         auto st = pomai::util::PosixFile::OpenAppend(impl_->path, &impl_->file);
         if (!st.ok())
         {
-            delete impl_;
+            impl_->~Impl();
+            palloc_free(impl_);
             impl_ = nullptr;
             return st;
         }
@@ -110,7 +119,8 @@ namespace pomai::storage
             st = impl_->file.PWrite(0, &hdr, sizeof(hdr));
             if (!st.ok())
             {
-                delete impl_;
+                impl_->~Impl();
+                palloc_free(impl_);
                 impl_ = nullptr;
                 return st;
             }
@@ -134,7 +144,8 @@ namespace pomai::storage
         {
             (void)impl_->file.SyncData();
             (void)impl_->file.Close();
-            delete impl_;
+            impl_->~Impl();
+            palloc_free(impl_);
             impl_ = nullptr;
         }
 
@@ -142,12 +153,17 @@ namespace pomai::storage
         file_off_ = 0;
         bytes_in_seg_ = 0;
 
-        impl_ = new Impl();
+        void* raw = heap_
+            ? palloc_heap_malloc_aligned(heap_, sizeof(Impl), alignof(Impl))
+            : palloc_malloc_aligned(sizeof(Impl), alignof(Impl));
+        if (!raw) return pomai::Status::IOError("WAL Impl allocation failed");
+        impl_ = new (raw) Impl();
         impl_->path = SegmentPath(gen_);
         auto st = pomai::util::PosixFile::OpenAppend(impl_->path, &impl_->file);
         if (!st.ok())
         {
-            delete impl_;
+            impl_->~Impl();
+            palloc_free(impl_);
             impl_ = nullptr;
             return st;
         }
@@ -549,7 +565,8 @@ namespace pomai::storage
     {
         if (impl_) {
             (void)impl_->file.Close();
-            delete impl_;
+            impl_->~Impl();
+            palloc_free(impl_);
             impl_ = nullptr;
         }
 
@@ -560,26 +577,11 @@ namespace pomai::storage
             if (!fs::exists(p, ec)) break;
             fs::remove(p, ec);
         }
-        
-        // Reset state
+
         gen_ = 0;
-        seq_ = 0; // Safe to reset seq if MemTable is empty/flushed.
+        seq_ = 0;
         file_off_ = 0;
         bytes_in_seg_ = 0;
-
-        // Re-open (creates new wal_0.log)
-        impl_ = new Impl();
-        impl_->path = SegmentPath(gen_);
-        
-        // Create directory just in case (Open does it? No, Open calls create_directories).
-        // Let's call Open logic or just do minimal.
-        // Replicating Open logic:
-        // Open() assumes closed.
-        // But here we set impl_ already?
-        // Let's reuse Open() logic but Open() scans for gen_.
-        // We deleted everything. So Open() will find no files, set gen_=0.
-        // So:
-        delete impl_; impl_ = nullptr; // Reset impl again
         return Open();
     }
 

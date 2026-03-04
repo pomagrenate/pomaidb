@@ -1,13 +1,14 @@
 #include "table/segment.h"
 #include "util/crc32c.h"
-#include "core/index/ivf_flat.h" 
+#include "core/index/ivf_flat.h"
+#include "palloc_compat.h"
 
 #include <algorithm>
 #include <cstring>
 #include <fcntl.h>
+#include <filesystem>
 #include <unistd.h>
 #include <vector>
-#include <filesystem>
 
 namespace fs = std::filesystem;
 
@@ -326,26 +327,42 @@ namespace pomai::table
     SegmentReader::SegmentReader() = default;
     SegmentReader::~SegmentReader() = default;
 
-    pomai::Status SegmentReader::Open(std::string path, std::unique_ptr<SegmentReader> *out)
+    void SegmentReader::PallocDeleter(SegmentReader* p) {
+        if (p) { p->~SegmentReader(); palloc_free(p); }
+    }
+
+    pomai::Status SegmentReader::Open(std::string path, SegmentReader::Ptr* out)
     {
-        auto reader = std::unique_ptr<SegmentReader>(new SegmentReader());
+        void* raw = palloc_malloc_aligned(sizeof(SegmentReader), alignof(SegmentReader));
+        if (!raw) return pomai::Status::ResourceExhausted("SegmentReader allocation failed");
+        SegmentReader* reader = new (raw) SegmentReader();
         reader->path_ = path;
-        
+
         auto st = storage::PosixIOProvider::NewMemoryMappedFile(path, &reader->mmap_file_);
-        if (!st.ok()) return st;
-        
+        if (!st.ok()) {
+            PallocDeleter(reader);
+            return st;
+        }
+
         const uint8_t* data = reader->mmap_file_->Data();
         size_t size = reader->mmap_file_->Size();
 
-        if (size < sizeof(SegmentHeader)) return pomai::Status::Corruption("file too small");
+        if (size < sizeof(SegmentHeader)) {
+            PallocDeleter(reader);
+            return pomai::Status::Corruption("file too small");
+        }
 
         // Read Header from map
         const SegmentHeader* h = reinterpret_cast<const SegmentHeader*>(data);
 
-        if (strncmp(h->magic, kMagic, 12) != 0) return pomai::Status::Corruption("bad magic");
-        
+        if (strncmp(h->magic, kMagic, 12) != 0) {
+            PallocDeleter(reader);
+            return pomai::Status::Corruption("bad magic");
+        }
+
         // Support V2 to V6
         if (h->version < 2 || h->version > 6) {
+            PallocDeleter(reader);
             return pomai::Status::Corruption("unsupported version");
         }
         
@@ -395,7 +412,10 @@ namespace pomai::table
 
         // Verify size
         size_t expected_min = reader->entries_start_offset_ + reader->count_ * reader->entry_size_ + 4; // + CRC
-        if (size < expected_min) return pomai::Status::Corruption("segment truncated");
+        if (size < expected_min) {
+            PallocDeleter(reader);
+            return pomai::Status::Corruption("segment truncated");
+        }
 
         // Try load index (best effort)
         std::string idx_path = path;
@@ -412,7 +432,7 @@ namespace pomai::table
             (void)pomai::index::IvfFlatIndex::Load(idx_path, &reader->index_);
         }
 
-        *out = std::move(reader);
+        *out = Ptr(reader, PallocDeleter);
         return pomai::Status::Ok();
     }
 

@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "palloc_compat.h"
 #include "capi_utils.h"
 #include "core/memory/pin_manager.h"
 #include "pomai/database.h"
@@ -168,7 +169,9 @@ pomai_status_t* pomai_open(const pomai_options_t* opts, pomai_db_t** out_db) {
         return ToCStatus(st);
     }
 
-    *out_db = new pomai_db_t{std::move(db)};
+    void* raw = palloc_malloc_aligned(sizeof(pomai_db_t), alignof(pomai_db_t));
+    if (!raw) return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "db handle allocation failed");
+    *out_db = new (raw) pomai_db_t{std::move(db)};
     return nullptr;
 }
 
@@ -177,7 +180,8 @@ pomai_status_t* pomai_close(pomai_db_t* db) {
         return nullptr;
     }
     auto st = db->db->Close();
-    delete db;
+    db->~pomai_db_t();
+    palloc_free(db);
     return ToCStatus(st);
 }
 
@@ -247,7 +251,9 @@ pomai_status_t* pomai_get(pomai_db_t* db, uint64_t id, pomai_record_t** out_reco
         return ToCStatus(st);
     }
 
-    auto* w = new RecordWrapper();
+    void* raw = palloc_malloc_aligned(sizeof(RecordWrapper), alignof(RecordWrapper));
+    if (!raw) return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "record allocation failed");
+    auto* w = new (raw) RecordWrapper();
     w->vec_data = std::move(vec);
     w->meta_data.assign(meta.tenant.begin(), meta.tenant.end());
 
@@ -264,7 +270,11 @@ pomai_status_t* pomai_get(pomai_db_t* db, uint64_t id, pomai_record_t** out_reco
 }
 
 void pomai_record_free(pomai_record_t* record) {
-    delete reinterpret_cast<RecordWrapper*>(record);
+    if (record) {
+        auto* w = reinterpret_cast<RecordWrapper*>(record);
+        w->~RecordWrapper();
+        palloc_free(w);
+    }
 }
 
 pomai_status_t* pomai_exists(pomai_db_t* db, uint64_t id, bool* out_exists) {
@@ -303,7 +313,9 @@ pomai_status_t* pomai_search(pomai_db_t* db, const pomai_query_t* query, pomai_s
         return MakeStatus(POMAI_STATUS_DEADLINE_EXCEEDED, "deadline exceeded after search");
     }
 
-    auto* w = new SearchResultsWrapper();
+    void* raw = palloc_malloc_aligned(sizeof(SearchResultsWrapper), alignof(SearchResultsWrapper));
+    if (!raw) return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "search results allocation failed");
+    auto* w = new (raw) SearchResultsWrapper();
     w->ids.reserve(res.hits.size());
     w->scores.reserve(res.hits.size());
     w->shard_ids.reserve(res.hits.size());
@@ -319,14 +331,20 @@ pomai_status_t* pomai_search(pomai_db_t* db, const pomai_query_t* query, pomai_s
     w->pub.scores = w->scores.data();
     w->pub.shard_ids = w->shard_ids.data();
     if (opts.zero_copy && !res.zero_copy_pointers.empty()) {
-        w->pub.zero_copy_pointers = new pomai_semantic_pointer_t[res.zero_copy_pointers.size()];
-        for (size_t i = 0; i < res.zero_copy_pointers.size(); ++i) {
-            w->pub.zero_copy_pointers[i].struct_size = sizeof(pomai_semantic_pointer_t);
-            w->pub.zero_copy_pointers[i].raw_data_ptr = res.zero_copy_pointers[i].raw_data_ptr;
-            w->pub.zero_copy_pointers[i].dim = res.zero_copy_pointers[i].dim;
-            w->pub.zero_copy_pointers[i].quant_min = res.zero_copy_pointers[i].quant_min;
-            w->pub.zero_copy_pointers[i].quant_inv_scale = res.zero_copy_pointers[i].quant_inv_scale;
-            w->pub.zero_copy_pointers[i].session_id = res.zero_copy_pointers[i].session_id;
+        size_t n = res.zero_copy_pointers.size();
+        w->pub.zero_copy_pointers = static_cast<pomai_semantic_pointer_t*>(
+            palloc_malloc_aligned(n * sizeof(pomai_semantic_pointer_t), alignof(pomai_semantic_pointer_t)));
+        if (w->pub.zero_copy_pointers) {
+            for (size_t i = 0; i < n; ++i) {
+                w->pub.zero_copy_pointers[i].struct_size = sizeof(pomai_semantic_pointer_t);
+                w->pub.zero_copy_pointers[i].raw_data_ptr = res.zero_copy_pointers[i].raw_data_ptr;
+                w->pub.zero_copy_pointers[i].dim = res.zero_copy_pointers[i].dim;
+                w->pub.zero_copy_pointers[i].quant_min = res.zero_copy_pointers[i].quant_min;
+                w->pub.zero_copy_pointers[i].quant_inv_scale = res.zero_copy_pointers[i].quant_inv_scale;
+                w->pub.zero_copy_pointers[i].session_id = res.zero_copy_pointers[i].session_id;
+            }
+        } else {
+            w->pub.zero_copy_pointers = nullptr;
         }
     } else {
         w->pub.zero_copy_pointers = nullptr;
@@ -378,20 +396,30 @@ pomai_status_t* pomai_search_batch(pomai_db_t* db, const pomai_query_t* queries,
         return ToCStatus(st);
     }
 
-    // Allocate array of results
-    *out = new pomai_search_results_t[num_queries];
-    
+    // Allocate array of results (palloc, no new)
+    pomai_search_results_t* arr = static_cast<pomai_search_results_t*>(
+        palloc_malloc_aligned(num_queries * sizeof(pomai_search_results_t), alignof(pomai_search_results_t)));
+    if (!arr) {
+        return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "batch results allocation failed");
+    }
+    std::memset(arr, 0, num_queries * sizeof(pomai_search_results_t));
+    *out = arr;
+
     for (size_t q = 0; q < num_queries; ++q) {
         const auto& res = batch_res[q];
-        pomai_search_results_t& pub = (*out)[q];
+        pomai_search_results_t& pub = arr[q];
 
         pub.struct_size = static_cast<uint32_t>(sizeof(pomai_search_results_t));
         pub.count = res.hits.size();
-        
-        pub.ids = new uint64_t[pub.count];
-        pub.scores = new float[pub.count];
-        pub.shard_ids = new uint32_t[pub.count];
-        
+
+        pub.ids = static_cast<uint64_t*>(palloc_malloc_aligned(pub.count * sizeof(uint64_t), alignof(uint64_t)));
+        pub.scores = static_cast<float*>(palloc_malloc_aligned(pub.count * sizeof(float), alignof(float)));
+        pub.shard_ids = static_cast<uint32_t*>(palloc_malloc_aligned(pub.count * sizeof(uint32_t), alignof(uint32_t)));
+        if (!pub.ids || !pub.scores || !pub.shard_ids) {
+            pomai_search_batch_free(arr, num_queries);
+            return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "batch hit array allocation failed");
+        }
+
         for (size_t i = 0; i < pub.count; ++i) {
             pub.ids[i] = res.hits[i].id;
             pub.scores[i] = res.hits[i].score;
@@ -399,14 +427,18 @@ pomai_status_t* pomai_search_batch(pomai_db_t* db, const pomai_query_t* queries,
         }
 
         if (opts.zero_copy && !res.zero_copy_pointers.empty()) {
-            pub.zero_copy_pointers = new pomai_semantic_pointer_t[res.zero_copy_pointers.size()];
-            for (size_t i = 0; i < res.zero_copy_pointers.size(); ++i) {
-                pub.zero_copy_pointers[i].struct_size = sizeof(pomai_semantic_pointer_t);
-                pub.zero_copy_pointers[i].raw_data_ptr = res.zero_copy_pointers[i].raw_data_ptr;
-                pub.zero_copy_pointers[i].dim = res.zero_copy_pointers[i].dim;
-                pub.zero_copy_pointers[i].quant_min = res.zero_copy_pointers[i].quant_min;
-                pub.zero_copy_pointers[i].quant_inv_scale = res.zero_copy_pointers[i].quant_inv_scale;
-                pub.zero_copy_pointers[i].session_id = res.zero_copy_pointers[i].session_id;
+            size_t n = res.zero_copy_pointers.size();
+            pub.zero_copy_pointers = static_cast<pomai_semantic_pointer_t*>(
+                palloc_malloc_aligned(n * sizeof(pomai_semantic_pointer_t), alignof(pomai_semantic_pointer_t)));
+            if (pub.zero_copy_pointers) {
+                for (size_t i = 0; i < n; ++i) {
+                    pub.zero_copy_pointers[i].struct_size = sizeof(pomai_semantic_pointer_t);
+                    pub.zero_copy_pointers[i].raw_data_ptr = res.zero_copy_pointers[i].raw_data_ptr;
+                    pub.zero_copy_pointers[i].dim = res.zero_copy_pointers[i].dim;
+                    pub.zero_copy_pointers[i].quant_min = res.zero_copy_pointers[i].quant_min;
+                    pub.zero_copy_pointers[i].quant_inv_scale = res.zero_copy_pointers[i].quant_inv_scale;
+                    pub.zero_copy_pointers[i].session_id = res.zero_copy_pointers[i].session_id;
+                }
             }
         } else {
             pub.zero_copy_pointers = nullptr;
@@ -420,10 +452,13 @@ pomai_status_t* pomai_search_batch(pomai_db_t* db, const pomai_query_t* queries,
 }
 
 void pomai_search_results_free(pomai_search_results_t* results) {
-    if (results && results->zero_copy_pointers) {
-        delete[] results->zero_copy_pointers;
+    if (!results) return;
+    if (results->zero_copy_pointers) {
+        palloc_free(results->zero_copy_pointers);
     }
-    delete reinterpret_cast<SearchResultsWrapper*>(results);
+    auto* w = reinterpret_cast<SearchResultsWrapper*>(results);
+    w->~SearchResultsWrapper();
+    palloc_free(w);
 }
 
 // RAG (not supported in embedded Database backend)
@@ -454,7 +489,7 @@ pomai_status_t* pomai_search_rag(pomai_db_t* db, const char* membrane_name, cons
 
 void pomai_rag_search_result_free(pomai_rag_search_result_t* result) {
     if (result == nullptr) return;
-    delete[] result->hits;
+    palloc_free(result->hits);
     result->hits = nullptr;
     result->hit_count = 0;
 }
@@ -462,20 +497,12 @@ void pomai_rag_search_result_free(pomai_rag_search_result_t* result) {
 void pomai_search_batch_free(pomai_search_results_t* results, size_t num_queries) {
     if (!results) return;
     for (size_t i = 0; i < num_queries; ++i) {
-        if (results[i].ids) {
-            delete[] results[i].ids;
-        }
-        if (results[i].scores) {
-            delete[] results[i].scores;
-        }
-        if (results[i].shard_ids) {
-            delete[] results[i].shard_ids;
-        }
-        if (results[i].zero_copy_pointers) {
-            delete[] results[i].zero_copy_pointers;
-        }
+        palloc_free(results[i].ids);
+        palloc_free(results[i].scores);
+        palloc_free(results[i].shard_ids);
+        palloc_free(results[i].zero_copy_pointers);
     }
-    delete[] results;
+    palloc_free(results);
 }
 
 void pomai_release_pointer(uint64_t session_id) {
@@ -483,7 +510,7 @@ void pomai_release_pointer(uint64_t session_id) {
 }
 
 void pomai_free(void* p) {
-    std::free(p);
+    palloc_free(p);
 }
 
 }  // extern "C"

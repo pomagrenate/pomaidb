@@ -1,5 +1,6 @@
 #include "pomai/c_status.h"
 
+#include "palloc_compat.h"
 #include "capi_utils.h"
 
 extern "C" {
@@ -9,7 +10,10 @@ pomai_status_t* pomai_status_ok(void) {
 }
 
 void pomai_status_free(pomai_status_t* status) {
-    delete status;
+    if (status) {
+        status->~pomai_status_t();
+        palloc_free(status);
+    }
 }
 
 int pomai_status_code(const pomai_status_t* status) {

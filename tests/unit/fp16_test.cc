@@ -32,7 +32,7 @@ namespace
         POMAI_EXPECT_OK(builder.Finish());
         
         // Re-open reader
-        std::unique_ptr<pomai::table::SegmentReader> reader;
+        pomai::table::SegmentReader::Ptr reader(nullptr, pomai::table::SegmentReader::PallocDeleter);
         POMAI_EXPECT_OK(pomai::table::SegmentReader::Open(path, &reader));
         
         POMAI_EXPECT_EQ(reader->GetQuantType(), pomai::QuantizationType::kFp16);

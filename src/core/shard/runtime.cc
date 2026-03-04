@@ -314,10 +314,10 @@ namespace pomai::core
         segments_.clear();
         for (const auto& name : seg_names) {
             std::string path = (fs::path(data_dir_) / name).string();
-            std::unique_ptr<table::SegmentReader> reader;
+            table::SegmentReader::Ptr reader(nullptr, table::SegmentReader::PallocDeleter);
             st = table::SegmentReader::Open(path, &reader);
             if (!st.ok()) return st;
-            segments_.push_back(std::move(reader));
+            segments_.push_back(std::shared_ptr<table::SegmentReader>(std::move(reader)));
         }
 
         PublishSnapshot();
@@ -930,14 +930,14 @@ namespace pomai::core
                         return;
                     }
 
-                    std::unique_ptr<table::SegmentReader> reader;
+                    table::SegmentReader::Ptr reader(nullptr, table::SegmentReader::PallocDeleter);
                     st = table::SegmentReader::Open(state.filepath, &reader);
                     if (!st.ok()) {
                         complete_job(pomai::Status::Internal(std::string("Freeze: SegmentReader::Open failed: ") + st.message()));
                         return;
                     }
 
-                    state.built_segments.push_back({state.filename, state.filepath, std::move(reader)});
+                    state.built_segments.push_back({state.filename, state.filepath, std::shared_ptr<table::SegmentReader>(std::move(reader))});
                     state.builder.reset();
                     state.segment_part++;
 
@@ -1105,14 +1105,14 @@ namespace pomai::core
                     return;
                 }
 
-                std::unique_ptr<table::SegmentReader> reader;
+                table::SegmentReader::Ptr reader(nullptr, table::SegmentReader::PallocDeleter);
                 st = table::SegmentReader::Open(state.filepath, &reader);
                 if (!st.ok()) {
                     complete_job(pomai::Status::Internal(std::string("Compact: SegmentReader::Open failed: ") + st.message()));
                     return;
                 }
 
-                state.built_segments.push_back({state.filename, state.filepath, std::move(reader)});
+                state.built_segments.push_back({state.filename, state.filepath, std::shared_ptr<table::SegmentReader>(std::move(reader))});
                 state.builder.reset();
                 state.compact_buffers.clear();
                 state.segment_part++;

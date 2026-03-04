@@ -50,6 +50,14 @@ int main(int argc, char** argv) {
     }
     std::cout << "Pre-fill done." << std::endl;
 
+    // Freeze so segments + HNSW index are built; otherwise search is brute-force over memtable (~4 QPS).
+    std::cout << "Freezing to build segments and index..." << std::endl;
+    if (!db->Freeze("__default__").ok()) {
+        std::cerr << "Freeze failed" << std::endl;
+        return 1;
+    }
+    std::cout << "Freeze done. Running mixed write+search loop..." << std::endl;
+
     size_t write_ops = 0;
     size_t search_ops = 0;
     std::vector<double> latencies_ms;

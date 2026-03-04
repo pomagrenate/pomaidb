@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 
+#include "palloc_compat.h"
 #include "pomai/c_status.h"
 #include "pomai/database.h"
 #include "pomai/snapshot.h"
@@ -59,7 +60,9 @@ inline pomai_status_t* MakeStatus(pomai_status_code_t code, std::string message)
     if (code == POMAI_STATUS_OK) {
         return nullptr;
     }
-    return new pomai_status_t{code, std::move(message)};
+    void* raw = palloc_malloc_aligned(sizeof(pomai_status_t), alignof(pomai_status_t));
+    if (!raw) return nullptr;
+    return new (raw) pomai_status_t{code, std::move(message)};
 }
 
 inline pomai_status_t* ToCStatus(const pomai::Status& st) {

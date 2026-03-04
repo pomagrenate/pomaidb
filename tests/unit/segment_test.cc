@@ -35,7 +35,7 @@ namespace
         POMAI_EXPECT_TRUE(fs::exists(path));
         
         // Re-open
-        std::unique_ptr<pomai::table::SegmentReader> reader;
+        pomai::table::SegmentReader::Ptr reader(nullptr, pomai::table::SegmentReader::PallocDeleter);
         POMAI_EXPECT_OK(pomai::table::SegmentReader::Open(path, &reader));
         
         POMAI_EXPECT_EQ(reader->Count(), 3);
