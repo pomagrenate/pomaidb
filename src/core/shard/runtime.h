@@ -10,7 +10,6 @@
 
 #include "core/shard/snapshot.h"
 #include "core/shard/shard_stats.h"  // RuntimeStats
-#include "palloc_compat.h"
 #include "pomai/metadata.h"
 #include "pomai/search.h"
 #include "pomai/iterator.h"
@@ -230,7 +229,6 @@ namespace pomai::core
         std::unique_ptr<BackgroundJob> background_job_;
         std::optional<pomai::Status> last_background_result_;  // Set when background job completes (single-threaded)
         std::uint64_t wal_epoch_{0};
-        palloc_heap_t* palloc_heap_{nullptr};
     };
 
 } // namespace pomai::core

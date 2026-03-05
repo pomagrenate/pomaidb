@@ -14,36 +14,8 @@ option(POMAI_BUILD_BENCH "Build benchmarks" OFF)
 # Prefer integer (SQ8/FP16) distance paths where data is quantized; reduces float use on embedded.
 option(POMAI_PREFER_INTEGER_MATH "Prefer integer/SQ8/FP16 paths for distance (embedded)" ON)
 
-# =========================
-# Phase 3: palloc (git submodule at third_party/palloc)
-# =========================
-option(POMAI_USE_PALLOC "Use palloc as global allocator (PA_OVERRIDE=ON)" ON)
-
-# Ensure POMAI_USE_PALLOC and POMAI_PREFER_INTEGER_MATH are defined for source code (0 or 1)
-add_compile_definitions(POMAI_USE_PALLOC=$<BOOL:${POMAI_USE_PALLOC}>)
+# Ensure POMAI_PREFER_INTEGER_MATH is defined for source code (0 or 1)
 add_compile_definitions(POMAI_PREFER_INTEGER_MATH=$<BOOL:${POMAI_PREFER_INTEGER_MATH}>)
-
-if (POMAI_USE_PALLOC)
-  if (NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/CMakeLists.txt)
-    message(FATAL_ERROR
-      "palloc submodule not initialized. Run:\n  git submodule update --init third_party/palloc")
-  endif()
-  # Apply designator-order fix for init.c (required when building with C++/PA_USE_CXX; submodule has wrong order)
-  set(PALLOC_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc)
-  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchPallocInit.cmake)
-  # palloc submodule uses PA_* options — set BEFORE add_subdirectory
-  set(PA_BUILD_SHARED      OFF CACHE BOOL "" FORCE)
-  set(PA_BUILD_OBJECT      OFF CACHE BOOL "" FORCE)
-  set(PA_BUILD_TESTS       OFF CACHE BOOL "" FORCE)
-  set(PA_OVERRIDE          ON  CACHE BOOL "" FORCE)
-  set(PA_INSTALL_TOPLEVEL  OFF CACHE BOOL "" FORCE)
-  set(PA_USE_CXX           ON  CACHE BOOL "" FORCE)
-  set(PALLOC_BUILD_MODE "" CACHE STRING "palloc build mode (legacy for pomaidb)" FORCE)
-  add_subdirectory(third_party/palloc EXCLUDE_FROM_ALL)
-  message(STATUS "[pomai] palloc: enabled (static, PA_OVERRIDE=ON)")
-else()
-  message(STATUS "[pomai] palloc: disabled")
-endif()
 
 
 # =========================
@@ -105,7 +77,6 @@ target_include_directories(pomai
     ${CMAKE_CURRENT_SOURCE_DIR}
   SYSTEM PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/include
 )
 
 # OpenMP for parallel builds if needed
@@ -114,25 +85,15 @@ if (OpenMP_CXX_FOUND)
   target_link_libraries(pomai PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
-# Phase 3: mimalloc — TWO linking modes
-#
-#  Mode A (full MI_OVERRIDE): for standalone executables/static binaries only.
-#          malloc/free/new/delete are globally replaced. Fast, but UNSAFE when
-#          loaded as a .so by a host process (e.g. Python) that has its own heap.
-#
-#  Mode B (no-override, libpomai_c.so): mimalloc is used internally via
-#          mi_heap_* APIs. The global malloc/free are NOT replaced, so Python's
-#          glibc heap and mimalloc coexist without conflict.
-#
-# We achieve this by NOT linking mimalloc into libpomai (the intermediate static
-# lib). Instead:
-#   - libpomai_c.so  links mimalloc-static with MI_OVERRIDE=OFF (internal-only)
-#   - test/bench executables link mimalloc-static with MI_OVERRIDE=ON
-#     (done in the executable's own target_link_libraries)
-#
-# Note: MI_OVERRIDE is set at mimalloc *build time* (above), so we build ONE
-# mimalloc with MI_OVERRIDE=ON. For the .so we suppress interposition by NOT
-# exporting gnu-versioned malloc symbols — achieved via -Wl,--exclude-libs.
+if (MSVC)
+  target_compile_options(pomai PRIVATE /W4 /permissive-)
+else()
+  # Strict warnings for pomaidb code; then suppress vendored third_party (simd) warnings
+  target_compile_options(pomai PRIVATE
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+    -Wno-cpp -Wno-unknown-pragmas -Wno-conversion -Wno-float-conversion -Wno-unused-function
+    )
+endif()
 
 
 # =========================
@@ -152,44 +113,6 @@ set_target_properties(pomai_c_static PROPERTIES OUTPUT_NAME pomai_c)
 target_link_libraries(pomai_c PRIVATE pomai)
 target_link_libraries(pomai_c_static PRIVATE pomai)
 
-# Phase 3 fix: shared library (libpomai_c.so) must resolve palloc symbols when loaded by Python/FFI.
-# We link a palloc built with PALLOC_OVERRIDE=OFF so the .so is self-contained and does not
-# override the process malloc (safe for ctypes/JNI/FFI). Static wrapper and exes use palloc with OVERRIDE=ON.
-#
-if (POMAI_USE_PALLOC)
-  # Static wrapper: link palloc (override ON) for standalone executables.
-  target_link_libraries(pomai_c_static PRIVATE palloc-static)
-  target_compile_definitions(pomai_c_static PRIVATE POMAI_USE_PALLOC=1)
-
-  # Build palloc a second time with PA_OVERRIDE=OFF for the shared library (no malloc override at dlopen).
-  include(ExternalProject)
-  set(PALLOC_NOOVERRIDE_LIB "${CMAKE_BINARY_DIR}/palloc_nooverride-build/libpalloc.a")
-  ExternalProject_Add(palloc_nooverride
-    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc
-    BINARY_DIR ${CMAKE_BINARY_DIR}/palloc_nooverride-build
-    CMAKE_ARGS
-      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-      -DPALLOC_BUILD_MODE=
-      -DPA_OVERRIDE=OFF
-      -DPA_BUILD_SHARED=OFF
-      -DPA_BUILD_OBJECT=OFF
-      -DPA_BUILD_TESTS=OFF
-      -DPA_USE_CXX=ON
-      -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-      -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-    INSTALL_COMMAND ""
-    BUILD_BYPRODUCTS ${PALLOC_NOOVERRIDE_LIB}
-  )
-  add_library(palloc-static-nooverride STATIC IMPORTED GLOBAL)
-  set_target_properties(palloc-static-nooverride PROPERTIES
-    IMPORTED_LOCATION ${PALLOC_NOOVERRIDE_LIB}
-  )
-  add_dependencies(palloc-static-nooverride palloc_nooverride)
-  add_dependencies(pomai_c palloc_nooverride)
-  target_link_libraries(pomai_c PRIVATE palloc-static-nooverride)
-  target_link_libraries(pomai_c PRIVATE pthread rt atomic)
-endif()
-
 # Export C API symbols when building shared library on Windows.
 target_compile_definitions(pomai_c PRIVATE POMAI_C_BUILD_DLL)
 
@@ -205,10 +128,6 @@ target_include_directories(pomai_c_static
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-if (POMAI_USE_PALLOC)
-  target_include_directories(pomai_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/include)
-  target_include_directories(pomai_c_static PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/include)
-endif()
 
 if (MSVC)
   target_compile_options(pomai_c PRIVATE /W4 /permissive-)
@@ -216,16 +135,6 @@ if (MSVC)
 else()
   target_compile_options(pomai_c PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
   target_compile_options(pomai_c_static PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
-endif()
-
-if (MSVC)
-  target_compile_options(pomai PRIVATE /W4 /permissive-)
-else()
-  # Strict warnings for pomaidb code; then suppress vendored third_party (simd, palloc) warnings
-  target_compile_options(pomai PRIVATE
-    -Wall -Wextra -Wpedantic -Wconversion -Wshadow
-    -Wno-cpp -Wno-unknown-pragmas -Wno-conversion -Wno-float-conversion -Wno-unused-function
-    )
 endif()
 
 # =========================
@@ -246,11 +155,8 @@ if (POMAI_BUILD_TESTS)
   endif()
 
   function(pomai_setup_test target)
-    # Link against main library (and palloc when used, so exe resolves palloc symbols)
+    # Link against main library
     target_link_libraries(${target} PRIVATE pomai)
-    if (POMAI_USE_PALLOC)
-      target_link_libraries(${target} PRIVATE palloc-static)
-    endif()
 
     # One main per test binary (your harness)
     target_sources(${target} PRIVATE tests/common/test_runner.cc)
@@ -267,7 +173,6 @@ if (POMAI_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}              # "tests/common/..."
       ${CMAKE_CURRENT_SOURCE_DIR}/include      # public API
       ${CMAKE_CURRENT_SOURCE_DIR}/src          # internal headers: util/, core/, table/, storage/
-      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/include  # palloc.h for util/aligned_vector.h etc.
     )
 
     # Make TSAN builds more stable on some distros (PIE can trigger weird mmap layouts).
@@ -423,9 +328,6 @@ if (POMAI_BUILD_TESTS)
     
     # Manual setup loosely based on pomai_setup_test but without test_runner.cc
     target_link_libraries(pomai_crash_test PRIVATE pomai)
-    if (POMAI_USE_PALLOC)
-      target_link_libraries(pomai_crash_test PRIVATE palloc-static)
-    endif()
     if (MSVC)
       target_compile_options(pomai_crash_test PRIVATE /W4 /permissive-)
     else()
@@ -435,7 +337,6 @@ if (POMAI_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}
       ${CMAKE_CURRENT_SOURCE_DIR}/include
       ${CMAKE_CURRENT_SOURCE_DIR}/src
-      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/include
     )
     if (POMAI_IS_TSAN)
       target_compile_options(pomai_crash_test PRIVATE -fno-pie)
@@ -473,11 +374,7 @@ if (POMAI_BUILD_BENCH)
   # target_include_directories(my_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src)
 endif()
 
-# Helper: when palloc is used, executables that link pomai (or pomai_c) must also link palloc.
 set(POMAI_EXE_DEPS pomai)
-if (POMAI_USE_PALLOC)
-  list(APPEND POMAI_EXE_DEPS palloc-static)
-endif()
 
 # Baseline Benchmark
 add_executable(bench_baseline tests/bench_baseline.cc)
@@ -515,9 +412,6 @@ target_include_directories(ci_perf_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc
 add_executable(benchmark_a benchmarks/palloc_env_stress.cc)
 target_link_libraries(benchmark_a PRIVATE ${POMAI_EXE_DEPS})
 target_include_directories(benchmark_a PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-if (POMAI_USE_PALLOC)
-  target_include_directories(benchmark_a PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/include)
-endif()
 
 # =========================
 # Tools
@@ -532,8 +426,6 @@ target_include_directories(pomai_inspect PRIVATE
 # =========================
 # C API Tests & Examples
 # =========================
-# When POMAI_USE_PALLOC=ON, pomai_c.so does not link palloc (for safe Python/FFI use).
-# C exes that link only the .so would then have undefined palloc refs; build them only when palloc is off.
 if (POMAI_BUILD_TESTS)
   add_executable(c_api_test tests/test_c_api_basic.cpp)
   target_link_libraries(c_api_test PRIVATE pomai_c_static)
@@ -542,15 +434,13 @@ if (POMAI_BUILD_TESTS)
   add_test(NAME c_api_test COMMAND c_api_test)
 endif()
 
-if (NOT POMAI_USE_PALLOC)
-  add_executable(c_basic_example examples/c_basic.c)
-  target_link_libraries(c_basic_example PRIVATE pomai_c)
-  target_include_directories(c_basic_example PRIVATE include)
+add_executable(c_basic_example examples/c_basic.c)
+target_link_libraries(c_basic_example PRIVATE pomai_c)
+target_include_directories(c_basic_example PRIVATE include)
 
-  add_executable(c_scan_export_example examples/c_scan_export.c)
-  target_link_libraries(c_scan_export_example PRIVATE pomai_c)
-  target_include_directories(c_scan_export_example PRIVATE include)
-endif()
+add_executable(c_scan_export_example examples/c_scan_export.c)
+target_link_libraries(c_scan_export_example PRIVATE pomai_c)
+target_include_directories(c_scan_export_example PRIVATE include)
 
 install(TARGETS pomai pomai_c pomai_c_static
   ARCHIVE DESTINATION lib
@@ -563,5 +453,3 @@ install(FILES
   include/pomai/c_version.h
   include/pomai/database.h
   DESTINATION include/pomai)
-add_executable(palloc_perf_verify tests/palloc_perf_verify.cc)
-target_link_libraries(palloc_perf_verify PRIVATE pomai palloc-static pthread)

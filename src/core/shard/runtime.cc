@@ -245,10 +245,6 @@ namespace pomai::core
 
     VectorRuntime::~VectorRuntime()
     {
-        if (started_ && palloc_heap_) {
-            palloc_heap_delete(palloc_heap_);
-            palloc_heap_ = nullptr;
-        }
         started_ = false;
     }
 
@@ -261,17 +257,8 @@ namespace pomai::core
         s.candidates_scanned = last_query_candidates_scanned_;
         s.memtable_entries  = mem_ ? static_cast<std::uint64_t>(mem_->GetCount()) : 0u;
 
-        // 3. Telemetry Fusion
-        // Collect palloc heap stats for this shard.
-        if (palloc_heap_) {
-            size_t committed = 0;
-            size_t used = 0;
-            // mimalloc (palloc) doesn't have a direct per-heap stats struct yet in v2.x 
-            // but we can estimate via the heap internals if needed or rely on Merge
-            // For now, we'll mark it as available for fusion.
-            s.palloc_mem_committed = committed; 
-            s.palloc_mem_used = used;
-        }
+        s.mem_committed = 0;
+        s.mem_used = 0;
         return s;
     }
 
@@ -285,18 +272,13 @@ namespace pomai::core
             return pomai::Status::Busy("shard already started");
         started_ = true;
 
-        palloc_heap_ = palloc_heap_new();
-        mem_manager_.Initialize(palloc_heap_);
-#if defined(POMAI_USE_PALLOC) && POMAI_USE_PALLOC
-        palloc_option_set(palloc_option_reserve_huge_os_pages, 1024);
-#endif
+        mem_manager_.Initialize(nullptr);
 
         if (mem_ && mem_->GetCount() > 0)
             (void)RotateMemTable();
 
         auto st = LoadSegments();
         if (!st.ok()) {
-            if (palloc_heap_) { palloc_heap_delete(palloc_heap_); palloc_heap_ = nullptr; }
             started_ = false;
             return st;
         }
@@ -356,7 +338,7 @@ namespace pomai::core
     {
         if (mem_->GetCount() == 0) return pomai::Status::Ok();
         frozen_mem_.push_back(mem_);
-        mem_ = std::make_shared<table::MemTable>(dim_, 1u << 20, palloc_heap_);
+        mem_ = std::make_shared<table::MemTable>(dim_, 1u << 20);
         PublishSnapshot();
         return pomai::Status::Ok();
     }

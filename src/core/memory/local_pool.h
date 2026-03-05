@@ -92,9 +92,9 @@ private:
  */
 class RuntimeMemoryManager {
 public:
-    void Initialize(palloc_heap_t* heap) {
-        task_pool_.SetHeap(heap);
-        vector_pool_.SetHeap(heap);
+    void Initialize(void* /*heap*/) {
+        task_pool_.SetHeap(nullptr);
+        vector_pool_.SetHeap(nullptr);
     }
 
     POMAI_HOT void* AllocTask(size_t size) { return task_pool_.Allocate(size); }

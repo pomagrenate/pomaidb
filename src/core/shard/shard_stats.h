@@ -16,8 +16,8 @@ struct RuntimeStats {
     std::uint64_t queue_depth{0};         // Current pending commands in mailbox
     std::uint64_t candidates_scanned{0};  // Candidates scanned in last query
     std::uint64_t memtable_entries{0};    // Current active MemTable size
-    std::uint64_t palloc_mem_committed{0}; // Runtime heap committed bytes
-    std::uint64_t palloc_mem_used{0};      // Runtime heap used bytes
+    std::uint64_t mem_committed{0};       // Runtime heap committed bytes
+    std::uint64_t mem_used{0};            // Runtime heap used bytes
 };
 
 } // namespace pomai::core
