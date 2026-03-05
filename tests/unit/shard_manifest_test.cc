@@ -9,17 +9,17 @@
 namespace {
     namespace fs = std::filesystem;
 
-    POMAI_TEST(ShardManifest_CommitLoad) {
+    POMAI_TEST(SegmentManifest_CommitLoad) {
         const std::string root = pomai::test::TempDir("shard-manifest-test");
 
         // Initial load -> empty
         std::vector<std::string> segs;
-        POMAI_EXPECT_OK(pomai::core::ShardManifest::Load(root, &segs));
+        POMAI_EXPECT_OK(pomai::core::SegmentManifest::Load(root, &segs));
         POMAI_EXPECT_TRUE(segs.empty());
 
         // Commit
         std::vector<std::string> expected = {"seg_1.dat", "seg_0.dat"};
-        POMAI_EXPECT_OK(pomai::core::ShardManifest::Commit(root, expected));
+        POMAI_EXPECT_OK(pomai::core::SegmentManifest::Commit(root, expected));
 
         // Check file exists
         POMAI_EXPECT_TRUE(fs::exists(fs::path(root) / "manifest.current"));
@@ -27,16 +27,16 @@ namespace {
 
         // Load back
         std::vector<std::string> loaded;
-        POMAI_EXPECT_OK(pomai::core::ShardManifest::Load(root, &loaded));
+        POMAI_EXPECT_OK(pomai::core::SegmentManifest::Load(root, &loaded));
         POMAI_EXPECT_EQ(loaded.size(), 2);
         POMAI_EXPECT_EQ(loaded[0], "seg_1.dat");
         POMAI_EXPECT_EQ(loaded[1], "seg_0.dat");
 
         // Update again
         expected.push_back("seg_2.dat");
-        POMAI_EXPECT_OK(pomai::core::ShardManifest::Commit(root, expected));
+        POMAI_EXPECT_OK(pomai::core::SegmentManifest::Commit(root, expected));
 
-        POMAI_EXPECT_OK(pomai::core::ShardManifest::Load(root, &loaded));
+        POMAI_EXPECT_OK(pomai::core::SegmentManifest::Load(root, &loaded));
         POMAI_EXPECT_EQ(loaded.size(), 3);
         POMAI_EXPECT_EQ(loaded[2], "seg_2.dat");
 
@@ -44,13 +44,13 @@ namespace {
         POMAI_EXPECT_TRUE(fs::exists(fs::path(root) / "manifest.prev"));
     }
 
-    POMAI_TEST(ShardManifest_LoadFallbackToPrevOnCorruption) {
+    POMAI_TEST(SegmentManifest_LoadFallbackToPrevOnCorruption) {
         const std::string root = pomai::test::TempDir("shard-manifest-fallback-test");
         std::vector<std::string> first = {"seg_a.dat"};
         std::vector<std::string> second = {"seg_b.dat", "seg_a.dat"};
 
-        POMAI_EXPECT_OK(pomai::core::ShardManifest::Commit(root, first));
-        POMAI_EXPECT_OK(pomai::core::ShardManifest::Commit(root, second));
+        POMAI_EXPECT_OK(pomai::core::SegmentManifest::Commit(root, first));
+        POMAI_EXPECT_OK(pomai::core::SegmentManifest::Commit(root, second));
 
         // Corrupt current manifest payload while keeping header to trigger CRC failure.
         const fs::path curr = fs::path(root) / "manifest.current";
@@ -62,12 +62,12 @@ namespace {
         }
 
         std::vector<std::string> loaded;
-        POMAI_EXPECT_OK(pomai::core::ShardManifest::Load(root, &loaded));
+        POMAI_EXPECT_OK(pomai::core::SegmentManifest::Load(root, &loaded));
         POMAI_EXPECT_EQ(loaded.size(), 1);
         POMAI_EXPECT_EQ(loaded[0], "seg_a.dat"); // from manifest.prev
     }
 
-    POMAI_TEST(ShardManifest_LoadLegacyFormatStillSupported) {
+    POMAI_TEST(SegmentManifest_LoadLegacyFormatStillSupported) {
         const std::string root = pomai::test::TempDir("shard-manifest-legacy-test");
         const fs::path curr = fs::path(root) / "manifest.current";
 
@@ -78,7 +78,7 @@ namespace {
         }
 
         std::vector<std::string> loaded;
-        POMAI_EXPECT_OK(pomai::core::ShardManifest::Load(root, &loaded));
+        POMAI_EXPECT_OK(pomai::core::SegmentManifest::Load(root, &loaded));
         POMAI_EXPECT_EQ(loaded.size(), 2);
         POMAI_EXPECT_EQ(loaded[0], "seg_legacy_1.dat");
         POMAI_EXPECT_EQ(loaded[1], "seg_legacy_0.dat");

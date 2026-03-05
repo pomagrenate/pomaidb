@@ -2,7 +2,7 @@
 //
 // PHASE 1 UPDATE: Replaced std::unordered_map + shared_mutex with
 // FlatHashMemMap (open-addressing, robin-hood, backward-shift deletion).
-// Single-writer (ShardRuntime actor): no lock needed on write path.
+// Single-writer (VectorRuntime): no lock needed on write path.
 // Seqlock protects readers.
 
 #include "table/memtable.h"
@@ -42,6 +42,17 @@ void Arena::Clear() {
         }
     }
     blocks_.clear();
+}
+
+std::size_t Arena::BytesUsed() const noexcept {
+    std::size_t total = 0;
+    for (const auto& b : blocks_)
+        total += b.used;
+    return total;
+}
+
+std::size_t MemTable::BytesUsed() const noexcept {
+    return arena_.BytesUsed();
 }
 
 // ------------------------------------------------

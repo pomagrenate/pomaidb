@@ -4,11 +4,12 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <random>
-#include <iostream>
 
-#include "core/distance.h" // For Dot/L2Sq
+#include "core/distance.h"
+#include "core/storage/io_provider.h"
 
 namespace pomai::index {
 
@@ -264,9 +265,24 @@ pomai::Status IvfFlatIndex::Load(const std::string& path, std::unique_ptr<IvfFla
     idx->total_count_ = total_count;
     idx->trained_ = true;
 
-    // Centroids
+    // Centroids: read in 1MB chunks to bound memory on embedded
     idx->centroids_.resize(static_cast<size_t>(centroid_floats));
-    in.read(reinterpret_cast<char*>(idx->centroids_.data()), static_cast<std::streamsize>(centroid_bytes));
+    {
+        const size_t chunk = pomai::storage::kStreamReadChunkSize;
+        char* dst = reinterpret_cast<char*>(idx->centroids_.data());
+        size_t remaining = static_cast<size_t>(centroid_bytes);
+        std::vector<char> scratch(std::min(chunk, remaining));
+        while (remaining > 0) {
+            size_t to_read = std::min(scratch.size(), remaining);
+            in.read(scratch.data(), static_cast<std::streamsize>(to_read));
+            if (in.gcount() != static_cast<std::streamsize>(to_read)) {
+                return pomai::Status::Corruption("Truncated centroids");
+            }
+            std::memcpy(dst, scratch.data(), to_read);
+            dst += to_read;
+            remaining -= to_read;
+        }
+    }
 
     // Lists
     uint64_t ids_seen = 0;

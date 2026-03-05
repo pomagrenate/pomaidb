@@ -4,7 +4,7 @@
 // FlatHashMemMap (open-addressing, robin-hood, backward-shift deletion)
 // guarded by a seqlock.
 //
-// Write path: single writer (ShardRuntime actor thread) — lock-free.
+// Write path: single writer (VectorRuntime) — lock-free.
 // Read path  (ForEach/IterateWithStatus): seqlock read — typically 2 atomic loads.
 // Read path  (Get/IsTombstone): seqlock read, O(1) average.
 //
@@ -59,6 +59,8 @@ public:
     size_t GetCount() const noexcept {
         return map_.size();       // atomic (seqlock writer is sole mutator)
     }
+    /** Approximate bytes used by active memtable (arena + map overhead). For pressure backpressure. */
+    std::size_t BytesUsed() const noexcept;
     void Clear();
 
     // ---- Cursor ----

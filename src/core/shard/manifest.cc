@@ -1,8 +1,9 @@
 #include "core/shard/manifest.h"
+#include <fcntl.h>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include "core/storage/io_provider.h"
@@ -18,19 +19,24 @@ namespace {
     constexpr std::string_view kManifestHeaderAlt = "pomai.shard_manifest.v2";
     constexpr size_t kCrcSize = 4;
 
-    // Read entire file into string; returns false on read error.
-    static bool ReadFile(const fs::path& path, std::string* out) {
-        std::ifstream in(path, std::ios::binary);
-        if (!in.is_open()) return false;
-        in.seekg(0, std::ios::end);
-        auto n = in.tellg();
-        in.seekg(0, std::ios::beg);
-        if (n <= 0) {
-            out->clear();
-            return true;
+    // Read file into string in 1MB chunks (streaming) to bound memory on embedded.
+    static bool ReadFileStreaming(const fs::path& path, std::string* out) {
+        int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) return false;
+        out->clear();
+        std::string chunk;
+        chunk.resize(kStreamReadChunkSize);
+        for (;;) {
+            ssize_t n = ::read(fd, chunk.data(), chunk.size());
+            if (n < 0) {
+                ::close(fd);
+                return false;
+            }
+            if (n == 0) break;
+            out->append(chunk.data(), static_cast<size_t>(n));
         }
-        out->resize(static_cast<size_t>(n));
-        return static_cast<bool>(in.read(out->data(), n));
+        ::close(fd);
+        return true;
     }
 
     // Parse segment list from payload (after header line). One segment name per line.
@@ -50,8 +56,8 @@ namespace {
     // Try to load from one manifest file. Returns true if loaded and CRC valid (or legacy format).
     static pomai::Status TryLoadOne(const fs::path& path, std::vector<std::string>* out_segments) {
         std::string raw;
-        if (!ReadFile(path, &raw))
-            return pomai::Status::IOError("shard manifest read failed");
+        if (!ReadFileStreaming(path, &raw))
+            return pomai::Status::IOError("segment manifest read failed");
 
         if (raw.empty()) {
             out_segments->clear();
@@ -72,21 +78,21 @@ namespace {
         std::memcpy(&stored_crc, raw.data() + content_len, kCrcSize);
         uint32_t computed = pomai::util::Crc32c(raw.data(), content_len);
         if (computed != stored_crc)
-            return pomai::Status::Corruption("shard manifest CRC mismatch");
+            return pomai::Status::Corruption("segment manifest CRC mismatch");
 
         // Payload after first line (header).
         size_t first_nl = content_part.find('\n');
         if (first_nl == std::string_view::npos)
-            return pomai::Status::Corruption("shard manifest truncated");
+            return pomai::Status::Corruption("segment manifest truncated");
         std::string_view payload = content_part.substr(first_nl + 1);
         ParseSegmentLines(payload, out_segments);
         return pomai::Status::Ok();
     }
 }
 
-pomai::Status ShardManifest::Load(const std::string& shard_dir, std::vector<std::string>* out_segments) {
-    fs::path curr = fs::path(shard_dir) / "manifest.current";
-    fs::path prev = fs::path(shard_dir) / "manifest.prev";
+pomai::Status SegmentManifest::Load(const std::string& data_dir, std::vector<std::string>* out_segments) {
+    fs::path curr = fs::path(data_dir) / "manifest.current";
+    fs::path prev = fs::path(data_dir) / "manifest.prev";
 
     if (!fs::exists(curr)) {
         out_segments->clear();
@@ -105,10 +111,10 @@ pomai::Status ShardManifest::Load(const std::string& shard_dir, std::vector<std:
     return st;
 }
 
-pomai::Status ShardManifest::Commit(const std::string& shard_dir, const std::vector<std::string>& segments) {
-    fs::path tmp = fs::path(shard_dir) / "manifest.tmp";
-    fs::path curr = fs::path(shard_dir) / "manifest.current";
-    fs::path prev = fs::path(shard_dir) / "manifest.prev";
+pomai::Status SegmentManifest::Commit(const std::string& data_dir, const std::vector<std::string>& segments) {
+    fs::path tmp = fs::path(data_dir) / "manifest.tmp";
+    fs::path curr = fs::path(data_dir) / "manifest.current";
+    fs::path prev = fs::path(data_dir) / "manifest.prev";
 
     std::string buffer;
     buffer.append(kManifestHeader);
@@ -142,7 +148,7 @@ pomai::Status ShardManifest::Commit(const std::string& shard_dir, const std::vec
     fs::rename(tmp, curr, ec);
     if (ec) return pomai::Status::IOError("Manifest rename failed");
 
-    int dir_fd = open(shard_dir.c_str(), O_DIRECTORY | O_RDONLY);
+    int dir_fd = open(data_dir.c_str(), O_DIRECTORY | O_RDONLY);
     if (dir_fd >= 0) {
         fsync(dir_fd);
         close(dir_fd);

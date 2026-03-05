@@ -30,7 +30,7 @@ PomaiDB integrates with **palloc**, a vector-first allocator that provides O(1) 
 
 - **Architecture:** Shared-nothing, single-threaded event loop. One logical thread of execution; no worker threads, no thread pools in the core path.
 - **Storage:** Log-structured, append-only. Tombstone-based deletion; sequential flush of in-memory buffer to disk. Optional explicit `Flush()` from the application loop.
-- **Memory:** Powered by **palloc** (vector-first allocator). Arena-backed buffers for ingestion; optional hard limits for embedded and edge deployments.
+- **Memory:** Powered by **palloc** (mmap-backed allocator). Core and C API use only palloc/mmap—no raw `malloc` or `new`. Arena-backed buffers for ingestion; optional hard limits for embedded and edge deployments.
 - **I/O:** Sequential write-behind; **mmap** zero-copy reads for persisted segments. Designed for SD-card and eMMC longevity first, NVMe-friendly by construction.
 - **Hardware:** Optimized for **ARM64** (Raspberry Pi, Orange Pi, Jetson) and **x64** servers. Single-threaded design avoids NUMA and core-pinning complexity.
 
@@ -49,6 +49,16 @@ mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
+
+**Smaller clone (embedded / CI):** Use a shallow clone and slim the palloc submodule to skip unneeded directories (saves ~6MB+ and reduces history size):
+
+```bash
+git clone --depth 1 --recursive https://github.com/YOUR_ORG/pomaidb.git
+cd pomaidb
+./scripts/slim_palloc_submodule.sh
+```
+
+Then build as above. The script configures sparse checkout for `third_party/palloc` so that `media/`, `test/`, `bench/`, and `contrib/` are not checked out (pomaidb does not need them to build).
 
 ### Quick Start (C++20)
 
@@ -101,6 +111,74 @@ int main() {
 ```
 
 Link against the PomaiDB static library and, when using the palloc integration, the palloc library. See the repository's build instructions for details.
+
+### Run benchmarks (one by one)
+
+From a configured build directory, run each benchmark in order:
+
+```bash
+# Build (benchmarks are built by default with the main targets)
+cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
+
+# Run all benchmarks one by one (short workloads)
+../scripts/run_benchmarks_one_by_one.sh
+```
+
+Or run individual executables: `./bench_baseline`, `./comprehensive_bench --dataset small`, `./ingestion_bench 10000 128`, `./rag_bench 100 64 32`, `./ci_perf_bench`, `./bin/bench_cbrs`, `./benchmark_a` (use `POMAI_BENCH_LOW_MEMORY=1` for a shorter run).
+
+### Minimal clone (embedded)
+
+For the smallest footprint on embedded devices:
+
+1. **Shallow clone** to avoid full history: `git clone --depth 1 --recursive <repo>`.
+2. **Slim palloc submodule** (saves ~6MB): after clone, run `./scripts/slim_palloc_submodule.sh` so `third_party/palloc` omits `media/`, `test/`, `bench/`, and `contrib/`.
+3. **Optional sparse checkout of pomaidb**: for a production embedded build you can exclude `benchmarks/`, `examples/`, or `tools/` via your own sparse-checkout if you do not need them at build time.
+
+### Docker: run benchmarks
+
+Build the image, then run benchmarks in constrained (IoT/Edge) or server-style containers:
+
+```bash
+docker compose build
+docker compose up
+```
+
+Each service runs `benchmark_a` by default; when the benchmark finishes, the container exits. To run a single environment or a different benchmark:
+
+```bash
+# IoT (128 MB RAM, low-memory targets)
+docker compose run --rm pomai-iot-starvation
+
+# Edge (512 MB RAM)
+docker compose run --rm pomai-edge-gateway
+
+# Server (2 GB RAM, no CPU cap)
+docker compose run --rm pomai-server-lite
+```
+
+Override the default command to run another benchmark (e.g. `ingestion_bench`, `comprehensive_bench`, `rag_bench`, `ci_perf_bench`):
+
+```bash
+docker compose run --rm pomai-iot-starvation ingestion_bench
+```
+
+To get a shell and run benchmarks manually:
+
+```bash
+docker compose run --rm pomai-iot-starvation sh
+# inside container: benchmark_a, ingestion_bench, benchmark_a --list, etc.
+```
+
+Reports can be written to the host under `./bench` by overriding the command (see `docker-compose.yml` comment).
+
+For very small containers (e.g. 128 MiB for `pomai-iot-starvation`), PomaiDB uses **memtable backpressure** to leave RAM
+for the OS and other processes. You can tune this via:
+
+- `POMAI_MEMTABLE_FLUSH_THRESHOLD_MB` – approximate upper bound for memtable RAM (e.g. `48` for ~48 MiB)
+- `POMAI_BENCH_LOW_MEMORY=1` – shrink benchmark workloads and enable a conservative default threshold
+
+When the memtable grows beyond this threshold, PomaiDB automatically runs a blocking `Freeze()`, which slows ingestion
+just enough to avoid the OOM killer while keeping the OS responsive.
 
 ---
 

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "palloc_compat.h"
 #include "pomai/metadata.h"
 #include "pomai/options.h"
 #include "pomai/status.h"
@@ -21,10 +22,12 @@ namespace pomai::storage
     class Wal
     {
     public:
+        /** \a heap optional; when null, uses global palloc aligned allocator (mmap-backed). */
         Wal(std::string db_path,
             std::uint32_t shard_id,
             std::size_t segment_bytes,
-            pomai::FsyncPolicy fsync);
+            pomai::FsyncPolicy fsync,
+            palloc_heap_t* heap = nullptr);
         ~Wal();
 
         Wal(const Wal &) = delete;
@@ -62,6 +65,7 @@ namespace pomai::storage
         std::uint64_t file_off_ = 0;
         std::size_t bytes_in_seg_ = 0;
 
+        palloc_heap_t* heap_ = nullptr;
         // POSIX file (append by pwrite at tracked offset)
         class Impl;
         Impl *impl_ = nullptr;

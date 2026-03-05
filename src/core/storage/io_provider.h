@@ -12,6 +12,9 @@
 
 namespace pomai::storage {
 
+/** Chunk size for streaming file reads (1MB) to bound memory on embedded. */
+constexpr size_t kStreamReadChunkSize = 1024 * 1024;
+
 /**
  * SequentialFile: Optimized for streaming reads (e.g. WAL replay, Scan).
  */

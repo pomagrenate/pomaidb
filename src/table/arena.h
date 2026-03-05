@@ -19,6 +19,9 @@ namespace pomai::table
         void *Allocate(std::size_t n, std::size_t align);
         void Clear();
 
+        /** Total bytes allocated in all blocks (used portion). For memtable pressure backpressure. */
+        std::size_t BytesUsed() const noexcept;
+
     private:
         struct Block
         {

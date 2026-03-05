@@ -23,7 +23,6 @@ int main(int argc, char** argv) {
     std::cout << "Starting Baseline Benchmark (single-threaded)..." << std::endl;
 
     const uint32_t dim = 128;
-    const uint32_t n_shards = 4;
     const size_t initial_count = 50000;
     const std::chrono::seconds duration(5);
 
@@ -32,7 +31,8 @@ int main(int argc, char** argv) {
     DBOptions opt;
     opt.path = "bench_baseline_db";
     opt.dim = dim;
-    opt.shard_count = n_shards;
+    // Legacy field; monolithic runtime uses a single logical instance.
+    opt.shard_count = 1;
 
     std::filesystem::remove_all(opt.path);
 
@@ -49,6 +49,14 @@ int main(int argc, char** argv) {
         db->Put(id, v);
     }
     std::cout << "Pre-fill done." << std::endl;
+
+    // Freeze so segments + HNSW index are built; otherwise search is brute-force over memtable (~4 QPS).
+    std::cout << "Freezing to build segments and index..." << std::endl;
+    if (!db->Freeze("__default__").ok()) {
+        std::cerr << "Freeze failed" << std::endl;
+        return 1;
+    }
+    std::cout << "Freeze done. Running mixed write+search loop..." << std::endl;
 
     size_t write_ops = 0;
     size_t search_ops = 0;

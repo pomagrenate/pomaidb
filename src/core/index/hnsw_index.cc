@@ -1,12 +1,13 @@
 #include "core/index/hnsw_index.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
-#include <algorithm>
 
-#include "third_party/pomaidb_hnsw/hnsw.h"
 #include "core/distance.h"
+#include "core/storage/io_provider.h"
+#include "third_party/pomaidb_hnsw/hnsw.h"
 
 namespace pomai::index {
 
@@ -131,11 +132,23 @@ pomai::Status HnswIndex::Load(const std::string& path,
     fread(&n, sizeof(size_t), 1, f);
     std::vector<VectorId> id_map(n);
     fread(id_map.data(), sizeof(VectorId), n, f);
-    
+
     pomai::util::AlignedVector<float> vector_pool;
     vector_pool.resize(n * dim);
-    fread(vector_pool.data(), sizeof(float), n * dim, f);
-    
+    const size_t pool_bytes = n * dim * sizeof(float);
+    size_t offset = 0;
+    std::vector<char> scratch(pomai::storage::kStreamReadChunkSize);
+    while (offset < pool_bytes) {
+        size_t to_read = std::min(pomai::storage::kStreamReadChunkSize, pool_bytes - offset);
+        size_t nr = fread(scratch.data(), 1, to_read, f);
+        if (nr != to_read) {
+            fclose(f);
+            return pomai::Status::IOError("HNSW vector pool read failed");
+        }
+        std::memcpy(reinterpret_cast<char*>(vector_pool.data()) + offset, scratch.data(), nr);
+        offset += nr;
+    }
+
     fclose(f);
 
     HnswOptions opts;

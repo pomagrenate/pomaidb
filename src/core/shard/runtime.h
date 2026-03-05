@@ -9,8 +9,7 @@
 #include <vector>
 
 #include "core/shard/snapshot.h"
-#include "core/shard/shard_stats.h"
-#include "palloc_compat.h"
+#include "core/shard/shard_stats.h"  // RuntimeStats
 #include "pomai/metadata.h"
 #include "pomai/search.h"
 #include "pomai/iterator.h"
@@ -89,11 +88,11 @@ namespace pomai::core
 
     class SearchMergePolicy;
 
-    class POMAI_CACHE_ALIGNED ShardRuntime
+    class POMAI_CACHE_ALIGNED VectorRuntime
     {
     public:
-        ShardRuntime(std::uint32_t shard_id,
-                     std::string shard_dir,
+        VectorRuntime(std::uint32_t runtime_id,
+                     std::string data_dir,
                      std::uint32_t dim,
                      pomai::MembraneKind kind,
                      pomai::MetricType metric,
@@ -101,10 +100,10 @@ namespace pomai::core
                      std::unique_ptr<table::MemTable> mem,
                      const pomai::IndexParams& index_params);
                      
-        ~ShardRuntime();
+        ~VectorRuntime();
 
-        ShardRuntime(const ShardRuntime &) = delete;
-        ShardRuntime &operator=(const ShardRuntime &) = delete;
+        VectorRuntime(const VectorRuntime &) = delete;
+        VectorRuntime &operator=(const VectorRuntime &) = delete;
 
         pomai::Status Start();
 
@@ -122,13 +121,13 @@ namespace pomai::core
         pomai::Status Compact(); // Compact Segments
 
         pomai::Status NewIterator(std::unique_ptr<pomai::SnapshotIterator>* out); // Create snapshot iterator
-        pomai::Status NewIterator(std::shared_ptr<ShardSnapshot> snap, std::unique_ptr<pomai::SnapshotIterator>* out); // Added
+        pomai::Status NewIterator(std::shared_ptr<VectorSnapshot> snap, std::unique_ptr<pomai::SnapshotIterator>* out);
         
-        std::shared_ptr<ShardSnapshot> GetSnapshot() {
+        std::shared_ptr<VectorSnapshot> GetSnapshot() {
              return current_snapshot_;
         }
 
-        pomai::Status GetSemanticPointer(std::shared_ptr<ShardSnapshot> snap, pomai::VectorId id, pomai::SemanticPointer* out);
+        pomai::Status GetSemanticPointer(std::shared_ptr<VectorSnapshot> snap, pomai::VectorId id, pomai::SemanticPointer* out);
 
         pomai::Status Search(std::span<const float> query,
                              std::uint32_t topk,
@@ -147,8 +146,10 @@ namespace pomai::core
         std::uint64_t GetOpsProcessed() const { return ops_processed_; }
         std::uint64_t LastQueryCandidatesScanned() const { return last_query_candidates_scanned_; }
 
-        // Phase 4: per-shard snapshot of runtime metrics (lock-free, any thread).
-        ShardStats GetStats() const noexcept;
+        RuntimeStats GetStats() const noexcept;
+
+        /** Active memtable bytes used (for backpressure). Single-threaded: no lock. */
+        std::size_t MemTableBytesUsed() const noexcept;
 
 
     private:
@@ -167,12 +168,12 @@ namespace pomai::core
         // std::pair<pomai::Status, bool> HandleExists(ExistsCmd &c); // Deprecated
 
         // Lock-free internal helpers
-        pomai::Status GetFromSnapshot(std::shared_ptr<ShardSnapshot> snap, pomai::VectorId id, std::vector<float> *out, pomai::Metadata* out_meta = nullptr);
-        std::pair<pomai::Status, bool> ExistsInSnapshot(std::shared_ptr<ShardSnapshot> snap, pomai::VectorId id);
+        pomai::Status GetFromSnapshot(std::shared_ptr<VectorSnapshot> snap, pomai::VectorId id, std::vector<float> *out, pomai::Metadata* out_meta = nullptr);
+        std::pair<pomai::Status, bool> ExistsInSnapshot(std::shared_ptr<VectorSnapshot> snap, pomai::VectorId id);
 
         // Core scoring routine that uses a prebuilt merge_policy
         pomai::Status SearchLocalInternal(std::shared_ptr<table::MemTable> active,
-                                          std::shared_ptr<ShardSnapshot> snap, 
+                                          std::shared_ptr<VectorSnapshot> snap, 
                                           std::span<const float> query,
                                           float query_sum,
                                           std::uint32_t topk,
@@ -195,8 +196,8 @@ namespace pomai::core
         void PumpBackgroundWork(std::chrono::milliseconds budget);
         void CancelBackgroundJob(const std::string& reason);
 
-        const std::uint32_t shard_id_;
-        const std::string shard_dir_;
+        const std::uint32_t runtime_id_;
+        const std::string data_dir_;
         const std::uint32_t dim_;
         const pomai::MembraneKind kind_;
         const pomai::MetricType metric_;
@@ -207,7 +208,7 @@ namespace pomai::core
 
         std::vector<std::shared_ptr<table::SegmentReader>> segments_;
 
-        std::shared_ptr<ShardSnapshot> current_snapshot_;
+        std::shared_ptr<VectorSnapshot> current_snapshot_;
         std::uint64_t next_snapshot_version_ = 1;
 
         // IVF coarse index for candidate selection (centroid routing).
@@ -215,7 +216,7 @@ namespace pomai::core
 
         // Elite Concurrency & Memory Base
         concurrency::Executor executor_;
-        memory::ShardMemoryManager mem_manager_;
+        memory::RuntimeMemoryManager mem_manager_;
 
         POMAI_CACHE_ALIGNED std::uint64_t ops_processed_{0};
         POMAI_CACHE_ALIGNED std::uint64_t last_query_candidates_scanned_{0};
@@ -228,7 +229,6 @@ namespace pomai::core
         std::unique_ptr<BackgroundJob> background_job_;
         std::optional<pomai::Status> last_background_result_;  // Set when background job completes (single-threaded)
         std::uint64_t wal_epoch_{0};
-        palloc_heap_t* palloc_heap_{nullptr};
     };
 
 } // namespace pomai::core

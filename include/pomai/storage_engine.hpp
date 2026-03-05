@@ -83,21 +83,27 @@ struct alignas(kStorageAlign) StorageFileHeader {
 };
 static_assert(sizeof(StorageFileHeader) == 64u, "File header 64 bytes");
 
-// Vector record: 64-byte header then payload (metadata blob + dim*sizeof(float)).
+// Vector record: 64-byte header then payload (metadata blob + dim*sizeof(float) or SQ8: 2*float + dim*uint8).
 // Supports any fixed dim per segment (e.g. 1536). Tombstone flag for deletes/updates.
 struct alignas(kStorageAlign) VectorRecordHeader {
     static constexpr std::uint32_t kFlagTombstone = 1u;
+    static constexpr std::uint32_t kFlagQuantized = 2u;  // SQ8: payload is min, max, dim x int8
     pomai::VectorId id;
     std::uint32_t dim;
-    std::uint32_t flags;           // bit0 = tombstone
+    std::uint32_t flags;           // bit0 = tombstone, bit1 = quantized
     std::uint32_t metadata_len;
     std::uint32_t reserved[11];
     bool is_tombstone() const noexcept { return (flags & kFlagTombstone) != 0; }
+    bool is_quantized() const noexcept { return (flags & kFlagQuantized) != 0; }
 };
 static_assert(sizeof(VectorRecordHeader) == 64u, "Record header 64 bytes");
 
-inline std::size_t RecordSize(std::uint32_t dim, std::uint32_t metadata_len) {
-    std::size_t payload = metadata_len + static_cast<std::size_t>(dim) * sizeof(float);
+inline std::size_t RecordSize(std::uint32_t dim, std::uint32_t metadata_len, bool quantized = false) {
+    std::size_t payload;
+    if (quantized)
+        payload = metadata_len + 2u * sizeof(float) + static_cast<std::size_t>(dim);  // min, max, dim x uint8
+    else
+        payload = metadata_len + static_cast<std::size_t>(dim) * sizeof(float);
     return ((sizeof(VectorRecordHeader) + payload) + kStorageAlign - 1u) & ~(kStorageAlign - 1u);
 }
 
@@ -110,10 +116,20 @@ public:
     StorageEngine& operator=(const StorageEngine&) = delete;
 
     pomai::Status Open(std::string_view path, std::uint32_t dim, palloc_heap_t* heap = nullptr,
-                      std::size_t flush_threshold_bytes = kDefaultFlushThreshold);
+                      std::size_t flush_threshold_bytes = kDefaultFlushThreshold,
+                      bool use_quantization = true);
     pomai::Status Close();
     // Append: pushes to in-memory buffer only. Call Flush() explicitly from main loop.
     pomai::Status Append(pomai::VectorId id, std::span<const float> vec, const pomai::Metadata* meta = nullptr);
+    /**
+     * AppendBatch: zero-copy batch ingest into the arena-backed buffer.
+     * - ids: N vector ids
+     * - vectors: flattened N * dim float buffer (id0[0..dim), id1[0..dim), ...)
+     * No disk I/O; visibility is immediate via the in-RAM index. Flush() performs the slow write/fsync.
+     */
+    pomai::Status AppendBatch(std::span<const pomai::VectorId> ids,
+                              std::span<const float> vectors,
+                              std::uint32_t dim);
     pomai::Status Delete(pomai::VectorId id);
     // Flush: called explicitly by main loop; writes entire buffer to disk sequentially.
     pomai::Status Flush();
@@ -130,9 +146,12 @@ public:
     std::uint32_t dim() const noexcept { return dim_; }
     bool is_open() const noexcept { return fd_ >= 0; }
     std::size_t pending_bytes() const noexcept { return pending_bytes_; }
+    bool use_quantization() const noexcept { return use_quantization_; }
 
 private:
     pomai::Status AppendToBuffer(const VectorRecordHeader& hdr, std::span<const std::byte> metadata, std::span<const float> vec);
+    pomai::Status AppendToBufferQuantized(const VectorRecordHeader& hdr, std::span<const std::byte> metadata,
+                                         float min_val, float max_val, std::span<const std::uint8_t> qvec);
     pomai::Status FlushBufferToFile();
     pomai::Status BuildIndexFromMmap();
 
@@ -157,6 +176,8 @@ private:
     struct IndexEntry { std::size_t offset; std::size_t length; bool tombstone; bool in_buffer; };
     std::vector<std::pair<pomai::VectorId, IndexEntry>> index_;
     palloc_heap_t* heap_ = nullptr;
+    bool use_quantization_ = true;
+    mutable std::vector<float> get_scratch_;  // dequantize buffer for Get() when record is SQ8
 };
 
 // Implementation in src/storage/storage_engine.cc (flush-threshold, fsync, logging).

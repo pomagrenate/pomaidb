@@ -57,7 +57,12 @@ namespace pomai::table
     class SegmentReader
     {
     public:
-        static pomai::Status Open(std::string path, std::unique_ptr<SegmentReader> *out);
+        /** Deleter for palloc-backed SegmentReader (use with unique_ptr). */
+        static void PallocDeleter(SegmentReader* p);
+
+        using Ptr = std::unique_ptr<SegmentReader, void(*)(SegmentReader*)>;
+
+        static pomai::Status Open(std::string path, Ptr* out);
 
         ~SegmentReader();
 

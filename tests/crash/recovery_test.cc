@@ -157,9 +157,9 @@ POMAI_TEST(BadStorage_MissingSegmentReopenFails) {
         POMAI_EXPECT_OK(db->Close());
     }
 
-    fs::path shard_dir = fs::path(opt.path) / "membranes" / "__default__" / "shards" / "0";
-    if (!fs::exists(shard_dir)) { return; }
-    for (const auto& e : fs::directory_iterator(shard_dir)) {
+    fs::path data_dir = fs::path(opt.path) / "membranes" / "__default__" / "data";
+    if (!fs::exists(data_dir)) { return; }
+    for (const auto& e : fs::directory_iterator(data_dir)) {
         if (e.path().extension() == ".dat") {
             fs::remove(e.path());
             break;

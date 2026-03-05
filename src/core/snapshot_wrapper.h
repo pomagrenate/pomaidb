@@ -7,16 +7,14 @@
 namespace pomai::core {
     
     // Concrete implementation of public opaque Snapshot.
-    // Currently wraps a single shard snapshot (since engine only supports single shard iterator).
-    // Future: wrap multiple shard snapshots.
     class SnapshotWrapper : public pomai::Snapshot {
     public:
-        explicit SnapshotWrapper(std::shared_ptr<ShardSnapshot> s) : snap_(std::move(s)) {}
+        explicit SnapshotWrapper(std::shared_ptr<VectorSnapshot> s) : snap_(std::move(s)) {}
         
-        std::shared_ptr<ShardSnapshot> GetInternal() const { return snap_; }
+        std::shared_ptr<VectorSnapshot> GetInternal() const { return snap_; }
 
     private:
-        std::shared_ptr<ShardSnapshot> snap_;
+        std::shared_ptr<VectorSnapshot> snap_;
     };
 
 } // namespace pomai::core

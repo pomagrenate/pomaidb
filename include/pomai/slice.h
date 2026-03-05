@@ -8,6 +8,8 @@
 #include <string_view>
 #include <span>
 
+#include "palloc_compat.h"
+
 namespace pomai {
 
 /**
@@ -44,7 +46,9 @@ class Cleanable {
       cleanup_.arg1 = arg1;
       cleanup_.arg2 = arg2;
     } else {
-      auto* c = new Cleanup{function, arg1, arg2, cleanup_.next};
+      void* raw = palloc_malloc_aligned(sizeof(Cleanup), alignof(Cleanup));
+      if (!raw) return;
+      auto* c = new (raw) Cleanup{function, arg1, arg2, cleanup_.next};
       cleanup_.next = c;
     }
   }
@@ -87,7 +91,8 @@ class Cleanable {
       for (Cleanup* c = cleanup_.next; c != nullptr; ) {
         c->function(c->arg1, c->arg2);
         Cleanup* next = c->next;
-        delete c;
+        c->~Cleanup();
+        palloc_free(c);
         c = next;
       }
     }

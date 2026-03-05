@@ -143,8 +143,22 @@ static IngestResult IngestAndVerify(const std::string& db_path, size_t target_ve
   pomai::DBOptions opts;
   opts.path = db_path;
   opts.dim = static_cast<uint32_t>(kVectorDim);
-  opts.shard_count = 1;  // single shard so NewIterator (shards_[0]) sees all vectors
+  // Monolithic runtime: a single logical instance indexes all vectors.
+  opts.shard_count = 1;
   opts.fsync = pomai::FsyncPolicy::kNever;
+
+  // Backpressure: cap memtable usage so we leave RAM headroom for OS / other processes.
+  if (const char* thr = std::getenv("POMAI_MEMTABLE_FLUSH_THRESHOLD_MB")) {
+    const long v = std::strtol(thr, nullptr, 10);
+    if (v > 0) {
+      opts.memtable_flush_threshold_mb = static_cast<std::uint32_t>(v);
+      opts.auto_freeze_on_pressure = true;
+    }
+  } else if (std::getenv("POMAI_BENCH_LOW_MEMORY") != nullptr) {
+    // Default low-memory profile (e.g. 128 MiB container): keep DB under ~half of total RAM.
+    opts.memtable_flush_threshold_mb = 48u;
+    opts.auto_freeze_on_pressure = true;
+  }
 
   std::unique_ptr<pomai::DB> db;
   auto st = pomai::DB::Open(opts, &db);
@@ -219,7 +233,7 @@ void RunEnvB(EnvReport* report) {
   long rss_after_last  = 0;
   uint64_t t0 = ClockNs();
   size_t total_ingested = 0;
-  size_t last_verified = 0;
+  size_t total_verified = 0;
   bool all_ok = true;
   int failed_cycle = -1;
 
@@ -230,7 +244,7 @@ void RunEnvB(EnvReport* report) {
       std::string path = std::string("/tmp/benchmark_a_env_b_") + std::to_string(cycle);
       IngestResult r = IngestAndVerify(path, per_cycle);
       total_ingested += r.ingested;
-      last_verified = r.verified;
+      total_verified += r.verified;
       if (r.verified != per_cycle || r.ingested != per_cycle) {
         all_ok = false;
         if (failed_cycle < 0) failed_cycle = cycle;
@@ -246,7 +260,7 @@ void RunEnvB(EnvReport* report) {
     err_msg = std::string("FAIL: exception: ") + e.what();
     report->message = err_msg.c_str();
     report->vectors_allocated = total_ingested;
-    report->vectors_verified  = last_verified;
+    report->vectors_verified  = total_verified;
     report->peak_rss_bytes    = GetPeakRssBytes();
     if (total_ingested > 0 && (ClockNs() - t0) > 0)
       report->throughput_vec_per_sec = static_cast<double>(total_ingested) * 1e9 / static_cast<double>(ClockNs() - t0);
@@ -255,14 +269,14 @@ void RunEnvB(EnvReport* report) {
     report->passed = 0;
     report->message = "FAIL: unknown exception";
     report->vectors_allocated = total_ingested;
-    report->vectors_verified  = last_verified;
+    report->vectors_verified  = total_verified;
     report->peak_rss_bytes    = GetPeakRssBytes();
     return;
   }
 
   uint64_t elapsed_ns = ClockNs() - t0;
   report->vectors_allocated = total_ingested;
-  report->vectors_verified  = last_verified;  // per-cycle verified; all cycles expect 50k
+  report->vectors_verified  = total_verified;
   report->peak_rss_bytes    = rss_after_last;
   if (total_ingested > 0 && elapsed_ns > 0)
     report->throughput_vec_per_sec = static_cast<double>(total_ingested) * 1e9 / static_cast<double>(elapsed_ns);
@@ -344,7 +358,7 @@ int main(int argc, char** argv) {
   int any_fail = 0;
   EnvReport report = {};
 
-  printf("Running: The IoT Starvation (256 MiB) ...\n");
+  printf("Running: The IoT Starvation (128 MiB container) ...\n");
   fflush(stdout);
   RunEnvA(&report);
   PrintReport(report);

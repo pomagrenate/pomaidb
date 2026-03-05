@@ -1,3 +1,0 @@
-[submodule "third_party/palloc"]
-	path = third_party/palloc
-	url = https://github.com/AutoCookies/palloc.git

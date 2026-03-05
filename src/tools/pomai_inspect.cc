@@ -166,22 +166,22 @@ int CmdWalStats(const std::vector<std::string>& args) {
         std::string membrane_name = membrane_entry.path().filename().string();
         if (membrane_name == "." || membrane_name == "..") continue;
         
-        // Check each shard
-        for (const auto& shard_entry : fs::directory_iterator(membrane_entry.path())) {
-            if (!shard_entry.is_directory()) continue;
-            if (!shard_entry.path().filename().string().starts_with("shard_")) continue;
-            
-            // Find WAL files in this shard
-            auto wal_path = shard_entry.path() / "wal";
-            if (fs::exists(wal_path) && fs::is_regular_file(wal_path)) {
-                size_t size = fs::file_size(wal_path);
-                total_wal_size += size;
-                wal_file_count++;
-                
-                std::cout << "\n  " << membrane_name << " / " 
-                          << shard_entry.path().filename().string() << ":\n";
-                std::cout << "    WAL: " << (size / 1024) << " KB\n";
+        // WAL files live at membrane root (wal_0_*.log); data dir holds segments
+        size_t membrane_wal_size = 0;
+        int membrane_wal_count = 0;
+        for (const auto& entry : fs::directory_iterator(membrane_entry.path())) {
+            if (!entry.is_regular_file()) continue;
+            std::string fname = entry.path().filename().string();
+            if (fname.starts_with("wal_") && fname.ends_with(".log")) {
+                membrane_wal_size += fs::file_size(entry.path());
+                membrane_wal_count++;
             }
+        }
+        if (membrane_wal_count > 0) {
+            total_wal_size += membrane_wal_size;
+            wal_file_count += membrane_wal_count;
+            std::cout << "\n  " << membrane_name << ":\n";
+            std::cout << "    WAL: " << membrane_wal_count << " file(s), " << (membrane_wal_size / 1024) << " KB\n";
         }
     }
     
@@ -221,16 +221,11 @@ int CmdSegmentStats(const std::vector<std::string>& args) {
         
         std::cout << "\nMembrane: " << membrane_name << "\n";
         
-        // Check each shard
-        for (const auto& shard_entry : fs::directory_iterator(membrane_entry.path())) {
-            if (!shard_entry.is_directory()) continue;
-            if (!shard_entry.path().filename().string().starts_with("shard_")) continue;
-            
-            std::string shard_name = shard_entry.path().filename().string();
-            
-            // Find segment files in this shard
+        // Segments live under membrane "data" directory
+        fs::path data_dir = membrane_entry.path() / "data";
+        if (fs::exists(data_dir) && fs::is_directory(data_dir)) {
             std::vector<std::string> segments;
-            for (const auto& file : fs::directory_iterator(shard_entry.path())) {
+            for (const auto& file : fs::directory_iterator(data_dir)) {
                 if (file.is_regular_file()) {
                     std::string fname = file.path().filename().string();
                     if (fname.starts_with("seg_") && fname.ends_with(".dat")) {
@@ -240,11 +235,10 @@ int CmdSegmentStats(const std::vector<std::string>& args) {
                     }
                 }
             }
-            
             if (!segments.empty()) {
-                std::cout << "  " << shard_name << ": " << segments.size() << " segments\n";
+                std::cout << "  data: " << segments.size() << " segments\n";
                 for (const auto& seg : segments) {
-                    auto seg_path = shard_entry.path() / seg;
+                    auto seg_path = data_dir / seg;
                     size_t size = fs::file_size(seg_path);
                     std::cout << "    " << seg << ": " << (size / 1024) << " KB\n";
                 }

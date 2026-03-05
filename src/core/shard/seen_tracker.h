@@ -6,7 +6,7 @@
 
 namespace pomai::core {
 
-/// SeenTracker: Shard-local reusable structure for tracking seen IDs during search.
+/// SeenTracker: Runtime-local reusable structure for tracking seen IDs during search.
 /// This replaces per-query unordered_set allocations with a reusable structure.
 /// 
 /// Design: Use a generation-based approach to avoid clearing the entire structure.
