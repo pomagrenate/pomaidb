@@ -203,6 +203,16 @@ cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
 
 Or run individual executables: `./bench_baseline`, `./comprehensive_bench --dataset small`, `./ingestion_bench 10000 128`, `./rag_bench 100 64 32`, `./ci_perf_bench`, `./benchmark_a` (use `POMAI_BENCH_LOW_MEMORY=1` for a shorter run).
 
+**Python CIFAR-10 benchmark (end-to-end):** Create a venv, install from `requirements.txt`, build the C library, then run the benchmark (uses ctypes against `libpomai_c.so`; downloads real CIFAR-10 by default):
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --target pomai_c
+.venv/bin/python benchmarks/python_cifar10_feature_bench.py
+```
+
+Use `--no-download` if the dataset is already under `data/`; use `--allow-fake-fallback` only to fall back to synthetic data when offline.
+
 ### Edge deployments & failure semantics
 
 For recommended settings on real edge devices (build flags, durability policies, backpressure, and how PomaiDB behaves on power loss), see:
