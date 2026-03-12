@@ -71,6 +71,10 @@ add_library(pomai STATIC
   src/core/routing/kmeans_lite.cc
   src/core/routing/routing_persist.cc
   src/core/rag/rag_engine.cc
+  src/core/rag/chunking/recursive_splitter.cc
+  src/core/rag/chunking/sliding_window.cc
+  src/core/rag/mock_embedding_provider.cc
+  src/core/rag/rag_pipeline.cc
 
   # Phase 2: Product Quantizer
   src/core/quantization/pomai_pq.cc
@@ -316,6 +320,14 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(streaming_index_test)
   pomai_add_labeled_test(streaming_index_test "unit")
 
+  add_executable(rag_chunking_test tests/unit/rag_chunking_test.cc)
+  pomai_setup_test(rag_chunking_test)
+  pomai_add_labeled_test(rag_chunking_test "unit")
+
+  add_executable(rag_embedding_test tests/unit/rag_embedding_test.cc)
+  pomai_setup_test(rag_embedding_test)
+  pomai_add_labeled_test(rag_embedding_test "unit")
+
   add_executable(recall_test tests/recall/recall_test.cc tests/recall/recall_dataset.cc tests/common/bruteforce_oracle.cc)
   pomai_setup_test(recall_test)
   pomai_add_labeled_test(recall_test "recall")
@@ -410,6 +422,10 @@ if (POMAI_BUILD_TESTS)
   add_executable(rag_search_test tests/integ/rag_search_test.cc)
   pomai_setup_test(rag_search_test)
   pomai_add_labeled_test(rag_search_test "integ")
+
+  add_executable(rag_pipeline_test tests/integ/rag_pipeline_test.cc)
+  pomai_setup_test(rag_pipeline_test)
+  pomai_add_labeled_test(rag_pipeline_test "integ")
 
   add_executable(search_newest_wins_test tests/integ/search_newest_wins_test.cc)
   pomai_setup_test(search_newest_wins_test)
