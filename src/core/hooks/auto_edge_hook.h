@@ -1,8 +1,8 @@
 #pragma once
 
 #include "pomai/hooks.h"
-#include "pomai/database.h"
 #include "pomai/metadata.h"
+#include "core/storage/internal_engine.h"
 
 namespace pomai::core {
 
@@ -11,7 +11,7 @@ namespace pomai::core {
  */
 class AutoEdgeHook : public pomai::PostPutHook {
 public:
-    explicit AutoEdgeHook(pomai::Database* db) : db_(db) {}
+    explicit AutoEdgeHook(pomai::StorageEngine* db) : db_(db) {}
 
     void OnPostPut(VectorId id, std::span<const float> vec, const Metadata& meta) override {
         if (meta.src_vid != 0 && db_) {
@@ -22,7 +22,7 @@ public:
     }
 
 private:
-    pomai::Database* db_;
+    pomai::StorageEngine* db_;
 };
 
 } // namespace pomai::core

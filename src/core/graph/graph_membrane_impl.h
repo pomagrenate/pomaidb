@@ -8,7 +8,7 @@
 #include "pomai/graph.h"
 #include "pomai/status.h"
 #include "storage/wal/wal.h"
-#include "src/core/graph/graph_key.h"
+#include "core/graph/graph_key.h"
 
 namespace pomai::core {
 

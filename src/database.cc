@@ -7,17 +7,21 @@
 #include "core/concurrency/scheduler.h"
 #include "core/graph/graph_membrane_impl.h"
 #include "core/shard/runtime.h"
-#include "src/table/memtable.h"
+#include "table/memtable.h"
 #include "storage/wal/wal.h"
 #include "core/hooks/auto_edge_hook.h"
 #include "core/graph/bitset_frontier.h"
 #include "core/query/query_planner.h"
 #include "core/storage/internal_engine.h"
-#include <memory>
-#include <vector>
-#include <queue>
-#include <unordered_set>
+#include "core/kernel/pods/vector_pod.h"
+#include "core/kernel/pods/graph_pod.h"
+#include "core/kernel/pods/query_pod.h"
+#include "pomai/metadata.h"
+#include "pomai/search.h"
+#include <algorithm>
+#include <cstring>
 #include <iostream>
+#include <memory>
 
 namespace pomai {
 
@@ -31,113 +35,185 @@ Status StorageEngine::Open(const EmbeddedOptions& options) {
 
     auto mem = std::make_unique<table::MemTable>(options.dim, 128ULL * 1024 * 1024);
     
-    runtime_ = std::make_unique<core::VectorRuntime>(
+    auto v_runtime = std::make_unique<core::VectorRuntime>(
         0, v_path, options.dim, 
         MembraneKind::kVector,
         options.metric, std::move(wal), std::move(mem), options.index_params);
         
-    st = runtime_->Start();
-    if (!st.ok()) return st;
+    kernel_.RegisterPod(std::make_unique<core::VectorPod>(std::move(v_runtime)));
 
     auto g_path = options.path + "/graph";
     auto g_wal = std::make_unique<storage::Wal>(env, g_path, 1, 1024ULL * 1024 * 1024, options.fsync);
     st = g_wal->Open();
     if (!st.ok()) return st;
 
-    graph_runtime_ = std::make_unique<core::GraphMembraneImpl>(std::move(g_wal));
-    planner_ = std::make_unique<core::QueryPlanner>(this);
+    auto g_runtime = std::make_unique<core::GraphMembraneImpl>(std::move(g_wal));
+    kernel_.RegisterPod(std::make_unique<core::GraphPod>(std::move(g_runtime)));
+
+    auto planner = std::make_unique<core::QueryPlanner>(this);
+    kernel_.RegisterPod(std::make_unique<core::QueryPod>(std::move(planner)));
+
     return Status::Ok();
 }
 
 Status StorageEngine::SearchMultiModal(std::string_view membrane, const MultiModalQuery& query, SearchResult* out) {
-    return planner_ ? planner_->Execute(membrane, query, out) : Status::InvalidArgument("not opened");
+    const MultiModalQuery* q_ptr = &query;
+    core::Message msg = core::Message::Create(core::PodId::kQuery, core::Op::kSearchMultiModal, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&q_ptr), sizeof(void*)));
+    msg.membrane_id = membrane;
+    msg.result_ptr = out;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return Status::Ok();
 }
 
 void StorageEngine::Close() {
-    runtime_.reset();
-    graph_runtime_.reset();
+    kernel_.Stop();
 }
 
-Status StorageEngine::Flush() { return runtime_ ? runtime_->Flush() : Status::Ok(); }
-Status StorageEngine::Freeze() { return runtime_ ? runtime_->Freeze() : Status::Ok(); }
+Status StorageEngine::Flush() {
+    Status st = Status::Ok();
+    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kFlush);
+    msg.result_ptr = &st;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return st;
+}
 
-Status StorageEngine::Append(VectorId id, std::span<const float> vec) {
-    if (!runtime_) return Status::InvalidArgument("not opened");
-    (void)runtime_->BeginBatch();
-    auto st = runtime_->Put(id, vec);
-    if (st.ok()) {
-        for (auto& h : hooks_) h->OnPostPut(id, vec, Metadata());
-    }
-    (void)runtime_->EndBatch();
+Status StorageEngine::Freeze() {
+    Status st = Status::Ok();
+    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kFreeze);
+    msg.result_ptr = &st;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
     return st;
 }
 
 Status StorageEngine::Append(VectorId id, std::span<const float> vec, const Metadata& meta) {
-    if (!runtime_) return Status::InvalidArgument("not opened");
-    (void)runtime_->BeginBatch();
-    auto st = runtime_->Put(id, vec, meta);
+    Status st = Status::Ok();
+    std::vector<uint8_t> payload(8 + vec.size_bytes());
+    std::memcpy(payload.data(), &id, 8);
+    std::memcpy(payload.data() + 8, vec.data(), vec.size_bytes());
+
+    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kPut, payload);
+    msg.result_ptr = &st;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+
     if (st.ok()) {
         for (auto& h : hooks_) h->OnPostPut(id, vec, meta);
     }
-    (void)runtime_->EndBatch();
     return st;
 }
 
+Status StorageEngine::Append(VectorId id, std::span<const float> vec) {
+    return Append(id, vec, Metadata());
+}
+
 Status StorageEngine::AppendBatch(const std::vector<VectorId>& ids, const std::vector<std::span<const float>>& vectors) {
-    if (!runtime_) return Status::InvalidArgument("not opened");
-    (void)runtime_->BeginBatch();
-    auto st = runtime_->PutBatch(ids, vectors);
+    Status st = Status::Ok();
+    struct P {
+        const std::vector<VectorId>* ids;
+        const std::vector<std::span<const float>>* vectors;
+    } payload = {&ids, &vectors};
+
+    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kPutBatch, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&payload), sizeof(payload)));
+    msg.result_ptr = &st;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+
     if (st.ok()) {
         for (size_t i = 0; i < ids.size(); ++i) {
             for (auto& h : hooks_) h->OnPostPut(ids[i], vectors[i], Metadata());
         }
     }
-    (void)runtime_->EndBatch();
     return st;
 }
 
 Status StorageEngine::Get(VectorId id, std::vector<float>* out, Metadata* meta) {
-    return runtime_ ? runtime_->Get(id, out, meta) : Status::InvalidArgument("not opened");
+    (void)meta; // Metadata handled by MetadataPod in 1.9.1
+    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kGet, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&id), sizeof(id)));
+    msg.result_ptr = out;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return Status::Ok();
 }
 
 Status StorageEngine::Exists(VectorId id, bool* exists) {
-    return runtime_ ? runtime_->Exists(id, exists) : Status::InvalidArgument("not opened");
+    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kExists, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&id), sizeof(id)));
+    msg.result_ptr = exists;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return Status::Ok();
 }
 
 Status StorageEngine::Delete(VectorId id) {
-    return runtime_ ? runtime_->Delete(id) : Status::InvalidArgument("not opened");
-}
-
-Status StorageEngine::Search(std::string_view /*membrane*/, std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult* out) {
-    if (!runtime_ || !out) return Status::InvalidArgument("invalid args");
-    std::vector<SearchHit> hits;
-    auto st = runtime_->Search(query, topk, opts, &hits);
-    if (st.ok()) {
-        out->hits = std::move(hits);
-        out->routed_shards_count = 1;
-    }
+    Status st = Status::Ok();
+    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kDelete, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&id), sizeof(id)));
+    msg.result_ptr = &st;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
     return st;
 }
 
-Status StorageEngine::SearchLexical(std::string_view /*membrane*/, const std::string& query, uint32_t topk, std::vector<core::LexicalHit>* out) {
-    if (!runtime_ || !out) return Status::InvalidArgument("invalid args");
-    return runtime_->SearchLexical(query, topk, out);
+Status StorageEngine::Search(std::string_view membrane, std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult* out) {
+    (void)opts; // Default options for now
+    std::vector<uint8_t> payload(4 + query.size_bytes());
+    std::memcpy(payload.data(), &topk, 4);
+    std::memcpy(payload.data() + 4, query.data(), query.size_bytes());
+
+    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kSearch, payload);
+    msg.membrane_id = membrane;
+    msg.result_ptr = out;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return Status::Ok();
+}
+
+Status StorageEngine::SearchLexical(std::string_view membrane, const std::string& query, uint32_t topk, std::vector<core::LexicalHit>* out) {
+    // Op::kSearchLexical = 0x0C
+    std::vector<uint8_t> payload(4 + query.size());
+    std::memcpy(payload.data(), &topk, 4);
+    std::memcpy(payload.data() + 4, query.data(), query.size());
+
+    core::Message msg = core::Message::Create(core::PodId::kIndex, 0x0C /* kSearchLexical */, payload);
+    msg.membrane_id = membrane;
+    msg.result_ptr = out;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return Status::Ok();
 }
 
 Status StorageEngine::Search(std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult* out) {
     return Search("__default__", query, topk, opts, out);
 }
 
-Status StorageEngine::PushSync(core::SyncReceiver* receiver) {
-    return runtime_ ? runtime_->PushSync(receiver) : Status::Ok();
-}
-
 Status StorageEngine::AddVertex(VertexId id, TagId tag, const Metadata& meta) {
-    return graph_runtime_ ? graph_runtime_->AddVertex(id, tag, meta) : Status::InvalidArgument("no graph");
+    Status st = Status::Ok();
+    struct { VertexId id; TagId tag; } payload = {id, tag};
+    
+    core::Message msg = core::Message::Create(core::PodId::kGraph, core::Op::kAddVertex, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&payload), sizeof(payload)));
+    msg.result_ptr = &st;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return st;
 }
 
 Status StorageEngine::AddEdge(VertexId src, VertexId dst, EdgeType type, uint32_t rank, const Metadata& meta) {
-    return graph_runtime_ ? graph_runtime_->AddEdge(src, dst, type, rank, meta) : Status::InvalidArgument("no graph");
+    Status st = Status::Ok();
+    struct { VertexId src; VertexId dst; EdgeType type; uint32_t rank; } payload = {src, dst, type, rank};
+
+    core::Message msg = core::Message::Create(core::PodId::kGraph, core::Op::kAddEdge, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&payload), sizeof(payload)));
+    msg.result_ptr = &st;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return st;
 }
 
 Status StorageEngine::GetNeighbors(std::string_view /*membrane*/, VertexId src, std::vector<pomai::Neighbor>* out) {
@@ -149,30 +225,53 @@ Status StorageEngine::GetNeighbors(std::string_view /*membrane*/, VertexId src, 
 }
 
 Status StorageEngine::GetNeighbors(VertexId src, std::vector<pomai::Neighbor>* out) {
-    return graph_runtime_ ? graph_runtime_->GetNeighbors(src, out) : Status::InvalidArgument("no graph");
+    core::Message msg = core::Message::Create(core::PodId::kGraph, core::Op::kGetNeighbors, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&src), sizeof(src)));
+    msg.result_ptr = out;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return Status::Ok();
 }
 
 Status StorageEngine::GetNeighbors(VertexId src, EdgeType type, std::vector<pomai::Neighbor>* out) {
-    return graph_runtime_ ? graph_runtime_->GetNeighbors(src, type, out) : Status::InvalidArgument("no graph");
+    struct { VertexId src; EdgeType type; } payload = {src, type};
+    core::Message msg = core::Message::Create(core::PodId::kGraph, core::Op::kGetNeighborsWithType, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&payload), sizeof(payload)));
+    msg.result_ptr = out;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return Status::Ok();
 }
 
 Status StorageEngine::GetSnapshot(std::shared_ptr<Snapshot>* out) {
-    if (!out) return Status::InvalidArgument("out pointer is null");
-    if (!runtime_) return Status::InvalidArgument("not opened");
-    auto v_snap = runtime_->GetSnapshot();
-    if (!v_snap) return Status::Internal("failed to get snapshot");
-    *out = std::move(v_snap);
+    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kGetSnapshot);
+    msg.result_ptr = out;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
     return Status::Ok();
 }
 
 Status StorageEngine::NewIterator(const std::shared_ptr<Snapshot>& snap, std::unique_ptr<SnapshotIterator>* out) {
-    if (!runtime_) return Status::InvalidArgument("not opened");
-    auto v_snap = std::static_pointer_cast<core::VectorSnapshot>(snap);
-    return runtime_->NewIterator(v_snap, out);
+    const std::shared_ptr<Snapshot>* s_ptr = &snap;
+    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kNewIterator, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&s_ptr), sizeof(void*)));
+    msg.result_ptr = out;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return Status::Ok();
+}
+
+Status StorageEngine::PushSync(core::SyncReceiver* receiver) {
+    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kSync);
+    msg.result_ptr = receiver;
+    kernel_.Enqueue(std::move(msg));
+    kernel_.ProcessAll();
+    return Status::Ok();
 }
 
 std::size_t StorageEngine::GetMemTableBytesUsed() const {
-    return runtime_ ? runtime_->GetStats().mem_used : 0;
+    auto* pod = static_cast<core::VectorPod*>(const_cast<core::MicroKernel&>(kernel_).GetPod(core::PodId::kIndex));
+    return pod ? pod->GetMemTableBytesUsed() : 0;
 }
 
 void StorageEngine::AddPostPutHook(std::shared_ptr<PostPutHook> hook) {
@@ -234,7 +333,7 @@ Status Database::Open(const EmbeddedOptions& options) {
     impl_->scheduler.RegisterPeriodic(std::make_unique<MaintenanceTask>(this), std::chrono::seconds(5));
     
     if (options.enable_auto_edge) {
-        AddPostPutHook(std::make_shared<core::AutoEdgeHook>(this));
+        AddPostPutHook(std::make_shared<core::AutoEdgeHook>(storage_engine_.get()));
     }
     return Status::Ok();
 }

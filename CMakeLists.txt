@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-option(POMAI_BUILD_TESTS "Build tests" OFF)
+option(POMAI_BUILD_TESTS "Build tests" ON)
 option(POMAI_BUILD_BENCH "Build benchmarks" OFF)
 
 # Prefer integer (SQ8/FP16) distance paths where data is quantized; reduces float use on embedded.
@@ -58,6 +58,9 @@ add_library(pomai STATIC
   src/core/membrane/manager.cc
   src/table/memtable.cc
   src/storage/wal/wal.cc
+  src/core/kernel/pods/vector_pod.cc
+  src/core/kernel/pods/graph_pod.cc
+  src/core/kernel/pods/query_pod.cc
   src/storage/manifest/manifest.cc
   src/storage/storage_engine.cc
   src/table/segment.cc

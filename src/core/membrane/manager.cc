@@ -9,7 +9,7 @@
 #include "pomai/iterator.h"  // For SnapshotIterator
 #include "storage/manifest/manifest.h"
 #include "util/logging.h"
-#include "src/core/graph/graph_membrane_impl.h"
+#include "core/graph/graph_membrane_impl.h"
 
 
 namespace pomai::core

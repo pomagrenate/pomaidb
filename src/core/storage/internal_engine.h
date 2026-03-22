@@ -15,6 +15,7 @@
 #include "core/graph/graph_membrane_impl.h"
 #include "core/concurrency/scheduler.h"
 #include "core/query/query_planner.h"
+#include "core/kernel/micro_kernel.h"
 
 namespace pomai {
 
@@ -58,8 +59,7 @@ public:
     void AddPostPutHook(std::shared_ptr<PostPutHook> hook);
 
 private:
-    std::unique_ptr<core::VectorRuntime> runtime_;
-    std::unique_ptr<core::GraphMembraneImpl> graph_runtime_;
+    core::MicroKernel kernel_;
     std::unique_ptr<core::QueryPlanner> planner_;
     std::vector<std::shared_ptr<PostPutHook>> hooks_;
 };
