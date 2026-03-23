@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <deque>
+#include "ai/analytical_engine.h"
 
 #include "core/distance.h"
 #include "core/index/ivf_coarse.h"
@@ -347,6 +348,42 @@ namespace pomai::core
     {
         if (mem_->GetCount() == 0) return pomai::Status::Ok();
         frozen_mem_.push_back(mem_);
+
+        // Train ELM hnsw_router on the retiring MemTable
+        {
+            auto cursor = mem_->CreateCursor();
+            pomai::table::MemTable::CursorEntry entry;
+            std::vector<float> X;
+            std::vector<float> Y;
+            size_t count = 0;
+            while (cursor.Next(&entry) && count < 1024) {
+                if (entry.is_deleted || entry.vec.size() != dim_) continue;
+                X.insert(X.end(), entry.vec.begin(), entry.vec.end());
+                float variance = 0.0f;
+                if (!entry.vec.empty()) {
+                    float sum = 0.0f;
+                    for (float v : entry.vec) sum += v;
+                    float mean = sum / entry.vec.size();
+                    float sq_sum = 0.0f;
+                    for (float v : entry.vec) { float d = v - mean; sq_sum += d * d; }
+                    variance = sq_sum / entry.vec.size();
+                }
+                float optimal_ef = variance > 0.5f ? 16.0f : (variance < 0.1f ? 2.0f : 8.0f);
+                Y.push_back(optimal_ef);
+                count++;
+            }
+            if (count > 0) {
+                if (!AnalyticalEngine::Global().GetModel("hnsw_router")) {
+                    (void)AnalyticalEngine::Global().CreateELMModel("hnsw_router", dim_, 64, 1);
+                }
+                auto* elm = AnalyticalEngine::Global().GetModel("hnsw_router");
+                if (elm) {
+                    (void)elm->Train(std::span<const float>(X.data(), X.size()), 
+                                    std::span<const float>(Y.data(), Y.size()), count);
+                }
+            }
+        }
+
         mem_ = std::make_shared<table::MemTable>(dim_, 1u << 20);
         PublishSnapshot();
         return pomai::Status::Ok();

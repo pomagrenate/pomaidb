@@ -19,6 +19,13 @@ option(POMAI_PREFER_INTEGER_MATH "Prefer integer/SQ8/FP16 paths for distance (em
 # When enabled, we bias towards smaller binaries and lower memory/debug overhead.
 option(POMAI_EDGE_BUILD "Optimize PomaiDB build for edge devices (size/footprint)" OFF)
 
+# TFLite build options: minimize dependencies
+add_compile_definitions(TFLITE_WITH_RUY=0)
+add_compile_definitions(TFLITE_WITH_XNNPACK=0)
+add_compile_definitions(TFLITE_WITHOUT_XNNPACK=1)
+add_compile_definitions(TFLITE_USE_APPLE_ACCELERATE=0)
+add_compile_definitions(TFLITE_WITH_DELEGATES=0)
+
 # Strict build mode: treat project warnings as errors (useful for CI/hardening).
 # We keep a couple of warning categories non-fatal to tolerate intentional diagnostics
 # from some vendored headers included by the core.
@@ -101,12 +108,37 @@ add_library(pomai STATIC
   src/util/env.cc
   src/util/crc32c.cc
   src/util/logging.cc
+
+  # SLM and Tensor Core (Phase 12 Integration)
+  src/ai/ai_engine.cpp
+  src/ai/cheesebrain_core/ggml.c
+  src/ai/cheesebrain_core/ggml-alloc.c
+  src/ai/cheesebrain_core/ggml-backend.cpp
+  src/ai/cheesebrain_core/ggml-quants.c
+  src/ai/cheesebrain_core/gguf.cpp
+  src/ai/cheesebrain_core/cheese-model-loader.cpp
+  src/ai/cheesebrain_core/cheese-context.cpp
+  src/ai/tensor_core/tensorflow/compiler/mlir/lite/core/model_builder_base.cc
+  src/ai/tensor_core/tensorflow/lite/core/interpreter.cc
+  src/ai/tensor_core/tensorflow/lite/core/interpreter_builder.cc
+  src/ai/tensor_core/tensorflow/lite/core/subgraph.cc
+  src/ai/tensor_core/tensorflow/compiler/mlir/lite/allocation.cc
+  src/ai/tensor_core/tensorflow/lite/core/model_building.cc
+  src/ai/tensor_core/tensorflow/lite/kernels/add.cc
+  src/ai/tensor_core/tensorflow/lite/kernels/mul.cc
+  src/ai/tensor_core/tensorflow/lite/kernels/sub.cc
+  src/ai/tensor_core/tensorflow/lite/kernels/reshape.cc
+  src/ai/tensor_core/tensorflow/lite/core/kernels/register.cc
+  src/ai/analytical_engine.cpp
 )
 
 target_include_directories(pomai
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ai
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ai/cheesebrain_core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ai/tensor_core
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
   SYSTEM PRIVATE
@@ -411,6 +443,10 @@ if (POMAI_BUILD_TESTS)
   add_executable(multi_modal_test tests/unit/multi_modal_test.cc)
   pomai_setup_test(multi_modal_test)
   pomai_add_labeled_test(multi_modal_test "unit")
+
+  add_executable(analytical_engine_test src/ai/analytical_engine_test.cc)
+  pomai_setup_test(analytical_engine_test)
+  pomai_add_labeled_test(analytical_engine_test "unit")
 
   add_executable(membrane_test tests/integ/membrane_test.cc)
   pomai_setup_test(membrane_test)

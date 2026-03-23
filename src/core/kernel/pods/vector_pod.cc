@@ -18,6 +18,19 @@ namespace pomai::core {
                 if (msg.result_ptr) *static_cast<Status*>(msg.result_ptr) = st;
                 break;
             }
+            case 0x0F: { // PutWithMeta
+                struct P {
+                    VectorId id;
+                    const float* vec_data;
+                    size_t vec_size;
+                    const Metadata* meta;
+                };
+                if (msg.payload.size() < sizeof(P)) return;
+                const auto* p = reinterpret_cast<const P*>(msg.payload.data());
+                auto st = runtime_->Put(p->id, std::span<const float>(p->vec_data, p->vec_size), *p->meta);
+                if (msg.result_ptr) *static_cast<Status*>(msg.result_ptr) = st;
+                break;
+            }
             case 0x03: { // Search
                 // Payload is topk (4) + query (dim*4)
                 if (msg.payload.size() < 4) return;
@@ -44,6 +57,18 @@ namespace pomai::core {
                     auto* out = static_cast<std::vector<float>*>(msg.result_ptr);
                     (void)runtime_->Get(id, out, nullptr);
                 }
+                break;
+            }
+            case 0x10: { // GetWithMeta
+                struct P {
+                    VectorId id;
+                    std::vector<float>* out_vec;
+                    pomai::Metadata* out_meta;
+                };
+                if (msg.payload.size() < sizeof(P)) return;
+                const auto* p = reinterpret_cast<const P*>(msg.payload.data());
+                auto st = runtime_->Get(p->id, p->out_vec, p->out_meta);
+                if (msg.result_ptr) *static_cast<Status*>(msg.result_ptr) = st;
                 break;
             }
             case 0x04: { // Delete

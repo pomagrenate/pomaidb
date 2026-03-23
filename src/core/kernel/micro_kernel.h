@@ -9,6 +9,7 @@
 #include "core/kernel/message.h"
 #include "core/kernel/pod.h"
 #include "pomai/status.h"
+#include "ai/analytical_engine.h"
 
 namespace pomai::core {
 
@@ -47,6 +48,40 @@ namespace pomai::core {
 
         /** Post a message for later execution. */
         void Enqueue(Message&& msg) {
+            // Apply ELM-based Backpressure
+            auto* elm = AnalyticalEngine::Global().GetModel("kernel_pressure");
+            if (!elm) {
+                // Lazily Train strict mathematical relationship: latency ~ queue_size * 5 + payload_size * 0.1
+                (void)AnalyticalEngine::Global().CreateELMModel("kernel_pressure", 2, 8, 1);
+                elm = AnalyticalEngine::Global().GetModel("kernel_pressure");
+                if (elm) {
+                    float X[8] = {
+                        0.0f, 0.0f,
+                        10.0f, 100.0f,
+                        100.0f, 1000.0f,
+                        200.0f, 5000.0f
+                    };
+                    float Y[4] = {
+                        0.0f,
+                        60.0f,
+                        600.0f,
+                        1500.0f
+                    };
+                    (void)elm->Train(std::span<const float>(X, 8), std::span<const float>(Y, 4), 4);
+                }
+            }
+
+            if (elm && elm->InputDim() == 2 && elm->OutputDim() >= 1) {
+                float x[2] = { static_cast<float>(queue_.size()), static_cast<float>(msg.payload.size()) };
+                float pred[1] = { 0.0f };
+                elm->Predict(std::span<const float>(x, 2), std::span<float>(pred, 1));
+                if (pred[0] > 1000.0f) { // Threshold for system stall
+                    if (msg.result_ptr) {
+                        *static_cast<Status*>(msg.result_ptr) = Status::ResourceExhausted("ELM predicted system timeout under load");
+                    }
+                    return; // Drop message (Load shedding)
+                }
+            }
             queue_.push_back(std::move(msg));
         }
 

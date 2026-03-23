@@ -91,11 +91,15 @@ Status StorageEngine::Freeze() {
 
 Status StorageEngine::Append(VectorId id, std::span<const float> vec, const Metadata& meta) {
     Status st = Status::Ok();
-    std::vector<uint8_t> payload(8 + vec.size_bytes());
-    std::memcpy(payload.data(), &id, 8);
-    std::memcpy(payload.data() + 8, vec.data(), vec.size_bytes());
+    struct P {
+        VectorId id;
+        const float* vec_data;
+        size_t vec_size;
+        const Metadata* meta;
+    } p = {id, vec.data(), vec.size(), &meta};
 
-    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kPut, payload);
+    core::Message msg = core::Message::Create(core::PodId::kIndex, 0x0F /* kPutWithMeta */, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&p), sizeof(P)));
     msg.result_ptr = &st;
     kernel_.Enqueue(std::move(msg));
     kernel_.ProcessAll();
@@ -132,13 +136,19 @@ Status StorageEngine::AppendBatch(const std::vector<VectorId>& ids, const std::v
 }
 
 Status StorageEngine::Get(VectorId id, std::vector<float>* out, Metadata* meta) {
-    (void)meta; // Metadata handled by MetadataPod in 1.9.1
-    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kGet, 
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&id), sizeof(id)));
-    msg.result_ptr = out;
+    Status st = Status::Ok();
+    struct P {
+        VectorId id;
+        std::vector<float>* out_vec;
+        Metadata* out_meta;
+    } p = {id, out, meta};
+
+    core::Message msg = core::Message::Create(core::PodId::kIndex, 0x10 /* kGetWithMeta */, 
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&p), sizeof(P)));
+    msg.result_ptr = &st;
     kernel_.Enqueue(std::move(msg));
     kernel_.ProcessAll();
-    return Status::Ok();
+    return st;
 }
 
 Status StorageEngine::Exists(VectorId id, bool* exists) {
@@ -425,8 +435,14 @@ Status Database::PutBatch(std::span<const VectorId> ids, std::span<const float> 
     return st;
 }
 
-Status Database::Get(VectorId id, std::vector<float>* out) { return opened_ ? storage_engine_->Get(id, out, nullptr) : Status::InvalidArgument("closed"); }
-Status Database::Get(VectorId id, std::vector<float>* out, Metadata* meta) { return opened_ ? storage_engine_->Get(id, out, meta) : Status::InvalidArgument("closed"); }
+Status Database::Get(VectorId id, std::vector<float>* out) { 
+    if (!out) return Status::InvalidArgument("out cannot be null");
+    return opened_ ? storage_engine_->Get(id, out, nullptr) : Status::InvalidArgument("closed"); 
+}
+Status Database::Get(VectorId id, std::vector<float>* out, Metadata* meta) { 
+    if (!out) return Status::InvalidArgument("out cannot be null");
+    return opened_ ? storage_engine_->Get(id, out, meta) : Status::InvalidArgument("closed"); 
+}
 
 Status Database::Exists(VectorId id, bool* exists) {
     return opened_ ? storage_engine_->Exists(id, exists) : Status::InvalidArgument("closed");
@@ -440,10 +456,12 @@ Status Database::Delete(VectorId id) {
 }
 
 Status Database::Search(std::span<const float> query, uint32_t topk, SearchResult* out) {
+    if (!out) return Status::InvalidArgument("out cannot be null");
     return Search(query, topk, SearchOptions(), out);
 }
 
 Status Database::Search(std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult* out) {
+    if (!out) return Status::InvalidArgument("out cannot be null");
     return opened_ ? storage_engine_->Search("__default__", query, topk, opts, out) : Status::InvalidArgument("closed");
 }
 
@@ -511,6 +529,7 @@ Status Database::GetNeighbors(VertexId src, EdgeType type, std::vector<Neighbor>
 }
 
 Status Database::GetSnapshot(std::shared_ptr<Snapshot>* out) {
+    if (!out) return Status::InvalidArgument("out cannot be null");
     return opened_ ? storage_engine_->GetSnapshot(out) : Status::InvalidArgument("closed");
 }
 
