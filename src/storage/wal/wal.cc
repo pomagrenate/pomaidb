@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "palloc_compat.h"
+#include "core/security/aes_gcm.h"
 #include "table/memtable.h"
 #include "util/crc32c.h"
 
@@ -56,13 +57,23 @@ namespace pomai::storage {
              std::uint32_t shard_id,
              std::size_t segment_bytes,
              pomai::FsyncPolicy fsync,
+             bool encryption_enabled,
+             std::string encryption_key_hex,
              palloc_heap_t* heap)
         : env_(env ? env : pomai::Env::Default()),
           db_path_(std::move(db_path)),
           shard_id_(shard_id),
           segment_bytes_(segment_bytes),
           fsync_(fsync),
-          heap_(heap) {}
+          encryption_enabled_(encryption_enabled),
+          heap_(heap) {
+        if (encryption_enabled_) {
+            auto st = pomai::core::AesGcm::ParseKeyHex(encryption_key_hex, &encryption_key_);
+            if (!st.ok()) {
+                encryption_enabled_ = false;
+            }
+        }
+    }
 
     Wal::~Wal()
     {
@@ -196,6 +207,15 @@ namespace pomai::storage {
         dst->insert(dst->end(), b, b + n);
     }
 
+    static std::array<std::uint8_t, 12> MakeNonce(std::uint32_t shard_id, std::uint64_t seq, std::uint64_t gen)
+    {
+        std::array<std::uint8_t, 12> nonce{};
+        std::memcpy(nonce.data(), &shard_id, sizeof(shard_id));
+        std::memcpy(nonce.data() + 4, &seq, sizeof(seq));
+        nonce[11] ^= static_cast<std::uint8_t>(gen & 0xFFu);
+        return nonce;
+    }
+
     static pomai::Status AppendIovecs(pomai::WritableFile* file, std::vector<Iov>& iovecs)
     {
         for (const auto& iov : iovecs)
@@ -215,93 +235,53 @@ namespace pomai::storage {
 
     pomai::Status Wal::AppendPut(pomai::VectorId id, pomai::VectorView vec, const pomai::Metadata& meta)
     {
-        // If metadata is empty, use standard kPut for compatibility and compactness
-        if (meta.tenant.empty()) {
-            RecordPrefix rp{};
-            rp.seq = ++seq_;
-            rp.op = static_cast<std::uint8_t>(Op::kPut);
-            rp.id = id;
-            rp.dim = vec.dim;
+        RecordPrefix rp{};
+        rp.seq = ++seq_;
+        rp.op = static_cast<std::uint8_t>(meta.tenant.empty() ? Op::kPut : Op::kPutMeta);
+        rp.id = id;
+        rp.dim = vec.dim;
 
-            const std::size_t payload_bytes = vec.size_bytes();
-
-            FrameHeader fh{};
-            fh.len = static_cast<std::uint32_t>(sizeof(RecordPrefix) + payload_bytes + sizeof(std::uint32_t));
-
-            std::uint32_t crc = pomai::util::Crc32c(&rp, sizeof(rp));
-            crc = pomai::util::Crc32c(vec.data, payload_bytes, crc);
-
-            const std::size_t total_bytes = sizeof(FrameHeader) + fh.len;
-            auto st = RotateIfNeeded(total_bytes);
-            if (!st.ok()) return st;
-
-            std::vector<Iov> iovecs;
-            iovecs.reserve(4);
-            iovecs.push_back({&fh, sizeof(fh)});
-            iovecs.push_back({&rp, sizeof(rp)});
-            iovecs.push_back({const_cast<float *>(vec.data), payload_bytes});
-            iovecs.push_back({&crc, sizeof(crc)});
-
-            st = AppendIovecs(impl_->file.get(), iovecs);
-            if (!st.ok()) return st;
-
-            file_off_ += total_bytes;
-            bytes_in_seg_ += total_bytes;
-
-            if (fsync_ == pomai::FsyncPolicy::kAlways)
-                return impl_->file->Sync();
-            return pomai::Status::Ok();
-        } 
-        else 
-        {
-            // Use kPutMeta
-            RecordPrefix rp{};
-            rp.seq = ++seq_;
-            rp.op = static_cast<std::uint8_t>(Op::kPutMeta);
-            rp.id = id;
-            rp.dim = vec.dim;
-
-            const std::size_t vec_bytes = vec.size_bytes();
-            const std::size_t meta_len = meta.tenant.size();
-            const std::size_t meta_bytes = sizeof(std::uint32_t) + meta_len;
-            const std::size_t payload_bytes = vec_bytes + meta_bytes;
-
-            FrameHeader fh{};
-            fh.len = static_cast<std::uint32_t>(sizeof(RecordPrefix) + payload_bytes + sizeof(std::uint32_t));
-            
-            std::uint32_t crc = pomai::util::Crc32c(&rp, sizeof(rp));
-            crc = pomai::util::Crc32c(vec.data, vec_bytes, crc);
-            std::uint32_t len32 = static_cast<std::uint32_t>(meta_len);
-            crc = pomai::util::Crc32c(&len32, sizeof(len32), crc);
-            if (meta_len > 0) {
-                crc = pomai::util::Crc32c(meta.tenant.data(), meta_len, crc);
-            }
-
-            const std::size_t total_bytes = sizeof(FrameHeader) + fh.len;
-            auto st = RotateIfNeeded(total_bytes);
-            if (!st.ok()) return st;
-
-            std::vector<Iov> iovecs;
-            iovecs.reserve(6);
-            iovecs.push_back({&fh, sizeof(fh)});
-            iovecs.push_back({&rp, sizeof(rp)});
-            iovecs.push_back({const_cast<float *>(vec.data), vec_bytes});
-            iovecs.push_back({&len32, sizeof(len32)});
-            if (meta_len > 0) {
-                iovecs.push_back({const_cast<char *>(meta.tenant.data()), meta_len});
-            }
-            iovecs.push_back({&crc, sizeof(crc)});
-
-            st = AppendIovecs(impl_->file.get(), iovecs);
-            if (!st.ok()) return st;
-
-            file_off_ += total_bytes;
-            bytes_in_seg_ += total_bytes;
-            
-            if (fsync_ == pomai::FsyncPolicy::kAlways)
-                return impl_->file->Sync();
-            return pomai::Status::Ok();
+        std::vector<std::uint8_t> plain;
+        AppendBytes(&plain, &rp, sizeof(rp));
+        AppendBytes(&plain, vec.data, vec.size_bytes());
+        if (!meta.tenant.empty()) {
+            std::uint32_t len32 = static_cast<std::uint32_t>(meta.tenant.size());
+            AppendBytes(&plain, &len32, sizeof(len32));
+            if (!meta.tenant.empty()) AppendBytes(&plain, meta.tenant.data(), meta.tenant.size());
         }
+
+        std::vector<std::uint8_t> body;
+        if (encryption_enabled_) {
+            const auto nonce = MakeNonce(shard_id_, rp.seq, gen_);
+            std::vector<std::uint8_t> cipher;
+            std::array<std::uint8_t, 16> tag{};
+            auto est = pomai::core::AesGcm::Encrypt(encryption_key_, nonce, plain, &cipher, &tag);
+            if (!est.ok()) return est;
+            AppendBytes(&body, nonce.data(), nonce.size());
+            AppendBytes(&body, cipher.data(), cipher.size());
+            AppendBytes(&body, tag.data(), tag.size());
+        } else {
+            body = std::move(plain);
+        }
+        const std::uint32_t crc = pomai::util::Crc32c(body.data(), body.size());
+        FrameHeader fh{};
+        fh.len = static_cast<std::uint32_t>(body.size() + sizeof(std::uint32_t));
+
+        const std::size_t total_bytes = sizeof(FrameHeader) + fh.len;
+        auto st = RotateIfNeeded(total_bytes);
+        if (!st.ok()) return st;
+
+        std::vector<Iov> iovecs;
+        iovecs.reserve(3);
+        iovecs.push_back({&fh, sizeof(fh)});
+        iovecs.push_back({body.data(), body.size()});
+        iovecs.push_back({const_cast<std::uint32_t*>(&crc), sizeof(crc)});
+        st = AppendIovecs(impl_->file.get(), iovecs);
+        if (!st.ok()) return st;
+        file_off_ += total_bytes;
+        bytes_in_seg_ += total_bytes;
+        if (fsync_ == pomai::FsyncPolicy::kAlways) return impl_->file->Sync();
+        return pomai::Status::Ok();
     }
 
     pomai::Status Wal::AppendDelete(pomai::VectorId id)
@@ -312,27 +292,37 @@ namespace pomai::storage {
         rp.id = id;
         rp.dim = 0;
 
-        auto &frame = scratch_;
-        frame.clear();
-
+        std::vector<std::uint8_t> plain;
+        AppendBytes(&plain, &rp, sizeof(rp));
+        std::vector<std::uint8_t> body;
+        if (encryption_enabled_) {
+            const auto nonce = MakeNonce(shard_id_, rp.seq, gen_);
+            std::vector<std::uint8_t> cipher;
+            std::array<std::uint8_t, 16> tag{};
+            auto est = pomai::core::AesGcm::Encrypt(encryption_key_, nonce, plain, &cipher, &tag);
+            if (!est.ok()) return est;
+            AppendBytes(&body, nonce.data(), nonce.size());
+            AppendBytes(&body, cipher.data(), cipher.size());
+            AppendBytes(&body, tag.data(), tag.size());
+        } else {
+            body = std::move(plain);
+        }
         FrameHeader fh{};
-        fh.len = static_cast<std::uint32_t>(sizeof(RecordPrefix) + sizeof(std::uint32_t));
-        AppendBytes(&frame, &fh, sizeof(fh));
-        AppendBytes(&frame, &rp, sizeof(rp));
+        fh.len = static_cast<std::uint32_t>(body.size() + sizeof(std::uint32_t));
+        const std::uint32_t crc = pomai::util::Crc32c(body.data(), body.size());
 
-        const std::uint32_t crc = pomai::util::Crc32c(frame.data() + sizeof(FrameHeader), fh.len - sizeof(std::uint32_t));
-        AppendBytes(&frame, &crc, sizeof(crc));
-
-        auto st = RotateIfNeeded(frame.size());
+        auto st = RotateIfNeeded(sizeof(FrameHeader) + fh.len);
         if (!st.ok())
             return st;
+        std::vector<Iov> iovecs;
+        iovecs.push_back({&fh, sizeof(fh)});
+        iovecs.push_back({body.data(), body.size()});
+        iovecs.push_back({const_cast<std::uint32_t*>(&crc), sizeof(crc)});
+        st = AppendIovecs(impl_->file.get(), iovecs);
+        if (!st.ok()) return st;
 
-        st = impl_->file->Append(pomai::Slice(frame.data(), frame.size()));
-        if (!st.ok())
-            return st;
-
-        file_off_ += frame.size();
-        bytes_in_seg_ += frame.size();
+        file_off_ += sizeof(FrameHeader) + fh.len;
+        bytes_in_seg_ += sizeof(FrameHeader) + fh.len;
 
         if (fsync_ == pomai::FsyncPolicy::kAlways)
             return impl_->file->Sync();
@@ -348,28 +338,35 @@ namespace pomai::storage {
 
         std::uint32_t klen = static_cast<std::uint32_t>(key.size());
         std::uint32_t vlen = static_cast<std::uint32_t>(value.size());
-
+        std::vector<std::uint8_t> plain;
+        AppendBytes(&plain, &rp, sizeof(rp));
+        AppendBytes(&plain, &klen, sizeof(klen));
+        AppendBytes(&plain, &vlen, sizeof(vlen));
+        if (klen > 0) AppendBytes(&plain, key.data(), klen);
+        if (vlen > 0) AppendBytes(&plain, value.data(), vlen);
+        std::vector<std::uint8_t> body;
+        if (encryption_enabled_) {
+            const auto nonce = MakeNonce(shard_id_, rp.seq, gen_);
+            std::vector<std::uint8_t> cipher;
+            std::array<std::uint8_t, 16> tag{};
+            auto est = pomai::core::AesGcm::Encrypt(encryption_key_, nonce, plain, &cipher, &tag);
+            if (!est.ok()) return est;
+            AppendBytes(&body, nonce.data(), nonce.size());
+            AppendBytes(&body, cipher.data(), cipher.size());
+            AppendBytes(&body, tag.data(), tag.size());
+        } else {
+            body = std::move(plain);
+        }
+        std::uint32_t crc = pomai::util::Crc32c(body.data(), body.size());
         FrameHeader fh{};
-        fh.len = static_cast<std::uint32_t>(sizeof(RecordPrefix) + 8 + klen + vlen + sizeof(std::uint32_t));
-
-        std::uint32_t crc = pomai::util::Crc32c(&rp, sizeof(rp));
-        crc = pomai::util::Crc32c(&klen, 4, crc);
-        crc = pomai::util::Crc32c(&vlen, 4, crc);
-        crc = pomai::util::Crc32c(key.data(), klen, crc);
-        crc = pomai::util::Crc32c(value.data(), vlen, crc);
-
+        fh.len = static_cast<std::uint32_t>(body.size() + sizeof(std::uint32_t));
         const std::size_t total_bytes = sizeof(FrameHeader) + fh.len;
         auto st = RotateIfNeeded(total_bytes);
         if (!st.ok()) return st;
-
         std::vector<Iov> iovecs;
-        iovecs.reserve(7);
+        iovecs.reserve(3);
         iovecs.push_back({&fh, sizeof(fh)});
-        iovecs.push_back({&rp, sizeof(rp)});
-        iovecs.push_back({&klen, 4});
-        iovecs.push_back({&vlen, 4});
-        iovecs.push_back(Iov{(void*)key.data(), (std::size_t)klen});
-        iovecs.push_back(Iov{(void*)value.data(), (std::size_t)vlen});
+        iovecs.push_back({body.data(), body.size()});
         iovecs.push_back(Iov{&crc, sizeof(crc)});
 
         st = AppendIovecs(impl_->file.get(), iovecs);
@@ -393,56 +390,45 @@ namespace pomai::storage {
         if (ids.empty())
             return pomai::Status::Ok();  // No-op for empty batch
         
+        if (encryption_enabled_) {
+            for (std::size_t i = 0; i < ids.size(); ++i) {
+                auto st = AppendPut(ids[i], vectors[i]);
+                if (!st.ok()) return st;
+            }
+            return pomai::Status::Ok();
+        }
+
         std::size_t total_batch_bytes = 0;
         for (const auto& vec : vectors) {
-            total_batch_bytes += sizeof(FrameHeader) + sizeof(RecordPrefix) + 
+            total_batch_bytes += sizeof(FrameHeader) + sizeof(RecordPrefix) +
                                 vec.size_bytes() + sizeof(std::uint32_t);
         }
-        
-        // Rotate if needed
         auto st = RotateIfNeeded(total_batch_bytes);
-        if (!st.ok())
-            return st;
-        
-        // Prepare consolidated iovecs to minimize context switches
-        struct TmpRecord {
-            FrameHeader fh;
-            RecordPrefix rp;
-            std::uint32_t crc;
-        };
+        if (!st.ok()) return st;
+
+        struct TmpRecord { FrameHeader fh; RecordPrefix rp; std::uint32_t crc; };
         std::vector<TmpRecord> tmps(ids.size());
         std::vector<Iov> iovecs;
         iovecs.reserve(ids.size() * 4);
-
         for (std::size_t i = 0; i < ids.size(); ++i) {
             tmps[i].rp.seq = ++seq_;
             tmps[i].rp.op = static_cast<std::uint8_t>(Op::kPut);
             tmps[i].rp.id = ids[i];
             tmps[i].rp.dim = vectors[i].dim;
-            
             const std::size_t payload_bytes = vectors[i].size_bytes();
-            
             tmps[i].fh.len = static_cast<std::uint32_t>(sizeof(RecordPrefix) + payload_bytes + sizeof(std::uint32_t));
-            
             tmps[i].crc = pomai::util::Crc32c(&tmps[i].rp, sizeof(tmps[i].rp));
             tmps[i].crc = pomai::util::Crc32c(vectors[i].data, payload_bytes, tmps[i].crc);
-            
             iovecs.push_back({&tmps[i].fh, sizeof(tmps[i].fh)});
             iovecs.push_back({&tmps[i].rp, sizeof(tmps[i].rp)});
             iovecs.push_back({const_cast<float *>(vectors[i].data), payload_bytes});
             iovecs.push_back({&tmps[i].crc, sizeof(tmps[i].crc)});
         }
-        
         st = AppendIovecs(impl_->file.get(), iovecs);
-        if (!st.ok())
-            return st;
-        
+        if (!st.ok()) return st;
         file_off_ += total_batch_bytes;
         bytes_in_seg_ += total_batch_bytes;
-        
-        // Single fsync for entire batch (KEY OPTIMIZATION)
-        if (fsync_ == pomai::FsyncPolicy::kAlways)
-            return impl_->file->Sync();
+        if (fsync_ == pomai::FsyncPolicy::kAlways) return impl_->file->Sync();
         return pomai::Status::Ok();
     }
 
@@ -529,16 +515,37 @@ namespace pomai::storage {
                     return pomai::Status::Corruption("wal crc mismatch");
                 }
 
-                const auto *rp = reinterpret_cast<const RecordPrefix *>(body.data());
+                std::vector<std::uint8_t> plain;
+                const std::uint8_t* payload_ptr = body.data();
+                std::size_t payload_len = fh.len - sizeof(std::uint32_t);
+                if (encryption_enabled_) {
+                    if (payload_len < 12 + 16) return pomai::Status::Corruption("wal encrypted frame too small");
+                    std::array<std::uint8_t, 12> nonce{};
+                    std::array<std::uint8_t, 16> tag{};
+                    std::memcpy(nonce.data(), payload_ptr, nonce.size());
+                    const std::size_t cipher_len = payload_len - nonce.size() - tag.size();
+                    std::vector<std::uint8_t> cipher(cipher_len);
+                    std::memcpy(cipher.data(), payload_ptr + nonce.size(), cipher_len);
+                    std::memcpy(tag.data(), payload_ptr + nonce.size() + cipher_len, tag.size());
+                    auto dst = pomai::core::AesGcm::Decrypt(encryption_key_, nonce, cipher, tag, &plain);
+                    if (!dst.ok()) return dst;
+                    payload_ptr = plain.data();
+                    payload_len = plain.size();
+                }
+
+                if (payload_len < sizeof(RecordPrefix)) return pomai::Status::Corruption("wal missing record prefix");
+                const auto *rp = reinterpret_cast<const RecordPrefix *>(payload_ptr);
                 if (rp->op == static_cast<std::uint8_t>(Op::kPut))
                 {
                     const std::uint32_t dim = rp->dim;
                     const std::size_t vec_bytes = static_cast<std::size_t>(dim) * sizeof(float);
                     const std::size_t expect = sizeof(RecordPrefix) + vec_bytes + sizeof(std::uint32_t);
-                    if (expect != fh.len)
+                    if (!encryption_enabled_ && expect != fh.len)
+                        return pomai::Status::Corruption("wal put length mismatch");
+                    if (encryption_enabled_ && (sizeof(RecordPrefix) + vec_bytes) != payload_len)
                         return pomai::Status::Corruption("wal put length mismatch");
 
-                    const float* vec_ptr = reinterpret_cast<const float*>(body.data() + sizeof(RecordPrefix));
+                    const float* vec_ptr = reinterpret_cast<const float*>(payload_ptr + sizeof(RecordPrefix));
                     st = mem.Put(rp->id, pomai::VectorView{vec_ptr, dim});
                     if (!st.ok())
                         return st;
@@ -548,18 +555,20 @@ namespace pomai::storage {
                     const std::uint32_t dim = rp->dim;
                     const std::size_t vec_bytes = static_cast<std::size_t>(dim) * sizeof(float);
                     // Minimal check: headers + vec + meta_len(4) + crc(4)
-                    if (fh.len < sizeof(RecordPrefix) + vec_bytes + 4 + 4)
+                    if ((!encryption_enabled_ && fh.len < sizeof(RecordPrefix) + vec_bytes + 4 + 4) ||
+                        (encryption_enabled_ && payload_len < sizeof(RecordPrefix) + vec_bytes + 4))
                         return pomai::Status::Corruption("wal putmeta too short");
 
-                    const float* vec_ptr = reinterpret_cast<const float*>(body.data() + sizeof(RecordPrefix));
+                    const float* vec_ptr = reinterpret_cast<const float*>(payload_ptr + sizeof(RecordPrefix));
 
                     // Decode metadata
-                    const uint8_t* meta_ptr = body.data() + sizeof(RecordPrefix) + vec_bytes;
+                    const uint8_t* meta_ptr = payload_ptr + sizeof(RecordPrefix) + vec_bytes;
                     uint32_t meta_len = 0;
                     std::memcpy(&meta_len, meta_ptr, sizeof(meta_len));
                     
                     const std::size_t expect = sizeof(RecordPrefix) + vec_bytes + 4 + meta_len + sizeof(std::uint32_t);
-                    if (expect != fh.len)
+                    if ((!encryption_enabled_ && expect != fh.len) ||
+                        (encryption_enabled_ && (sizeof(RecordPrefix) + vec_bytes + 4 + meta_len) != payload_len))
                          return pomai::Status::Corruption("wal putmeta length mismatch");
                          
                     std::string tenant(reinterpret_cast<const char*>(meta_ptr + 4), meta_len);
@@ -570,7 +579,8 @@ namespace pomai::storage {
                 }
                 else if (rp->op == static_cast<std::uint8_t>(Op::kDel))
                 {
-                    if (fh.len != sizeof(RecordPrefix) + sizeof(std::uint32_t))
+                    if ((!encryption_enabled_ && fh.len != sizeof(RecordPrefix) + sizeof(std::uint32_t)) ||
+                        (encryption_enabled_ && payload_len != sizeof(RecordPrefix)))
                         return pomai::Status::Corruption("wal del length mismatch");
                     st = mem.Delete(rp->id);
                     if (!st.ok())

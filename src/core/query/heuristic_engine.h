@@ -4,6 +4,7 @@
 #include <string_view>
 #include "pomai/options.h"
 #include "pomai/types.h"
+#include "pomai/search.h"
 
 namespace pomai {
     struct SearchOptions;
@@ -40,6 +41,12 @@ public:
      * @brief Estimates relevance based on edge timestamps or ranks.
      */
     float EstimateTemporalRelevance(float rank_avg);
+
+    /** Decide multimodal execution order to reduce CPU cost. */
+    pomai::QueryExecutionOrder DecideExecutionOrder(const pomai::MultiModalQuery& query);
+
+    /** Lightweight anomaly heuristic for edge self-protection. */
+    bool IsAnomalousAccessPattern(const pomai::MultiModalQuery& query);
 
 private:
     float CalculateVariance(std::span<const float> vec);

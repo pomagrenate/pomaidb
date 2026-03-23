@@ -24,6 +24,7 @@ namespace pomai
         kVector = 0,
         kRag = 1,
         kGraph = 2,
+        kText = 3,
     };
 
     enum class IndexType : uint8_t
@@ -110,6 +111,19 @@ namespace pomai
         uint32_t routing_warmup_mult = 20;
         uint32_t routing_keep_prev = 1;
         MetricType metric = MetricType::kL2;
+
+        // Edge security: encryption-at-rest.
+        bool enable_encryption_at_rest = false;
+        // Hex-encoded 32-byte key (64 hex chars) for AES-256-GCM.
+        std::string encryption_key_hex;
+
+        // Low-RAM controls (edge-first defaults).
+        // Max entries tracked by semantic lifecycle per membrane.
+        uint32_t max_lifecycle_entries = 20000;
+        // Max docs retained in lightweight text membrane index.
+        uint32_t max_text_docs = 50000;
+        // Limit graph expansion frontier in orchestrator to cap RAM.
+        uint32_t max_query_frontier = 2048;
     };
 
     // One membrane = one logical collection.

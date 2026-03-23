@@ -15,6 +15,8 @@
 #include "pomai/hooks.h"
 #include "pomai/graph.h"
 #include "core/query/query_planner.h"
+#include "core/query/query_orchestrator.h"
+#include "core/lifecycle/semantic_lifecycle.h"
 
 namespace pomai {
     class GraphMembrane;
@@ -24,6 +26,7 @@ namespace pomai::core
 
     class VectorEngine;
     class RagEngine;
+    class TextMembrane;
     class SyncReceiver;
 
     class MembraneManager : public IQueryEngine
@@ -100,6 +103,8 @@ namespace pomai::core
             std::unique_ptr<VectorEngine> vector_engine;
             std::unique_ptr<RagEngine> rag_engine;
             std::unique_ptr<pomai::GraphMembrane> graph_engine;
+            std::unique_ptr<TextMembrane> text_engine;
+            SemanticLifecycle lifecycle;
             std::vector<std::shared_ptr<PostPutHook>> hooks;
         };
 
@@ -114,7 +119,7 @@ namespace pomai::core
 
         // For now: keep engines in-memory; later you can add lazy-open by manifest.
         std::unordered_map<std::string, MembraneState> membranes_;
-        std::unique_ptr<QueryPlanner> planner_;
+        std::unique_ptr<QueryOrchestrator> orchestrator_;
     };
 
 } // namespace pomai::core

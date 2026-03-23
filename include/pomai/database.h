@@ -54,6 +54,15 @@ struct EmbeddedOptions {
 
     /** If true, automatically link vectors to src_vid via AutoEdgeHook. */
     bool enable_auto_edge = false;
+
+    // Edge security: encryption-at-rest.
+    bool enable_encryption_at_rest = false;
+    std::string encryption_key_hex;
+
+    // Low-RAM controls.
+    uint32_t max_lifecycle_entries = 20000;
+    uint32_t max_text_docs = 50000;
+    uint32_t max_query_frontier = 2048;
 };
 
 /**

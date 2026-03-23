@@ -29,7 +29,8 @@ Status StorageEngine::Open(const EmbeddedOptions& options) {
     auto env = options.env ? options.env : Env::Default();
     auto v_path = options.path + "/vectors";
     
-    auto wal = std::make_unique<storage::Wal>(env, v_path, 0, 1024ULL * 1024 * 1024, options.fsync);
+    auto wal = std::make_unique<storage::Wal>(env, v_path, 0, 1024ULL * 1024 * 1024, options.fsync,
+        options.enable_encryption_at_rest, options.encryption_key_hex);
     auto st = wal->Open();
     if (!st.ok()) return st;
 
@@ -43,7 +44,8 @@ Status StorageEngine::Open(const EmbeddedOptions& options) {
     kernel_.RegisterPod(std::make_unique<core::VectorPod>(std::move(v_runtime)));
 
     auto g_path = options.path + "/graph";
-    auto g_wal = std::make_unique<storage::Wal>(env, g_path, 1, 1024ULL * 1024 * 1024, options.fsync);
+    auto g_wal = std::make_unique<storage::Wal>(env, g_path, 1, 1024ULL * 1024 * 1024, options.fsync,
+        options.enable_encryption_at_rest, options.encryption_key_hex);
     st = g_wal->Open();
     if (!st.ok()) return st;
 

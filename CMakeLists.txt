@@ -58,7 +58,11 @@ add_library(pomai STATIC
   src/core/vector_engine/vector_engine.cc
   src/core/shard/runtime.cc
   src/core/query/query_planner.cc
+  src/core/query/query_orchestrator.cc
   src/core/query/heuristic_engine.cc
+  src/core/text/text_membrane.cc
+  src/core/lifecycle/semantic_lifecycle.cc
+  src/core/security/aes_gcm.cc
   src/core/shard/layer_lookup.cc
   src/core/shard/iterator.cc
   src/core/shard/manifest.cc
@@ -157,6 +161,9 @@ find_package(OpenMP QUIET)
 if (OpenMP_CXX_FOUND)
   target_link_libraries(pomai PRIVATE OpenMP::OpenMP_CXX)
 endif()
+
+find_package(OpenSSL REQUIRED)
+target_link_libraries(pomai PRIVATE OpenSSL::Crypto)
 
 if (MSVC)
   target_compile_options(pomai PRIVATE /W4 /permissive-)
@@ -377,6 +384,18 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(rag_embedding_test)
   pomai_add_labeled_test(rag_embedding_test "unit")
 
+  add_executable(query_orchestrator_test tests/unit/query_orchestrator_test.cc)
+  pomai_setup_test(query_orchestrator_test)
+  pomai_add_labeled_test(query_orchestrator_test "unit")
+
+  add_executable(text_membrane_test tests/unit/text_membrane_test.cc)
+  pomai_setup_test(text_membrane_test)
+  pomai_add_labeled_test(text_membrane_test "unit")
+
+  add_executable(low_ram_limits_test tests/unit/low_ram_limits_test.cc)
+  pomai_setup_test(low_ram_limits_test)
+  pomai_add_labeled_test(low_ram_limits_test "unit")
+
   add_executable(recall_test tests/recall/recall_test.cc tests/recall/recall_dataset.cc tests/common/bruteforce_oracle.cc)
   pomai_setup_test(recall_test)
   pomai_add_labeled_test(recall_test "recall")
@@ -417,6 +436,11 @@ if (POMAI_BUILD_TESTS)
   add_executable(db_edge_workload_test tests/integ/db_edge_workload_test.cc)
   pomai_setup_test(db_edge_workload_test)
   pomai_add_labeled_test(db_edge_workload_test "integ")
+
+  add_executable(db_soak_stress_test tests/integ/db_soak_stress_test.cc)
+  pomai_setup_test(db_soak_stress_test)
+  pomai_add_labeled_test(db_soak_stress_test "stress")
+  set_tests_properties(db_soak_stress_test PROPERTIES TIMEOUT 180)
 
   add_executable(db_error_paths_test tests/integ/db_error_paths_test.cc)
   pomai_setup_test(db_error_paths_test)
@@ -492,6 +516,10 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(manifest_corruption_test)
   pomai_add_labeled_test(manifest_corruption_test "crash")
 
+  add_executable(sd_fault_injection_test tests/crash/sd_fault_injection_test.cc)
+  pomai_setup_test(sd_fault_injection_test)
+  pomai_add_labeled_test(sd_fault_injection_test "crash")
+
   add_executable(recovery_test tests/crash/recovery_test.cc)
   pomai_setup_test(recovery_test)
   pomai_add_labeled_test(recovery_test "crash")
@@ -520,6 +548,26 @@ if (POMAI_BUILD_TESTS)
 
     add_test(NAME pomai_crash_replay COMMAND pomai_crash_test)
     set_tests_properties(pomai_crash_replay PROPERTIES LABELS "crash" TIMEOUT 60)
+
+    add_executable(power_loss_stress_test tests/crash/power_loss_stress_test.cc)
+    target_link_libraries(power_loss_stress_test PRIVATE pomai)
+    if (MSVC)
+      target_compile_options(power_loss_stress_test PRIVATE /W4 /permissive-)
+    else()
+      target_compile_options(power_loss_stress_test PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    endif()
+    target_include_directories(power_loss_stress_test PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    if (POMAI_IS_TSAN)
+      target_compile_options(power_loss_stress_test PRIVATE -fno-pie)
+      target_link_options(power_loss_stress_test PRIVATE -no-pie)
+    endif()
+
+    add_test(NAME power_loss_stress COMMAND power_loss_stress_test)
+    set_tests_properties(power_loss_stress PROPERTIES LABELS "crash;stress" TIMEOUT 120)
   endif()
 
   # ---- TSAN (Gate #3) ----
@@ -601,6 +649,19 @@ target_include_directories(quantization_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR
 add_executable(benchmark_a benchmarks/palloc_env_stress.cc)
 target_link_libraries(benchmark_a PRIVATE ${POMAI_EXE_DEPS})
 target_include_directories(benchmark_a PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# Encryption overhead benchmark harness
+add_executable(encryption_perf_bench benchmarks/encryption_perf_bench.cc)
+target_link_libraries(encryption_perf_bench PRIVATE ${POMAI_EXE_DEPS})
+target_include_directories(encryption_perf_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_executable(hybrid_orchestrator_bench benchmarks/hybrid_orchestrator_bench.cc)
+target_link_libraries(hybrid_orchestrator_bench PRIVATE ${POMAI_EXE_DEPS})
+target_include_directories(hybrid_orchestrator_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(low_ram_profile_bench benchmarks/low_ram_profile_bench.cc)
+target_link_libraries(low_ram_profile_bench PRIVATE ${POMAI_EXE_DEPS})
+target_include_directories(low_ram_profile_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # =========================
 # Tools

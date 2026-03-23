@@ -6,6 +6,12 @@
 
 namespace pomai
 {
+    enum class QueryExecutionOrder : uint8_t {
+        kAuto = 0,
+        kVectorFirst = 1,
+        kGraphFirst = 2,
+    };
+
 
     struct SearchHit
     {
@@ -66,6 +72,14 @@ namespace pomai
         // Temporal Filtering
         uint64_t start_ts = 0;
         uint64_t end_ts = 0;
+
+        // Cross-membrane routing (empty => use call-site membrane).
+        std::string vector_membrane;
+        std::string graph_membrane;
+        std::string text_membrane;
+
+        // Orchestrator execution policy.
+        QueryExecutionOrder execution_order = QueryExecutionOrder::kAuto;
         
         // Potential future filters
         std::string filter_expression;

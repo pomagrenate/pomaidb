@@ -6,6 +6,7 @@
 
 #include "core/vector_engine/vector_engine.h"
 #include "core/rag/rag_engine.h"
+#include "core/text/text_membrane.h"
 #include "pomai/iterator.h"  // For SnapshotIterator
 #include "storage/manifest/manifest.h"
 #include "util/logging.h"
@@ -16,7 +17,7 @@ namespace pomai::core
 {
 
     MembraneManager::MembraneManager(pomai::DBOptions base) : base_(std::move(base)) {
-        planner_ = std::make_unique<QueryPlanner>(this);
+        orchestrator_ = std::make_unique<QueryOrchestrator>(this, base_.max_query_frontier);
     }
     MembraneManager::~MembraneManager() = default;
 
@@ -52,10 +53,16 @@ namespace pomai::core
                 state.vector_engine = std::make_unique<VectorEngine>(opt, loaded_spec.kind, loaded_spec.metric, loaded_spec.sync_lsn);
             } else if (loaded_spec.kind == pomai::MembraneKind::kRag) {
                 state.rag_engine = std::make_unique<RagEngine>(opt, loaded_spec);
-            } else {
-                std::unique_ptr<storage::Wal> wal = std::make_unique<storage::Wal>(opt.env, opt.path, 0, 64 * 1024 * 1024, opt.fsync);
+            } else if (loaded_spec.kind == pomai::MembraneKind::kGraph) {
+                std::unique_ptr<storage::Wal> wal = std::make_unique<storage::Wal>(opt.env, opt.path, 0, 64 * 1024 * 1024, opt.fsync,
+                    opt.enable_encryption_at_rest, opt.encryption_key_hex);
+                auto wst = wal->Open();
+                if (!wst.ok()) return wst;
                 state.graph_engine = std::make_unique<GraphMembraneImpl>(std::move(wal));
+            } else {
+                state.text_engine = std::make_unique<TextMembrane>(base_.max_text_docs);
             }
+            state.lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
             membranes_.emplace(spec.name, std::move(state));
             st = Status::Ok(); // clear error
         }
@@ -97,10 +104,16 @@ namespace pomai::core
                     state.vector_engine = std::make_unique<VectorEngine>(opt, mspec.kind, mspec.metric, mspec.sync_lsn);
                 } else if (mspec.kind == pomai::MembraneKind::kRag) {
                     state.rag_engine = std::make_unique<RagEngine>(opt, mspec);
-                } else {
-                    std::unique_ptr<storage::Wal> wal = std::make_unique<storage::Wal>(opt.env, opt.path, 0, 64 * 1024 * 1024, opt.fsync);
+                } else if (mspec.kind == pomai::MembraneKind::kGraph) {
+                    std::unique_ptr<storage::Wal> wal = std::make_unique<storage::Wal>(opt.env, opt.path, 0, 64 * 1024 * 1024, opt.fsync,
+                        opt.enable_encryption_at_rest, opt.encryption_key_hex);
+                    auto wst = wal->Open();
+                    if (!wst.ok()) return wst;
                     state.graph_engine = std::make_unique<GraphMembraneImpl>(std::move(wal));
+                } else {
+                    state.text_engine = std::make_unique<TextMembrane>(base_.max_text_docs);
                 }
+                state.lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
                 membranes_.emplace(name, std::move(state));
             }
 
@@ -191,10 +204,16 @@ namespace pomai::core
             state.vector_engine = std::make_unique<VectorEngine>(opt, spec.kind, spec.metric, spec.sync_lsn);
         } else if (spec.kind == pomai::MembraneKind::kRag) {
             state.rag_engine = std::make_unique<RagEngine>(opt, spec);
-        } else {
-            std::unique_ptr<storage::Wal> wal = std::make_unique<storage::Wal>(opt.env, opt.path, 0, 64 * 1024 * 1024, opt.fsync);
+        } else if (spec.kind == pomai::MembraneKind::kGraph) {
+            std::unique_ptr<storage::Wal> wal = std::make_unique<storage::Wal>(opt.env, opt.path, 0, 64 * 1024 * 1024, opt.fsync,
+                opt.enable_encryption_at_rest, opt.encryption_key_hex);
+            auto wst = wal->Open();
+            if (!wst.ok()) return wst;
             state.graph_engine = std::make_unique<GraphMembraneImpl>(std::move(wal));
+        } else {
+            state.text_engine = std::make_unique<TextMembrane>(base_.max_text_docs);
         }
+        state.lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
         membranes_.emplace(spec.name, std::move(state));
         return Status::Ok();
     }
@@ -230,7 +249,7 @@ namespace pomai::core
         } else if (state->spec.kind == pomai::MembraneKind::kRag) {
             return state->rag_engine->Open();
         }
-        // GraphMembrane loads on Create/Restore for now
+        // Graph/Text membrane currently initialize on create/restore.
         return Status::Ok();
     }
 
@@ -241,8 +260,10 @@ namespace pomai::core
             return Status::NotFound("membrane not found");
         if (state->spec.kind == pomai::MembraneKind::kVector) {
             return state->vector_engine->Close();
+        } else if (state->spec.kind == pomai::MembraneKind::kRag) {
+            return state->rag_engine->Close();
         }
-        return state->rag_engine->Close();
+        return Status::Ok();
     }
 
     Status MembraneManager::ListMembranes(std::vector<std::string> *out) const
@@ -272,10 +293,15 @@ namespace pomai::core
         auto *state = GetMembraneOrNull(membrane);
         if (!state)
             return Status::NotFound("membrane not found");
+        if (state->spec.kind == pomai::MembraneKind::kText) {
+            // kText ignores dense vector and indexes metadata text only.
+            return state->text_engine->Put(id, std::to_string(id));
+        }
         if (state->spec.kind != pomai::MembraneKind::kVector)
             return Status::InvalidArgument("VECTOR membrane required for PutVector");
         auto st = MaybeApplyBackpressure(state);
         if (!st.ok()) return st;
+        state->lifecycle.OnWrite(id);
         st = state->vector_engine->Put(id, vec);
         if (st.ok()) {
             for (auto& hook : state->hooks) {
@@ -290,10 +316,17 @@ namespace pomai::core
         auto *state = GetMembraneOrNull(membrane);
         if (!state)
             return Status::NotFound("membrane not found");
+        if (state->spec.kind == pomai::MembraneKind::kText) {
+            const std::string text = !meta.text.empty() ? meta.text : meta.payload;
+            if (text.empty()) return Status::InvalidArgument("kText PutVector requires metadata text/payload");
+            state->lifecycle.OnWrite(id);
+            return state->text_engine->Put(id, text);
+        }
         if (state->spec.kind != pomai::MembraneKind::kVector)
             return Status::InvalidArgument("VECTOR membrane required for PutVector");
         auto st = MaybeApplyBackpressure(state);
         if (!st.ok()) return st;
+        state->lifecycle.OnWrite(id);
         st = state->vector_engine->Put(id, vec, meta);
         if (st.ok()) {
             for (auto& hook : state->hooks) {
@@ -373,6 +406,7 @@ namespace pomai::core
             return Status::NotFound("membrane not found");
         if (state->spec.kind != pomai::MembraneKind::kVector)
             return Status::InvalidArgument("VECTOR membrane required for Delete");
+        state->lifecycle.OnDelete(id);
         return state->vector_engine->Delete(id);
     }
 
@@ -403,16 +437,28 @@ namespace pomai::core
         auto *state = GetMembraneOrNull(membrane);
         if (!state)
             return Status::NotFound("membrane not found");
+        if (state->spec.kind == pomai::MembraneKind::kText) {
+            return Status::InvalidArgument("use SearchLexical for kText membrane");
+        }
         if (state->spec.kind != pomai::MembraneKind::kVector)
             return Status::InvalidArgument("VECTOR membrane required for Search");
-        return state->vector_engine->Search(query, topk, opts, out);
+        auto st = state->vector_engine->Search(query, topk, opts, out);
+        if (st.ok()) for (const auto& h : out->hits) state->lifecycle.OnRead(h.id);
+        return st;
     }
 
     Status MembraneManager::SearchLexical(std::string_view membrane, const std::string& query, uint32_t topk, std::vector<LexicalHit>* out) {
         auto *state = GetMembraneOrNull(membrane);
         if (!state) return Status::NotFound("membrane not found");
+        if (state->spec.kind == pomai::MembraneKind::kText) {
+            auto st = state->text_engine->Search(query, topk, out);
+            if (st.ok()) for (const auto& h : *out) state->lifecycle.OnRead(h.id);
+            return st;
+        }
         if (!state->vector_engine) return Status::InvalidArgument("VECTOR membrane required for SearchLexical");
-        return state->vector_engine->SearchLexical(query, topk, out);
+        auto st = state->vector_engine->SearchLexical(query, topk, out);
+        if (st.ok()) for (const auto& h : *out) state->lifecycle.OnRead(h.id);
+        return st;
     }
 
     Status MembraneManager::SearchBatch(std::string_view membrane, std::span<const float> queries,
@@ -448,7 +494,7 @@ namespace pomai::core
     }
 
     Status MembraneManager::SearchMultiModal(std::string_view membrane, const MultiModalQuery& query, SearchResult* out) {
-        return planner_ ? planner_->Execute(membrane, query, out) : Status::InvalidArgument("not opened");
+        return orchestrator_ ? orchestrator_->Execute(membrane, query, out) : Status::InvalidArgument("not opened");
     }
 
     Status MembraneManager::AddVertex(std::string_view membrane, VertexId id, TagId tag, const Metadata& meta)

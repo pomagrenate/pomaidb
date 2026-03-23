@@ -5,6 +5,7 @@
 #include <span>
 #include <string>
 #include <vector>
+#include <array>
 
 #include "palloc_compat.h"
 #include "pomai/env.h"
@@ -30,6 +31,8 @@ namespace pomai::storage
             std::uint32_t shard_id,
             std::size_t segment_bytes,
             pomai::FsyncPolicy fsync,
+            bool encryption_enabled = false,
+            std::string encryption_key_hex = "",
             palloc_heap_t* heap = nullptr);
         ~Wal();
 
@@ -82,6 +85,8 @@ namespace pomai::storage
         class Impl;
         Impl* impl_ = nullptr;
         std::vector<std::uint8_t> scratch_;
+        bool encryption_enabled_ = false;
+        std::array<std::uint8_t, 32> encryption_key_{};
     };
 
 } // namespace pomai::storage

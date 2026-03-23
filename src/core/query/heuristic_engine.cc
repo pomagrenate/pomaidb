@@ -84,4 +84,30 @@ float HeuristicEngine::CalculateVariance(std::span<const float> vec) {
     return sq_sum / vec.size();
 }
 
+pomai::QueryExecutionOrder HeuristicEngine::DecideExecutionOrder(const pomai::MultiModalQuery& query) {
+    if (query.execution_order != pomai::QueryExecutionOrder::kAuto) {
+        return query.execution_order;
+    }
+    const bool has_vector = !query.vector.empty();
+    const bool has_keywords = !query.keywords.empty();
+    const bool has_graph = query.graph_hops > 0;
+    if (!has_graph) return pomai::QueryExecutionOrder::kVectorFirst;
+    if (!has_vector && has_keywords) return pomai::QueryExecutionOrder::kGraphFirst;
+
+    // Heuristic: when keyword-only or very deep graph expansion, graph-first can
+    // prune candidates early; otherwise vector-first is cheaper.
+    if (query.graph_hops >= 3 && !has_keywords) {
+        return pomai::QueryExecutionOrder::kGraphFirst;
+    }
+    return pomai::QueryExecutionOrder::kVectorFirst;
+}
+
+bool HeuristicEngine::IsAnomalousAccessPattern(const pomai::MultiModalQuery& query) {
+    const bool brute_force_shape =
+        query.top_k > 1000 || query.graph_hops > 6 ||
+        (!query.vector.empty() && query.vector.size() > 4096);
+    const bool suspicious_keyword = query.keywords.size() > 4096;
+    return brute_force_shape || suspicious_keyword;
+}
+
 } // namespace pomai::core

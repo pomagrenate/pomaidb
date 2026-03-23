@@ -65,7 +65,8 @@ Status VectorEngine::OpenLocked() {
         return Status::IOError("vector_engine CreateDirIfMissing failed");
 
     auto wal = std::make_unique<storage::Wal>(
-        env, opt_.path, /*log_id=*/0u, kWalSegmentBytes, opt_.fsync);
+        env, opt_.path, /*log_id=*/0u, kWalSegmentBytes, opt_.fsync,
+        opt_.enable_encryption_at_rest, opt_.encryption_key_hex);
     Status st = wal->Open();
     if (!st.ok()) return st;
 
