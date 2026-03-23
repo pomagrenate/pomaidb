@@ -105,7 +105,10 @@ namespace pomai::core
                      std::unique_ptr<storage::Wal> wal,
                      std::unique_ptr<table::MemTable> mem,
                      const pomai::IndexParams& index_params,
-                     uint64_t sync_lsn = 0);
+                     uint64_t sync_lsn = 0,
+                     bool endurance_aware_maintenance = false,
+                     uint64_t write_budget_bytes_per_hour = 0,
+                     float endurance_compaction_bias = 1.0f);
                      
         ~VectorRuntime();
 
@@ -249,6 +252,11 @@ namespace pomai::core
         std::optional<pomai::Status> last_background_result_;  // Set when background job completes (single-threaded)
         std::uint64_t wal_epoch_{0};
         std::uint64_t last_synced_lsn_{0};
+        std::uint64_t bytes_written_wal_{0};
+        std::uint64_t bytes_written_segments_{0};
+        bool endurance_aware_maintenance_{false};
+        std::uint64_t write_budget_bytes_per_hour_{0};
+        float endurance_compaction_bias_{1.0f};
 
         // Reusable scratch buffers for search hot path (single-threaded; avoids per-query allocations).
         mutable std::vector<pomai::SearchHit> search_candidates_scratch_;

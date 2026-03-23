@@ -20,6 +20,10 @@
 
 namespace pomai {
     class GraphMembrane;
+    struct TimeSeriesPoint;
+    struct SpatialPoint;
+    struct GeoPolygon;
+    struct SparseEntry;
 }
 namespace pomai::core
 {
@@ -27,6 +31,14 @@ namespace pomai::core
     class VectorEngine;
     class RagEngine;
     class TextMembrane;
+    class TimeSeriesEngine;
+    class KeyValueEngine;
+    class SketchEngine;
+    class BlobEngine;
+    class SpatialEngine;
+    class MeshEngine;
+    class SparseEngine;
+    class BitsetEngine;
     class SyncReceiver;
 
     class MembraneManager : public IQueryEngine
@@ -78,6 +90,37 @@ namespace pomai::core
         Status SearchBatch(std::string_view membrane, std::span<const float> queries, uint32_t num_queries, std::uint32_t topk, const SearchOptions& opts, std::vector<pomai::SearchResult>* out);
         Status SearchRag(std::string_view membrane, const pomai::RagQuery& query, const pomai::RagSearchOptions& opts, pomai::RagSearchResult *out);
         Status SearchMultiModal(std::string_view membrane, const MultiModalQuery& query, SearchResult* out);
+
+        Status TsPut(std::string_view membrane, uint64_t series_id, uint64_t timestamp, double value);
+        Status TsRange(std::string_view membrane, uint64_t series_id, uint64_t start_ts, uint64_t end_ts, std::vector<pomai::TimeSeriesPoint>* out);
+        Status KvPut(std::string_view membrane, std::string_view key, std::string_view value);
+        Status KvGet(std::string_view membrane, std::string_view key, std::string* out);
+        Status KvDelete(std::string_view membrane, std::string_view key);
+        Status SketchAdd(std::string_view membrane, std::string_view key, uint64_t increment);
+        Status SketchEstimate(std::string_view membrane, std::string_view key, uint64_t* out);
+        Status SketchSeen(std::string_view membrane, std::string_view key, bool* out);
+        Status SketchUniqueEstimate(std::string_view membrane, uint64_t* out);
+        Status BlobPut(std::string_view membrane, uint64_t blob_id, std::span<const uint8_t> data);
+        Status BlobGet(std::string_view membrane, uint64_t blob_id, std::vector<uint8_t>* out);
+        Status BlobDelete(std::string_view membrane, uint64_t blob_id);
+        Status SpatialPut(std::string_view membrane, uint64_t entity_id, double latitude, double longitude);
+        Status SpatialRadiusSearch(std::string_view membrane, double latitude, double longitude, double radius_meters, std::vector<pomai::SpatialPoint>* out);
+        Status SpatialWithinPolygon(std::string_view membrane, const pomai::GeoPolygon& polygon, std::vector<pomai::SpatialPoint>* out);
+        Status SpatialNearest(std::string_view membrane, double latitude, double longitude, uint32_t topk, std::vector<pomai::SpatialPoint>* out);
+        Status MeshPut(std::string_view membrane, uint64_t mesh_id, std::span<const float> vertices_xyz);
+        Status MeshRmsd(std::string_view membrane, uint64_t mesh_a, uint64_t mesh_b, double* out);
+        Status MeshIntersect(std::string_view membrane, uint64_t mesh_a, uint64_t mesh_b, bool* out);
+        Status MeshVolume(std::string_view membrane, uint64_t mesh_id, double* out);
+        Status SparsePut(std::string_view membrane, uint64_t id, const pomai::SparseEntry& entry);
+        Status SparseDot(std::string_view membrane, uint64_t a, uint64_t b, double* out);
+        Status SparseIntersect(std::string_view membrane, uint64_t a, uint64_t b, uint32_t* out);
+        Status SparseJaccard(std::string_view membrane, uint64_t a, uint64_t b, double* out);
+        Status BitsetPut(std::string_view membrane, uint64_t id, std::span<const uint8_t> bits);
+        Status BitsetAnd(std::string_view membrane, uint64_t a, uint64_t b, std::vector<uint8_t>* out);
+        Status BitsetOr(std::string_view membrane, uint64_t a, uint64_t b, std::vector<uint8_t>* out);
+        Status BitsetXor(std::string_view membrane, uint64_t a, uint64_t b, std::vector<uint8_t>* out);
+        Status BitsetHamming(std::string_view membrane, uint64_t a, uint64_t b, double* out);
+        Status BitsetJaccard(std::string_view membrane, uint64_t a, uint64_t b, double* out);
         
         // Graph Operations
         Status AddVertex(std::string_view membrane, VertexId id, TagId tag, const Metadata& meta);
@@ -104,6 +147,14 @@ namespace pomai::core
             std::unique_ptr<RagEngine> rag_engine;
             std::unique_ptr<pomai::GraphMembrane> graph_engine;
             std::unique_ptr<TextMembrane> text_engine;
+            std::unique_ptr<TimeSeriesEngine> timeseries_engine;
+            std::unique_ptr<KeyValueEngine> keyvalue_engine;
+            std::unique_ptr<SketchEngine> sketch_engine;
+            std::unique_ptr<BlobEngine> blob_engine;
+            std::unique_ptr<SpatialEngine> spatial_engine;
+            std::unique_ptr<MeshEngine> mesh_engine;
+            std::unique_ptr<SparseEngine> sparse_engine;
+            std::unique_ptr<BitsetEngine> bitset_engine;
             SemanticLifecycle lifecycle;
             std::vector<std::shared_ptr<PostPutHook>> hooks;
         };

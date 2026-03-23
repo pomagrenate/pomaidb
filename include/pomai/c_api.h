@@ -32,6 +32,14 @@ POMAI_API void pomai_record_free(pomai_record_t* record);
 POMAI_API pomai_status_t* pomai_search(pomai_db_t* db, const pomai_query_t* query, pomai_search_results_t** out);
 POMAI_API void pomai_search_results_free(pomai_search_results_t* results);
 
+// Typed membranes (TimeSeries/KeyValue/Sketch/Blob)
+POMAI_API pomai_status_t* pomai_create_membrane_kind(pomai_db_t* db, const char* name, uint32_t dim, uint32_t shard_count, uint32_t kind);
+POMAI_API pomai_status_t* pomai_ts_put(pomai_db_t* db, const char* membrane_name, uint64_t series_id, uint64_t ts, double value);
+POMAI_API pomai_status_t* pomai_kv_put(pomai_db_t* db, const char* membrane_name, const char* key, const char* value);
+POMAI_API pomai_status_t* pomai_kv_get(pomai_db_t* db, const char* membrane_name, const char* key, char** out_value, size_t* out_len);
+POMAI_API pomai_status_t* pomai_sketch_add(pomai_db_t* db, const char* membrane_name, const char* key, uint64_t increment);
+POMAI_API pomai_status_t* pomai_blob_put(pomai_db_t* db, const char* membrane_name, uint64_t blob_id, const uint8_t* data, size_t len);
+
 // RAG membrane and search
 POMAI_API pomai_status_t* pomai_create_rag_membrane(pomai_db_t* db, const char* name, uint32_t dim, uint32_t shard_count);
 POMAI_API pomai_status_t* pomai_put_chunk(pomai_db_t* db, const char* membrane_name, const pomai_rag_chunk_t* chunk);

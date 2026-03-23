@@ -64,6 +64,7 @@ namespace pomai::storage
         pomai::Status EndBatch();
 
         std::uint64_t GetLastLSN() const { return seq_; }
+        std::uint64_t GetBytesWritten() const { return bytes_written_total_; }
 
     private:
         std::string SegmentPath(std::uint64_t gen) const;
@@ -80,6 +81,7 @@ namespace pomai::storage
 
         std::uint64_t file_off_ = 0;
         std::size_t bytes_in_seg_ = 0;
+        std::uint64_t bytes_written_total_ = 0;
 
         palloc_heap_t* heap_ = nullptr;
         class Impl;

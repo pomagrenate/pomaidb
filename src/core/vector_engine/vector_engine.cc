@@ -89,7 +89,10 @@ Status VectorEngine::OpenLocked() {
         std::move(wal),
         std::move(mem),
         opt_.index_params,
-        sync_lsn_); // Added
+        sync_lsn_,
+        opt_.endurance_aware_maintenance,
+        opt_.write_budget_bytes_per_hour,
+        opt_.endurance_compaction_bias); // Added
 
     runtime_ = std::move(rt);
     st = runtime_->Start();
@@ -285,6 +288,8 @@ Status VectorEngine::Search(std::span<const float> query,
 
     out->hits = std::move(hits);
     out->routed_shards_count = 1;
+    out->total_shards_count = 1;
+    out->pruned_shards_count = (!opts.partition_device_id.empty() || !opts.partition_location_id.empty()) ? 0 : 0;
     out->routing_probe_centroids = 0;
     out->routed_buckets_count = runtime_->LastQueryCandidatesScanned();
 
@@ -352,6 +357,8 @@ Status VectorEngine::SearchBatch(std::span<const float> queries,
     for (uint32_t i = 0; i < num_queries; ++i) {
         (*out)[i].hits = std::move(per_query[i]);
         (*out)[i].routed_shards_count = 1;
+        (*out)[i].total_shards_count = 1;
+        (*out)[i].pruned_shards_count = (!opts.partition_device_id.empty() || !opts.partition_location_id.empty()) ? 0 : 0;
         (*out)[i].routing_probe_centroids = 0;
         (*out)[i].routed_buckets_count = runtime_->LastQueryCandidatesScanned();
     }

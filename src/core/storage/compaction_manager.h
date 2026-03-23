@@ -34,6 +34,7 @@ public:
         uint64_t total_size;
         int file_count;
         double score;
+        double endurance_bias = 1.0;
     };
 
     CompactionManager(uint64_t l1_base_size_bytes = 64 * 1024 * 1024); // Default L1: 64MB

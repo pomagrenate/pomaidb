@@ -96,6 +96,13 @@ typedef struct {
     uint32_t dim;
     uint32_t topk;
     const char* filter_expression;
+    const char* partition_device_id;
+    const char* partition_location_id;
+    uint64_t as_of_ts;
+    uint64_t as_of_lsn;
+    uint32_t aggregate_op;     // 0:none 1:sum 2:avg 3:min 4:max 5:count 6:topk
+    const char* aggregate_field; // score|timestamp|lsn
+    uint32_t aggregate_topk;
     float alpha;
     uint32_t deadline_ms;
     uint32_t flags;
@@ -116,6 +123,10 @@ typedef struct {
     uint64_t* ids;
     float* scores;
     uint32_t* shard_ids;
+    uint32_t total_shards_count;
+    uint32_t pruned_shards_count;
+    double aggregate_value;
+    uint32_t aggregate_op;
     pomai_semantic_pointer_t* zero_copy_pointers;
 } pomai_search_results_t;
 

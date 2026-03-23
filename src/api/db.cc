@@ -236,6 +236,97 @@ namespace pomai
             return mgr_.SearchMultiModal(membrane, query, out);
         }
 
+        Status TsPut(std::string_view membrane, uint64_t series_id, uint64_t timestamp, double value) override {
+            return mgr_.TsPut(membrane, series_id, timestamp, value);
+        }
+        Status TsRange(std::string_view membrane, uint64_t series_id, uint64_t start_ts, uint64_t end_ts, std::vector<TimeSeriesPoint>* out) override {
+            return mgr_.TsRange(membrane, series_id, start_ts, end_ts, out);
+        }
+        Status KvPut(std::string_view membrane, std::string_view key, std::string_view value) override {
+            return mgr_.KvPut(membrane, key, value);
+        }
+        Status KvGet(std::string_view membrane, std::string_view key, std::string* out) override {
+            return mgr_.KvGet(membrane, key, out);
+        }
+        Status KvDelete(std::string_view membrane, std::string_view key) override {
+            return mgr_.KvDelete(membrane, key);
+        }
+        Status SketchAdd(std::string_view membrane, std::string_view key, uint64_t increment) override {
+            return mgr_.SketchAdd(membrane, key, increment);
+        }
+        Status SketchEstimate(std::string_view membrane, std::string_view key, uint64_t* out) override {
+            return mgr_.SketchEstimate(membrane, key, out);
+        }
+        Status SketchSeen(std::string_view membrane, std::string_view key, bool* out) override {
+            return mgr_.SketchSeen(membrane, key, out);
+        }
+        Status SketchUniqueEstimate(std::string_view membrane, uint64_t* out) override {
+            return mgr_.SketchUniqueEstimate(membrane, out);
+        }
+        Status BlobPut(std::string_view membrane, uint64_t blob_id, std::span<const uint8_t> data) override {
+            return mgr_.BlobPut(membrane, blob_id, data);
+        }
+        Status BlobGet(std::string_view membrane, uint64_t blob_id, std::vector<uint8_t>* out) override {
+            return mgr_.BlobGet(membrane, blob_id, out);
+        }
+        Status BlobDelete(std::string_view membrane, uint64_t blob_id) override {
+            return mgr_.BlobDelete(membrane, blob_id);
+        }
+        Status SpatialPut(std::string_view membrane, uint64_t entity_id, double latitude, double longitude) override {
+            return mgr_.SpatialPut(membrane, entity_id, latitude, longitude);
+        }
+        Status SpatialRadiusSearch(std::string_view membrane, double latitude, double longitude, double radius_meters, std::vector<SpatialPoint>* out) override {
+            return mgr_.SpatialRadiusSearch(membrane, latitude, longitude, radius_meters, out);
+        }
+        Status SpatialWithinPolygon(std::string_view membrane, const GeoPolygon& polygon, std::vector<SpatialPoint>* out) override {
+            return mgr_.SpatialWithinPolygon(membrane, polygon, out);
+        }
+        Status SpatialNearest(std::string_view membrane, double latitude, double longitude, uint32_t topk, std::vector<SpatialPoint>* out) override {
+            return mgr_.SpatialNearest(membrane, latitude, longitude, topk, out);
+        }
+        Status MeshPut(std::string_view membrane, uint64_t mesh_id, std::span<const float> vertices_xyz) override {
+            return mgr_.MeshPut(membrane, mesh_id, vertices_xyz);
+        }
+        Status MeshRmsd(std::string_view membrane, uint64_t mesh_a, uint64_t mesh_b, double* out) override {
+            return mgr_.MeshRmsd(membrane, mesh_a, mesh_b, out);
+        }
+        Status MeshIntersect(std::string_view membrane, uint64_t mesh_a, uint64_t mesh_b, bool* out) override {
+            return mgr_.MeshIntersect(membrane, mesh_a, mesh_b, out);
+        }
+        Status MeshVolume(std::string_view membrane, uint64_t mesh_id, double* out) override {
+            return mgr_.MeshVolume(membrane, mesh_id, out);
+        }
+        Status SparsePut(std::string_view membrane, uint64_t id, const SparseEntry& entry) override {
+            return mgr_.SparsePut(membrane, id, entry);
+        }
+        Status SparseDot(std::string_view membrane, uint64_t a, uint64_t b, double* out) override {
+            return mgr_.SparseDot(membrane, a, b, out);
+        }
+        Status SparseIntersect(std::string_view membrane, uint64_t a, uint64_t b, uint32_t* out) override {
+            return mgr_.SparseIntersect(membrane, a, b, out);
+        }
+        Status SparseJaccard(std::string_view membrane, uint64_t a, uint64_t b, double* out) override {
+            return mgr_.SparseJaccard(membrane, a, b, out);
+        }
+        Status BitsetPut(std::string_view membrane, uint64_t id, std::span<const uint8_t> bits) override {
+            return mgr_.BitsetPut(membrane, id, bits);
+        }
+        Status BitsetAnd(std::string_view membrane, uint64_t a, uint64_t b, std::vector<uint8_t>* out) override {
+            return mgr_.BitsetAnd(membrane, a, b, out);
+        }
+        Status BitsetOr(std::string_view membrane, uint64_t a, uint64_t b, std::vector<uint8_t>* out) override {
+            return mgr_.BitsetOr(membrane, a, b, out);
+        }
+        Status BitsetXor(std::string_view membrane, uint64_t a, uint64_t b, std::vector<uint8_t>* out) override {
+            return mgr_.BitsetXor(membrane, a, b, out);
+        }
+        Status BitsetHamming(std::string_view membrane, uint64_t a, uint64_t b, double* out) override {
+            return mgr_.BitsetHamming(membrane, a, b, out);
+        }
+        Status BitsetJaccard(std::string_view membrane, uint64_t a, uint64_t b, double* out) override {
+            return mgr_.BitsetJaccard(membrane, a, b, out);
+        }
+
         Status SearchBatch(std::string_view membrane, std::span<const float> queries, uint32_t num_queries,
                            uint32_t topk, std::vector<SearchResult>* out) override
         {

@@ -223,12 +223,13 @@ namespace pomai::table
             offsets.push_back(blob.size());
             const auto& e = entries_[i];
             
-            uint8_t mbuf[32]; // Fixed part (src_vid, timestamp, lat, lon)
+            uint8_t mbuf[40]; // Fixed part (src_vid, timestamp, lsn, lat, lon)
             std::memcpy(mbuf, &e.meta.src_vid, 8);
             std::memcpy(mbuf + 8, &e.meta.timestamp, 8);
-            std::memcpy(mbuf + 16, &e.meta.lat, 8);
-            std::memcpy(mbuf + 24, &e.meta.lon, 8);
-            blob.insert(blob.end(), mbuf, mbuf + 32);
+            std::memcpy(mbuf + 16, &e.meta.lsn, 8);
+            std::memcpy(mbuf + 24, &e.meta.lat, 8);
+            std::memcpy(mbuf + 32, &e.meta.lon, 8);
+            blob.insert(blob.end(), mbuf, mbuf + 40);
 
             auto add_str = [&](const std::string& s) {
                 uint32_t len = static_cast<uint32_t>(s.size());
@@ -238,6 +239,8 @@ namespace pomai::table
                 if (len > 0) blob.insert(blob.end(), s.begin(), s.end());
             };
 
+            add_str(e.meta.device_id);
+            add_str(e.meta.location_id);
             add_str(e.meta.tenant);
             add_str(e.meta.text);
             add_str(e.meta.payload);
@@ -562,10 +565,11 @@ namespace pomai::table
             const uint8_t* blob_ptr = reinterpret_cast<const uint8_t*>(meta_blob + start);
             std::memcpy(&out->src_vid, blob_ptr, 8);
             std::memcpy(&out->timestamp, blob_ptr + 8, 8);
-            std::memcpy(&out->lat, blob_ptr + 16, 8);
-            std::memcpy(&out->lon, blob_ptr + 24, 8);
+            std::memcpy(&out->lsn, blob_ptr + 16, 8);
+            std::memcpy(&out->lat, blob_ptr + 24, 8);
+            std::memcpy(&out->lon, blob_ptr + 32, 8);
             
-            size_t cursor = 32;
+            size_t cursor = 40;
             auto read_str = [&](std::string* s) {
                 uint32_t len = 0;
                 std::memcpy(&len, blob_ptr + cursor, 4);
@@ -578,6 +582,8 @@ namespace pomai::table
                 }
             };
             
+            read_str(&out->device_id);
+            read_str(&out->location_id);
             read_str(&out->tenant);
             read_str(&out->text);
             read_str(&out->payload);

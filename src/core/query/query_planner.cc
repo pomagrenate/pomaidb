@@ -1,10 +1,59 @@
 #include "core/query/query_planner.h"
 #include "core/graph/bitset_frontier.h" 
+#include <algorithm>
+#include <unordered_map>
 #include "pomai/search.h"
 #include "pomai/graph.h"
 #include "pomai/types.h"
 
 namespace pomai::core {
+
+namespace {
+pomai::AggregateResult ComputeAggregate(const pomai::AggregateRequest& req, const std::vector<pomai::SearchHit>& hits) {
+    pomai::AggregateResult out;
+    out.op = req.op;
+    out.field = req.field;
+    if (hits.empty()) return out;
+
+    if (req.op == pomai::AggregateOp::kCount) {
+        out.value = static_cast<double>(hits.size());
+        return out;
+    }
+    if (req.op == pomai::AggregateOp::kTopK) {
+        const uint32_t take = req.top_k == 0 ? 1u : req.top_k;
+        const std::size_t n = std::min<std::size_t>(take, hits.size());
+        out.topk_hits.assign(hits.begin(), hits.begin() + static_cast<std::ptrdiff_t>(n));
+        out.value = static_cast<double>(out.topk_hits.size());
+        return out;
+    }
+
+    // Hot path for score aggregates: 4-way unrolled reduction improves throughput
+    // on edge CPUs while preserving deterministic scalar semantics.
+    double sum = 0.0, mn = static_cast<double>(hits[0].score), mx = mn;
+    std::size_t i = 0;
+    const std::size_t n = hits.size();
+    for (; i + 3 < n; i += 4) {
+        const double a = static_cast<double>(hits[i].score);
+        const double b = static_cast<double>(hits[i + 1].score);
+        const double c = static_cast<double>(hits[i + 2].score);
+        const double d = static_cast<double>(hits[i + 3].score);
+        sum += a + b + c + d;
+        mn = std::min(mn, std::min(std::min(a, b), std::min(c, d)));
+        mx = std::max(mx, std::max(std::max(a, b), std::max(c, d)));
+    }
+    for (; i < n; ++i) {
+        const double v = static_cast<double>(hits[i].score);
+        sum += v;
+        mn = std::min(mn, v);
+        mx = std::max(mx, v);
+    }
+    if (req.op == pomai::AggregateOp::kSum) out.value = sum;
+    else if (req.op == pomai::AggregateOp::kAvg) out.value = sum / static_cast<double>(hits.size());
+    else if (req.op == pomai::AggregateOp::kMin) out.value = mn;
+    else if (req.op == pomai::AggregateOp::kMax) out.value = mx;
+    return out;
+}
+} // namespace
 
 Status QueryPlanner::Execute(std::string_view membrane, const MultiModalQuery& query, SearchResult* out) {
     if (!engine_ || !out) return Status::InvalidArgument("invalid args");
@@ -18,6 +67,10 @@ Status QueryPlanner::Execute(std::string_view membrane, const MultiModalQuery& q
     if (query.start_ts > 0 || query.end_ts > 0) {
         opts.filters.push_back(pomai::Filter::TimeRange(query.start_ts, query.end_ts));
     }
+    opts.as_of_ts = query.as_of_ts;
+    opts.as_of_lsn = query.as_of_lsn;
+    opts.partition_device_id = query.partition_device_id;
+    opts.partition_location_id = query.partition_location_id;
 
     bool has_vector = !query.vector.empty();
     bool has_lexical = !query.keywords.empty();
@@ -98,6 +151,16 @@ Status QueryPlanner::Execute(std::string_view membrane, const MultiModalQuery& q
             }
             if (next.IsEmpty()) break;
             frontier = std::move(next);
+        }
+    }
+
+    // 4. Edge mini-OLAP aggregates over post-filter result set.
+    if (!query.aggregates.empty()) {
+        out->aggregates.clear();
+        out->aggregates.reserve(query.aggregates.size());
+        for (const auto& req : query.aggregates) {
+            if (req.op == pomai::AggregateOp::kNone) continue;
+            out->aggregates.push_back(ComputeAggregate(req, out->hits));
         }
     }
 

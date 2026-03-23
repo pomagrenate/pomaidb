@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <algorithm>
 
 // GGUF (cheesebrain) headers
 #include "ai/cheesebrain_core/cheese-context.h"
@@ -14,6 +15,8 @@
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/core/kernels/register.h"
 #include "ai/analytical_engine.h"
+#include "core/ai/no_train_dispatch.h"
+#include <numeric>
 
 namespace tflite { namespace ops { namespace builtin {
 TfLiteRegistration* Register_ADD();
@@ -120,6 +123,18 @@ std::span<const float> AIEngine::GetOutput(int index) const {
 std::string AIEngine::GetTextResult() const {
     // Return placeholder for now.
     return "AI generation result placeholder";
+}
+
+Status AIEngine::InferNoTrain(MembraneKind kind, std::span<const float> features, InferenceSummary* out) const {
+    if (!out) return Status::InvalidArgument("out is null");
+    ai::InferenceSummary summary;
+    const Status st = ai::InferNoTrainForKind(kind, features, &summary);
+    if (!st.ok()) return st;
+    out->score = summary.score;
+    out->action_required = summary.action_required;
+    out->label = summary.label;
+    out->explanation = summary.explanation;
+    return Status::Ok();
 }
 
 } // namespace pomai::core

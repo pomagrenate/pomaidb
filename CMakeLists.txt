@@ -61,6 +61,16 @@ add_library(pomai STATIC
   src/core/query/query_orchestrator.cc
   src/core/query/heuristic_engine.cc
   src/core/text/text_membrane.cc
+  src/core/timeseries/timeseries_engine.cc
+  src/core/keyvalue/keyvalue_engine.cc
+  src/core/sketch/sketch_engine.cc
+  src/core/blob/blob_engine.cc
+  src/core/simd/simd_dispatch.cc
+  src/core/spatial/spatial_engine.cc
+  src/core/mesh/mesh_engine.cc
+  src/core/sparse/sparse_engine.cc
+  src/core/bitset/bitset_engine.cc
+  src/core/ai/no_train_dispatch.cc
   src/core/lifecycle/semantic_lifecycle.cc
   src/core/security/aes_gcm.cc
   src/core/shard/layer_lookup.cc
@@ -396,6 +406,22 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(low_ram_limits_test)
   pomai_add_labeled_test(low_ram_limits_test "unit")
 
+  add_executable(new_membrane_typed_api_test tests/unit/new_membrane_typed_api_test.cc)
+  pomai_setup_test(new_membrane_typed_api_test)
+  pomai_add_labeled_test(new_membrane_typed_api_test "unit")
+
+  add_executable(simd_new_membranes_test tests/unit/simd_new_membranes_test.cc)
+  pomai_setup_test(simd_new_membranes_test)
+  pomai_add_labeled_test(simd_new_membranes_test "unit")
+
+  add_executable(no_train_dispatch_test tests/unit/no_train_dispatch_test.cc)
+  pomai_setup_test(no_train_dispatch_test)
+  pomai_add_labeled_test(no_train_dispatch_test "unit")
+
+  add_executable(edge_ai_core_enhancements_test tests/unit/edge_ai_core_enhancements_test.cc)
+  pomai_setup_test(edge_ai_core_enhancements_test)
+  pomai_add_labeled_test(edge_ai_core_enhancements_test "unit")
+
   add_executable(recall_test tests/recall/recall_test.cc tests/recall/recall_dataset.cc tests/common/bruteforce_oracle.cc)
   pomai_setup_test(recall_test)
   pomai_add_labeled_test(recall_test "recall")
@@ -480,6 +506,14 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(membrane_persistence_test)
   pomai_add_labeled_test(membrane_persistence_test "integ")
 
+  add_executable(new_membrane_persistence_test tests/integ/new_membrane_persistence_test.cc)
+  pomai_setup_test(new_membrane_persistence_test)
+  pomai_add_labeled_test(new_membrane_persistence_test "integ")
+
+  add_executable(simd_new_membranes_persistence_test tests/integ/simd_new_membranes_persistence_test.cc)
+  pomai_setup_test(simd_new_membranes_persistence_test)
+  pomai_add_labeled_test(simd_new_membranes_persistence_test "integ")
+
   add_executable(shard_concurrency_test tests/integ/shard_concurrency_test.cc)
   pomai_setup_test(shard_concurrency_test)
   pomai_add_labeled_test(shard_concurrency_test "integ")
@@ -519,6 +553,14 @@ if (POMAI_BUILD_TESTS)
   add_executable(sd_fault_injection_test tests/crash/sd_fault_injection_test.cc)
   pomai_setup_test(sd_fault_injection_test)
   pomai_add_labeled_test(sd_fault_injection_test "crash")
+
+  add_executable(new_membrane_fault_test tests/crash/new_membrane_fault_test.cc)
+  pomai_setup_test(new_membrane_fault_test)
+  pomai_add_labeled_test(new_membrane_fault_test "crash")
+
+  add_executable(simd_new_membranes_fault_test tests/crash/simd_new_membranes_fault_test.cc)
+  pomai_setup_test(simd_new_membranes_fault_test)
+  pomai_add_labeled_test(simd_new_membranes_fault_test "crash")
 
   add_executable(recovery_test tests/crash/recovery_test.cc)
   pomai_setup_test(recovery_test)
@@ -603,11 +645,6 @@ endif()
 
 set(POMAI_EXE_DEPS pomai)
 
-# Baseline Benchmark
-add_executable(bench_baseline tests/bench_baseline.cc)
-target_link_libraries(bench_baseline PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(bench_baseline PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
 # Comprehensive Benchmark (Industry-standard metrics)
 add_executable(comprehensive_bench benchmarks/comprehensive_bench.cc)
 target_link_libraries(comprehensive_bench PRIVATE ${POMAI_EXE_DEPS})
@@ -662,6 +699,18 @@ target_include_directories(hybrid_orchestrator_bench PRIVATE ${CMAKE_CURRENT_SOU
 add_executable(low_ram_profile_bench benchmarks/low_ram_profile_bench.cc)
 target_link_libraries(low_ram_profile_bench PRIVATE ${POMAI_EXE_DEPS})
 target_include_directories(low_ram_profile_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_executable(new_membrane_bench benchmarks/new_membrane_bench.cc)
+target_link_libraries(new_membrane_bench PRIVATE ${POMAI_EXE_DEPS})
+target_include_directories(new_membrane_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_executable(simd_new_membranes_bench benchmarks/simd_new_membranes_bench.cc)
+target_link_libraries(simd_new_membranes_bench PRIVATE ${POMAI_EXE_DEPS})
+target_include_directories(simd_new_membranes_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_executable(edge_ai_core_bench benchmarks/edge_ai_core_bench.cc)
+target_link_libraries(edge_ai_core_bench PRIVATE ${POMAI_EXE_DEPS})
+target_include_directories(edge_ai_core_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # =========================
 # Tools

@@ -207,6 +207,23 @@ namespace pomai::storage {
         dst->insert(dst->end(), b, b + n);
     }
 
+    static void AppendString(std::vector<std::uint8_t>* dst, const std::string& s) {
+        const std::uint32_t len = static_cast<std::uint32_t>(s.size());
+        AppendBytes(dst, &len, sizeof(len));
+        if (len > 0) AppendBytes(dst, s.data(), len);
+    }
+
+    static bool ReadString(const std::uint8_t* base, std::size_t len, std::size_t* cursor, std::string* out) {
+        if (*cursor + sizeof(std::uint32_t) > len) return false;
+        std::uint32_t n = 0;
+        std::memcpy(&n, base + *cursor, sizeof(n));
+        *cursor += sizeof(n);
+        if (*cursor + n > len) return false;
+        out->assign(reinterpret_cast<const char*>(base + *cursor), n);
+        *cursor += n;
+        return true;
+    }
+
     static std::array<std::uint8_t, 12> MakeNonce(std::uint32_t shard_id, std::uint64_t seq, std::uint64_t gen)
     {
         std::array<std::uint8_t, 12> nonce{};
@@ -244,10 +261,17 @@ namespace pomai::storage {
         std::vector<std::uint8_t> plain;
         AppendBytes(&plain, &rp, sizeof(rp));
         AppendBytes(&plain, vec.data, vec.size_bytes());
-        if (!meta.tenant.empty()) {
-            std::uint32_t len32 = static_cast<std::uint32_t>(meta.tenant.size());
-            AppendBytes(&plain, &len32, sizeof(len32));
-            if (!meta.tenant.empty()) AppendBytes(&plain, meta.tenant.data(), meta.tenant.size());
+        if (!meta.tenant.empty() || !meta.device_id.empty() || !meta.location_id.empty() || meta.timestamp > 0 || meta.src_vid > 0) {
+            AppendBytes(&plain, &meta.src_vid, sizeof(meta.src_vid));
+            AppendBytes(&plain, &meta.timestamp, sizeof(meta.timestamp));
+            AppendBytes(&plain, &meta.lsn, sizeof(meta.lsn));
+            AppendBytes(&plain, &meta.lat, sizeof(meta.lat));
+            AppendBytes(&plain, &meta.lon, sizeof(meta.lon));
+            AppendString(&plain, meta.tenant);
+            AppendString(&plain, meta.device_id);
+            AppendString(&plain, meta.location_id);
+            AppendString(&plain, meta.text);
+            AppendString(&plain, meta.payload);
         }
 
         std::vector<std::uint8_t> body;
@@ -280,6 +304,7 @@ namespace pomai::storage {
         if (!st.ok()) return st;
         file_off_ += total_bytes;
         bytes_in_seg_ += total_bytes;
+        bytes_written_total_ += static_cast<std::uint64_t>(total_bytes);
         if (fsync_ == pomai::FsyncPolicy::kAlways) return impl_->file->Sync();
         return pomai::Status::Ok();
     }
@@ -323,6 +348,7 @@ namespace pomai::storage {
 
         file_off_ += sizeof(FrameHeader) + fh.len;
         bytes_in_seg_ += sizeof(FrameHeader) + fh.len;
+        bytes_written_total_ += static_cast<std::uint64_t>(sizeof(FrameHeader) + fh.len);
 
         if (fsync_ == pomai::FsyncPolicy::kAlways)
             return impl_->file->Sync();
@@ -374,6 +400,7 @@ namespace pomai::storage {
 
         file_off_ += total_bytes;
         bytes_in_seg_ += total_bytes;
+        bytes_written_total_ += static_cast<std::uint64_t>(total_bytes);
 
         if (fsync_ == pomai::FsyncPolicy::kAlways)
             return impl_->file->Sync();
@@ -428,6 +455,7 @@ namespace pomai::storage {
         if (!st.ok()) return st;
         file_off_ += total_batch_bytes;
         bytes_in_seg_ += total_batch_bytes;
+        bytes_written_total_ += static_cast<std::uint64_t>(total_batch_bytes);
         if (fsync_ == pomai::FsyncPolicy::kAlways) return impl_->file->Sync();
         return pomai::Status::Ok();
     }
@@ -546,7 +574,9 @@ namespace pomai::storage {
                         return pomai::Status::Corruption("wal put length mismatch");
 
                     const float* vec_ptr = reinterpret_cast<const float*>(payload_ptr + sizeof(RecordPrefix));
-                    st = mem.Put(rp->id, pomai::VectorView{vec_ptr, dim});
+                    pomai::Metadata replay_meta;
+                    replay_meta.lsn = rp->seq;
+                    st = mem.Put(rp->id, pomai::VectorView{vec_ptr, dim}, replay_meta);
                     if (!st.ok())
                         return st;
                 }
@@ -561,18 +591,30 @@ namespace pomai::storage {
 
                     const float* vec_ptr = reinterpret_cast<const float*>(payload_ptr + sizeof(RecordPrefix));
 
-                    // Decode metadata
-                    const uint8_t* meta_ptr = payload_ptr + sizeof(RecordPrefix) + vec_bytes;
-                    uint32_t meta_len = 0;
-                    std::memcpy(&meta_len, meta_ptr, sizeof(meta_len));
-                    
-                    const std::size_t expect = sizeof(RecordPrefix) + vec_bytes + 4 + meta_len + sizeof(std::uint32_t);
-                    if ((!encryption_enabled_ && expect != fh.len) ||
-                        (encryption_enabled_ && (sizeof(RecordPrefix) + vec_bytes + 4 + meta_len) != payload_len))
-                         return pomai::Status::Corruption("wal putmeta length mismatch");
-                         
-                    std::string tenant(reinterpret_cast<const char*>(meta_ptr + 4), meta_len);
-                    pomai::Metadata meta(std::move(tenant));
+                    const std::uint8_t* meta_ptr = payload_ptr + sizeof(RecordPrefix) + vec_bytes;
+                    const std::size_t meta_len = payload_len - (sizeof(RecordPrefix) + vec_bytes);
+                    pomai::Metadata meta;
+                    std::size_t cursor = 0;
+                    if (meta_len >= (8 + 8 + 8 + 8 + 8)) {
+                        std::memcpy(&meta.src_vid, meta_ptr + cursor, 8); cursor += 8;
+                        std::memcpy(&meta.timestamp, meta_ptr + cursor, 8); cursor += 8;
+                        std::memcpy(&meta.lsn, meta_ptr + cursor, 8); cursor += 8;
+                        std::memcpy(&meta.lat, meta_ptr + cursor, 8); cursor += 8;
+                        std::memcpy(&meta.lon, meta_ptr + cursor, 8); cursor += 8;
+                        if (!ReadString(meta_ptr, meta_len, &cursor, &meta.tenant) ||
+                            !ReadString(meta_ptr, meta_len, &cursor, &meta.device_id) ||
+                            !ReadString(meta_ptr, meta_len, &cursor, &meta.location_id) ||
+                            !ReadString(meta_ptr, meta_len, &cursor, &meta.text) ||
+                            !ReadString(meta_ptr, meta_len, &cursor, &meta.payload)) {
+                            return pomai::Status::Corruption("wal putmeta decode failed");
+                        }
+                    } else {
+                        std::size_t c2 = 0;
+                        if (!ReadString(meta_ptr, meta_len, &c2, &meta.tenant)) {
+                            return pomai::Status::Corruption("wal legacy putmeta decode failed");
+                        }
+                    }
+                    meta.lsn = rp->seq;
                     
                     st = mem.Put(rp->id, pomai::VectorView{vec_ptr, dim}, meta);
                     if (!st.ok()) return st;
@@ -618,6 +660,7 @@ namespace pomai::storage {
         seq_ = 0;
         file_off_ = 0;
         bytes_in_seg_ = 0;
+        bytes_written_total_ = 0;
         return Open();
     }
 

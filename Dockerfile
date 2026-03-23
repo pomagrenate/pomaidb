@@ -41,7 +41,6 @@ RUN mkdir -p build && cd build \
         .. \
     && ninja -j$(nproc) \
         benchmark_a \
-        bench_baseline \
         ingestion_bench \
         comprehensive_bench \
         ci_perf_bench \
@@ -62,7 +61,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy binaries from builder
 COPY --from=builder /src/build/benchmark_a /usr/local/bin/
-COPY --from=builder /src/build/bench_baseline /usr/local/bin/
 COPY --from=builder /src/build/ingestion_bench /usr/local/bin/
 COPY --from=builder /src/build/comprehensive_bench /usr/local/bin/
 COPY --from=builder /src/build/ci_perf_bench /usr/local/bin/

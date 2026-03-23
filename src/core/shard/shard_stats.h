@@ -18,6 +18,9 @@ struct RuntimeStats {
     std::uint64_t memtable_entries{0};    // Current active MemTable size
     std::uint64_t mem_committed{0};       // Runtime heap committed bytes
     std::uint64_t mem_used{0};            // Runtime heap used bytes
+    std::uint64_t bytes_written_wal{0};   // WAL bytes written
+    std::uint64_t bytes_written_segments{0}; // Segment bytes written (freeze+compact)
+    std::uint64_t bytes_written_total{0};
 };
 
 } // namespace pomai::core

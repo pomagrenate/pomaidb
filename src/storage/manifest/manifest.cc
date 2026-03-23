@@ -249,12 +249,36 @@ namespace pomai::storage
 
         static std::string MembraneKindToString(pomai::MembraneKind kind)
         {
-            return kind == pomai::MembraneKind::kRag ? "RAG" : "VECTOR";
+            switch (kind) {
+                case pomai::MembraneKind::kVector: return "VECTOR";
+                case pomai::MembraneKind::kRag: return "RAG";
+                case pomai::MembraneKind::kGraph: return "GRAPH";
+                case pomai::MembraneKind::kText: return "TEXT";
+                case pomai::MembraneKind::kTimeSeries: return "TIMESERIES";
+                case pomai::MembraneKind::kKeyValue: return "KEYVALUE";
+                case pomai::MembraneKind::kSketch: return "SKETCH";
+                case pomai::MembraneKind::kBlob: return "BLOB";
+                case pomai::MembraneKind::kSpatial: return "SPATIAL";
+                case pomai::MembraneKind::kMesh: return "MESH";
+                case pomai::MembraneKind::kSparse: return "SPARSE";
+                case pomai::MembraneKind::kBitset: return "BITSET";
+                default: return "VECTOR";
+            }
         }
 
         static pomai::MembraneKind ParseMembraneKind(std::string_view tok)
         {
             if (tok == "RAG") return pomai::MembraneKind::kRag;
+            if (tok == "GRAPH") return pomai::MembraneKind::kGraph;
+            if (tok == "TEXT") return pomai::MembraneKind::kText;
+            if (tok == "TIMESERIES") return pomai::MembraneKind::kTimeSeries;
+            if (tok == "KEYVALUE") return pomai::MembraneKind::kKeyValue;
+            if (tok == "SKETCH") return pomai::MembraneKind::kSketch;
+            if (tok == "BLOB") return pomai::MembraneKind::kBlob;
+            if (tok == "SPATIAL") return pomai::MembraneKind::kSpatial;
+            if (tok == "MESH") return pomai::MembraneKind::kMesh;
+            if (tok == "SPARSE") return pomai::MembraneKind::kSparse;
+            if (tok == "BITSET") return pomai::MembraneKind::kBitset;
             return pomai::MembraneKind::kVector;
         }
 
@@ -383,7 +407,11 @@ namespace pomai::storage
     {
         if (!IsValidName(spec.name))
             return pomai::Status::InvalidArgument("invalid membrane name");
-        if (spec.dim == 0)
+        const bool dim_required = (spec.kind == pomai::MembraneKind::kVector ||
+                                   spec.kind == pomai::MembraneKind::kRag ||
+                                   spec.kind == pomai::MembraneKind::kGraph ||
+                                   spec.kind == pomai::MembraneKind::kText);
+        if (dim_required && spec.dim == 0)
             return pomai::Status::InvalidArgument("dim must be > 0");
         if (spec.shard_count == 0)
             return pomai::Status::InvalidArgument("shard_count must be > 0");

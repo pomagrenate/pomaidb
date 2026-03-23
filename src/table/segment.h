@@ -142,12 +142,13 @@ namespace pomai::table
                      std::memcpy(&end, meta_offsets_base + (i + 1) * sizeof(uint64_t), sizeof(end));
                      if (end > start) {
                          const uint8_t* blob_ptr = reinterpret_cast<const uint8_t*>(meta_blob + start);
-                         std::memcpy(&meta_obj.src_vid, blob_ptr, 8);
-                         std::memcpy(&meta_obj.timestamp, blob_ptr + 8, 8);
-                         std::memcpy(&meta_obj.lat, blob_ptr + 16, 8);
-                         std::memcpy(&meta_obj.lon, blob_ptr + 24, 8);
+                        std::memcpy(&meta_obj.src_vid, blob_ptr, 8);
+                        std::memcpy(&meta_obj.timestamp, blob_ptr + 8, 8);
+                        std::memcpy(&meta_obj.lsn, blob_ptr + 16, 8);
+                        std::memcpy(&meta_obj.lat, blob_ptr + 24, 8);
+                        std::memcpy(&meta_obj.lon, blob_ptr + 32, 8);
                          
-                         size_t cursor = 32;
+                        size_t cursor = 40;
                          auto read_str = [&](std::string* s) {
                              uint32_t len = 0;
                              std::memcpy(&len, blob_ptr + cursor, 4);
@@ -160,7 +161,9 @@ namespace pomai::table
                              }
                          };
                          
-                         read_str(&meta_obj.tenant);
+                        read_str(&meta_obj.device_id);
+                        read_str(&meta_obj.location_id);
+                        read_str(&meta_obj.tenant);
                          read_str(&meta_obj.text);
                          read_str(&meta_obj.payload);
                          meta_ptr = &meta_obj;

@@ -63,6 +63,13 @@ struct EmbeddedOptions {
     uint32_t max_lifecycle_entries = 20000;
     uint32_t max_text_docs = 50000;
     uint32_t max_query_frontier = 2048;
+    uint32_t max_kv_entries = 20000;
+    uint32_t max_sketch_entries = 20000;
+    uint32_t max_blob_bytes_mb = 64;
+    uint32_t max_spatial_points = 20000;
+    uint32_t max_mesh_objects = 4000;
+    uint32_t max_sparse_entries = 20000;
+    uint32_t max_bitset_bytes_mb = 64;
 };
 
 /**

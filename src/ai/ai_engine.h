@@ -6,6 +6,7 @@
 #include <span>
 #include <variant>
 
+#include "pomai/options.h"
 #include "pomai/status.h"
 
 namespace pomai::core {
@@ -21,6 +22,13 @@ enum class ModelType {
  */
 class AIEngine {
 public:
+    struct InferenceSummary {
+        float score = 0.0f;              // 0..1 normalized confidence/severity
+        bool action_required = false;    // deterministic rule trigger
+        std::string label;               // short classification
+        std::string explanation;         // operator-readable reason
+    };
+
     AIEngine();
     ~AIEngine();
 
@@ -46,6 +54,12 @@ public:
 
     /** For GGUF: Get generated text chunk. */
     std::string GetTextResult() const;
+
+    /**
+     * No-training inference path for any supported membrane datatype.
+     * Caller provides compact numeric features extracted from domain payload.
+     */
+    Status InferNoTrain(MembraneKind kind, std::span<const float> features, InferenceSummary* out) const;
 
 private:
     struct Impl;

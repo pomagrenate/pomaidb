@@ -98,8 +98,10 @@ class InMemoryWritableFile : public WritableFile {
   Status Append(Slice data) override {
     const char* p = reinterpret_cast<const char*>(data.data());
     content_.append(p, data.size());
+    bytes_written_ += static_cast<uint64_t>(data.size());
     return Status::Ok();
   }
+  uint64_t BytesWritten() const override { return bytes_written_; }
 
   Status Flush() override { return Status::Ok(); }
   Status Sync() override { return Status::Ok(); }
@@ -119,6 +121,7 @@ class InMemoryWritableFile : public WritableFile {
   bool append_ = false;
   bool closed_ = false;
   std::string content_;
+  uint64_t bytes_written_ = 0;
 };
 
 // -----------------------------------------------------------------------------

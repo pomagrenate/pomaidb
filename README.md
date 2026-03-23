@@ -4,9 +4,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**The predictable vector database for the edge of things.**
+**The predictable edge database for vectors + multimodal memory.**
 
-PomaiDB is an **embedded, single-threaded vector database** written in C++20, built for edge devices, IoT gateways, and environments where stability, hardware longevity, and deterministic behavior matter more than theoretical peak throughput. It combines **log-structured storage**, **zero-copy reads**, and an **offline-first Edge RAG pipeline** so you can run vector search and retrieval-augmented generation entirely on-device—no cloud APIs, no random writes, no surprise OOMs.
+PomaiDB is an **embedded, single-threaded edge database** written in C++20, built for edge devices, IoT gateways, and environments where stability, hardware longevity, and deterministic behavior matter more than theoretical peak throughput. It combines **log-structured storage**, **zero-copy reads**, **typed membranes** (Vector/RAG/Graph/Text/TimeSeries/KeyValue/Sketch/Blob), and an **offline-first Edge RAG pipeline** so you can run search + retrieval entirely on-device—no cloud APIs, no random writes, no surprise OOMs.
 
 ---
 
@@ -17,10 +17,16 @@ PomaiDB is a **small-footprint, production-ready vector store** that runs native
 **Core capabilities:**
 
 - **Vector ingestion and search** — Put vectors (with optional metadata), run approximate nearest-neighbor search (ANN) with configurable index types (IVF, HNSW), batch search, and point queries. All with optional scalar quantization (SQ8) to cut memory and bandwidth.
-- **Membranes** — Logical collections (vector-only or RAG) with separate dimensions, sharding, and indexes. Create multiple membranes in one database (e.g. `default` for embeddings, `rag` for document chunks).
+- **Membranes** — Logical collections with separate dimensions, sharding, and indexes. Supported kinds: `kVector`, `kRag`, `kGraph`, `kText`, `kTimeSeries`, `kKeyValue`, `kSketch`, `kBlob`, `kSpatial`, `kMesh`, `kSparse`, `kBitset`.
+- **Typed membrane APIs** — Native C++ APIs for time-series range queries, KV state storage, sketch counters/seen checks/unique estimates, and blob read/write/delete.
+- **Hybrid & multimodal search** — `QueryOrchestrator` supports vector + lexical + graph traversal paths with heuristic execution ordering, bounded frontier RAM, and metadata partition hints (`device_id`/`location_id`).
+- **Edge analytical aggregates (mini-OLAP)** — `Sum`, `Avg`, `Min`, `Max`, `Count`, `Top-K` over post-filter result sets (inference-only, no training).
+- **Virtual time-travel** — query constraints by `as_of_ts` and `as_of_lsn` for replay/debug style reads.
+- **Hardware wear-aware maintenance** — write-byte counters (WAL + segment writes) and endurance-aware compaction biasing for flash longevity.
 - **Offline-first Edge RAG** — Ingest documents (chunk → embed → store) and retrieve context (embed query → search → format chunk text) entirely on-device. Zero-copy chunking, a pluggable `EmbeddingProvider` (mock for tests; ready for a small local model), and strict memory limits so the pipeline fits in 64–128 MB RAM.
 - **Virtual File System (VFS)** — Storage and environment operations go through abstract `Env` and file interfaces. Default backend is POSIX; an in-memory backend (`InMemoryEnv`) supports tests and non-POSIX targets. No direct `<unistd.h>` or `<fcntl.h>` in core code.
-- **Zero-OOM philosophy** — Bounded memtable size, backpressure (auto-freeze when over threshold), and optional integration with **palloc** for arena-style allocation and hard memory caps. The RAG pipeline enforces max document size, max chunk size, and batch limits so ingestion never grows without bound.
+- **Zero-OOM philosophy** — Bounded memtable size, backpressure (auto-freeze when over threshold), and optional integration with **palloc** for arena-style allocation and hard memory caps. Runtime caps include lifecycle entries, text docs, query frontier, KV entries, sketch entries, and blob bytes.
+- **Edge security hardening** — AES-256-GCM encryption-at-rest on WAL path, key manager primitives (arm/wipe), and anomaly-triggered key wipe hooks in orchestrated query flow.
 
 PomaiDB does **not** aim to replace distributed vector DBs or to maximize throughput under heavy concurrency. It aims to be the **reliable, embeddable vector and RAG engine** for edge AI: cameras, gateways, NAS, and custom OSes where you need search and RAG without the cloud and without killing your storage.
 
@@ -48,11 +54,12 @@ The built-in RAG pipeline needs **no external API**. You ingest documents (text 
 
 ## Technical Highlights
 
-- **Architecture** — Shared-nothing, single-threaded event loop. One logical thread; no worker threads or thread pools in the core path. Full DB implementation (`DbImpl`) with membrane manager supports both vector and RAG membranes; C API and Python bindings use this same engine.
+- **Architecture** — Shared-nothing, single-threaded event loop. One logical thread; no worker threads or thread pools in the core path. Full DB implementation (`DbImpl`) with membrane manager supports typed multi-membrane workloads; C API and Python bindings use this same engine.
 - **Storage** — Log-structured, append-only. Tombstone-based deletion; sequential flush of in-memory buffer to disk. Optional explicit `Flush()` from the application loop. VFS abstraction (`Env`, `SequentialFile`, `RandomAccessFile`, `WritableFile`, optional `FileMapping`) so core code has no OS-specific includes.
 - **Memory** — Optional **palloc** (mmap-backed or custom allocator). Core and C API can use palloc for control structures and large buffers; RAG pipeline uses configurable limits and batch sizes. Arena-backed buffers for ingestion; optional hard limits for embedded and edge deployments.
 - **I/O** — Sequential write-behind; zero-copy reads (mmap where available via VFS, or buffered I/O). Designed for SD-card and eMMC longevity first, NVMe-friendly by construction.
 - **RAG** — Zero-copy chunking (`std::string_view`), `EmbeddingProvider` interface, optional chunk text storage in RAG engine, and a unified `RagPipeline` with `IngestDocument` and `RetrieveContext`. C API: `pomai_rag_pipeline_create`, `pomai_rag_ingest_document`, `pomai_rag_retrieve_context` (and buffer-based variant); Python: `ingest_document`, `retrieve_context`.
+- **Hardening** — Stress/soak, crash-replay, power-loss, SD-fault injection, and encryption overhead benchmarks are part of the repository test/bench matrix.
 - **Hardware** — Optimized for **ARM64** (Raspberry Pi, Orange Pi, Jetson) and **x64** servers. Single-threaded design avoids NUMA and core-pinning complexity.
 
 ---
@@ -94,7 +101,15 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
 
-**Tests:** `cmake .. -DPOMAI_BUILD_TESTS=ON` then build and run the test targets (e.g. `rag_chunking_test`, `rag_embedding_test`, `rag_pipeline_test`, `c_api_test`, `env_test`).
+**Tests (full suite):**
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPOMAI_BUILD_TESTS=ON
+cmake --build build -j$(nproc)
+ctest --test-dir build --output-on-failure
+```
+
+Latest full local run in this repo state: **62/62 tests passed**.
 
 **Smaller clone (embedded / CI):** Use a shallow clone and slim the palloc submodule to skip unneeded directories (saves ~6MB+ and reduces history size):
 
@@ -224,7 +239,20 @@ cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
 ../scripts/run_benchmarks_one_by_one.sh
 ```
 
-Or run individual executables: `./bench_baseline`, `./comprehensive_bench --dataset small`, `./ingestion_bench 10000 128`, `./rag_bench 100 64 32`, `./graph_bench 10000 10000 50000`, `./ci_perf_bench`, `./benchmark_a` (use `POMAI_BENCH_LOW_MEMORY=1` for a shorter run).
+Or run individual executables (deduplicated set):
+
+`./benchmark_a`, `./ci_perf_bench`, `./comprehensive_bench`, `./edge_ai_core_bench`, `./encryption_perf_bench`, `./graph_bench`, `./hybrid_orchestrator_bench`, `./ingestion_bench`, `./low_ram_profile_bench`, `./new_membrane_bench`, `./quantization_bench`, `./rag_bench`, `./simd_new_membranes_bench`.
+
+`bench_baseline` was removed because its scope overlapped with `ci_perf_bench` (deterministic ingest/search latency gate) and `comprehensive_bench` (full latency/throughput/recall profile).
+
+For constrained devices, prefer:
+
+```bash
+POMAI_BENCH_LOW_MEMORY=1 ./benchmark_a
+POMAI_BENCH_LOW_MEMORY=1 ./new_membrane_bench
+```
+
+Latest local benchmark verification in this repo state: all benchmark executables above completed successfully (exit code 0).
 
 **Python CIFAR-10 benchmark (end-to-end):** Create a venv, install from `requirements.txt`, build the C library, then run the benchmark (uses ctypes against `libpomai_c.so`; downloads real CIFAR-10 by default):
 

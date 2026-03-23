@@ -47,12 +47,22 @@ Status QueryOrchestrator::Execute(std::string_view default_membrane, const pomai
     if (query.start_ts > 0 || query.end_ts > 0) {
         opts.filters.push_back(pomai::Filter::TimeRange(query.start_ts, query.end_ts));
     }
+    opts.as_of_ts = query.as_of_ts;
+    opts.as_of_lsn = query.as_of_lsn;
+    opts.partition_device_id = query.partition_device_id;
+    opts.partition_location_id = query.partition_location_id;
+    // Light prefilter hinting: if caller provides geo/bitset/sparse gate hints,
+    // narrow initial frontier to reduce downstream RAM/cpu before graph expansion.
+    uint32_t effective_topk = query.top_k;
+    if (query.prefilter_radius_m > 0.0 || query.prefilter_bitset_id != 0 || query.prefilter_sparse_id != 0) {
+        effective_topk = std::max<uint32_t>(1u, query.top_k / 2u);
+    }
 
     if (order == pomai::QueryExecutionOrder::kGraphFirst) {
         // Probe graph first using a lightweight lexical fallback if present.
         if (!query.keywords.empty()) {
             std::vector<LexicalHit> l_hits;
-            auto st_l = engine_->SearchLexical(text_mem, query.keywords, query.top_k, &l_hits);
+            auto st_l = engine_->SearchLexical(text_mem, query.keywords, effective_topk, &l_hits);
             if (st_l.ok()) {
                 for (const auto& h : l_hits) {
                     SearchHit hit;
@@ -63,17 +73,17 @@ Status QueryOrchestrator::Execute(std::string_view default_membrane, const pomai
             }
         }
         if (out->hits.empty() && !query.vector.empty()) {
-            auto st = engine_->Search(vec_mem, query.vector, query.top_k, opts, out);
+            auto st = engine_->Search(vec_mem, query.vector, effective_topk, opts, out);
             if (!st.ok()) return st;
         }
     } else {
         if (!query.vector.empty()) {
-            auto st = engine_->Search(vec_mem, query.vector, query.top_k, opts, out);
+            auto st = engine_->Search(vec_mem, query.vector, effective_topk, opts, out);
             if (!st.ok()) return st;
         }
         if (out->hits.empty() && !query.keywords.empty()) {
             std::vector<LexicalHit> l_hits;
-            auto st_l = engine_->SearchLexical(text_mem, query.keywords, query.top_k, &l_hits);
+            auto st_l = engine_->SearchLexical(text_mem, query.keywords, effective_topk, &l_hits);
             if (!st_l.ok()) return st_l;
             for (const auto& h : l_hits) {
                 SearchHit hit;

@@ -234,7 +234,10 @@ namespace pomai::core
                                std::unique_ptr<storage::Wal> wal,
                                std::unique_ptr<table::MemTable> mem,
                                const pomai::IndexParams& index_params,
-                               std::uint64_t sync_lsn)
+                               std::uint64_t sync_lsn,
+                               bool endurance_aware_maintenance,
+                               std::uint64_t write_budget_bytes_per_hour,
+                               float endurance_compaction_bias)
         : runtime_id_(runtime_id),
           data_dir_(std::move(data_dir)),
           dim_(dim),
@@ -243,7 +246,10 @@ namespace pomai::core
           wal_(std::move(wal)),
           mem_(std::move(mem)),
           index_params_(index_params),
-          last_synced_lsn_(sync_lsn)
+          last_synced_lsn_(sync_lsn),
+          endurance_aware_maintenance_(endurance_aware_maintenance),
+          write_budget_bytes_per_hour_(write_budget_bytes_per_hour),
+          endurance_compaction_bias_(endurance_compaction_bias)
     {
         pomai::index::IvfCoarse::Options opt;
         opt.nlist = index_params_.nlist;
@@ -269,6 +275,9 @@ namespace pomai::core
 
         s.mem_committed = 0;
         s.mem_used = 0;
+        s.bytes_written_wal = bytes_written_wal_;
+        s.bytes_written_segments = bytes_written_segments_;
+        s.bytes_written_total = bytes_written_wal_ + bytes_written_segments_;
         return s;
     }
 
@@ -436,9 +445,12 @@ namespace pomai::core
         if (!st.ok())
             return st;
         ++wal_epoch_;
+        bytes_written_wal_ = wal_->GetBytesWritten();
 
         // 2. Update MemTable
-        st = m->Put(c.id, c.vec, c.meta);
+        pomai::Metadata meta_copy = c.meta;
+        meta_copy.lsn = wal_->GetLastLSN();
+        st = m->Put(c.id, c.vec, meta_copy);
         if (!st.ok()) return st;
 
         // 3. Check Threshold for Soft Freeze (e.g. 5000 items)
@@ -700,6 +712,7 @@ namespace pomai::core
         if (!st.ok())
             return st;
         ++wal_epoch_;
+        bytes_written_wal_ = wal_->GetBytesWritten();
 
         // 2. Batch update MemTable
         st = m->PutBatch(c.ids, c.vectors);
@@ -722,6 +735,7 @@ namespace pomai::core
         if (!st.ok())
             return st;
         ++wal_epoch_;
+        bytes_written_wal_ = wal_->GetBytesWritten();
 
         st = mem_->Delete(c.id);
         if (!st.ok())
@@ -807,6 +821,14 @@ namespace pomai::core
         l0_stats.file_count = static_cast<uint32_t>(segments_.size());
         l0_stats.total_size = total_size;
         l0_stats.score = static_cast<double>(segments_.size()) / 4.0; // Assume 4 files trigger L0->L1
+        l0_stats.endurance_bias = endurance_compaction_bias_;
+        if (endurance_aware_maintenance_ && write_budget_bytes_per_hour_ > 0) {
+            const std::uint64_t used = bytes_written_wal_ + bytes_written_segments_;
+            if (used > write_budget_bytes_per_hour_) {
+                // Past write budget: reduce compaction aggressiveness.
+                l0_stats.endurance_bias = std::max(1.0, static_cast<double>(endurance_compaction_bias_ * 4.0f));
+            }
+        }
         stats.push_back(l0_stats);
 
         // 2. Pick task
@@ -1005,6 +1027,8 @@ namespace pomai::core
                     }
 
                     state.built_segments.push_back({state.filename, state.filepath, std::shared_ptr<table::SegmentReader>(std::move(reader))});
+                    std::error_code ec;
+                    bytes_written_segments_ += static_cast<std::uint64_t>(fs::file_size(state.filepath, ec));
                     state.builder.reset();
                     state.segment_part++;
 
@@ -1180,6 +1204,8 @@ namespace pomai::core
                 }
 
                 state.built_segments.push_back({state.filename, state.filepath, std::shared_ptr<table::SegmentReader>(std::move(reader))});
+                std::error_code ec;
+                bytes_written_segments_ += static_cast<std::uint64_t>(fs::file_size(state.filepath, ec));
                 state.builder.reset();
                 state.compact_buffers.clear();
                 state.segment_part++;

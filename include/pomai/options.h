@@ -25,6 +25,14 @@ namespace pomai
         kRag = 1,
         kGraph = 2,
         kText = 3,
+        kTimeSeries = 4,
+        kKeyValue = 5,
+        kSketch = 6,
+        kBlob = 7,
+        kSpatial = 8,
+        kMesh = 9,
+        kSparse = 10,
+        kBitset = 11,
     };
 
     enum class IndexType : uint8_t
@@ -110,6 +118,9 @@ namespace pomai
         uint32_t routing_probe = 0;
         uint32_t routing_warmup_mult = 20;
         uint32_t routing_keep_prev = 1;
+        bool hybrid_partition_enabled = false;
+        std::string partition_primary_key = "device_id";
+        std::string partition_secondary_key = "location_id";
         MetricType metric = MetricType::kL2;
 
         // Edge security: encryption-at-rest.
@@ -124,6 +135,19 @@ namespace pomai
         uint32_t max_text_docs = 50000;
         // Limit graph expansion frontier in orchestrator to cap RAM.
         uint32_t max_query_frontier = 2048;
+        uint32_t max_kv_entries = 20000;
+        uint32_t max_sketch_entries = 20000;
+        uint32_t max_blob_bytes_mb = 64;
+        uint32_t max_spatial_points = 20000;
+        uint32_t max_mesh_objects = 4000;
+        uint32_t max_sparse_entries = 20000;
+        uint32_t max_bitset_bytes_mb = 64;
+
+        // Hardware health / wear-leveling awareness.
+        bool endurance_aware_maintenance = false;
+        uint64_t write_budget_bytes_per_hour = 0; // 0 = disabled
+        uint32_t endurance_freeze_delay_ms = 0;
+        float endurance_compaction_bias = 1.0f; // >1 delays compaction under high wear.
     };
 
     // One membrane = one logical collection.
