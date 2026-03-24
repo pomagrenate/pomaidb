@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <optional>
 #include <vector>
 
 #include "core/query/query_planner.h"
@@ -21,6 +22,7 @@ public:
     Status SearchLexical(std::string_view, const std::string&, uint32_t, std::vector<LexicalHit>* out) override { out->clear(); return Status::Ok(); }
     Status GetNeighbors(std::string_view, VertexId, std::vector<pomai::Neighbor>* out) override { out->clear(); return Status::Ok(); }
     Status GetNeighbors(std::string_view, VertexId, EdgeType, std::vector<pomai::Neighbor>* out) override { out->clear(); return Status::Ok(); }
+    std::optional<LinkedObject> ResolveLinkedByVectorId(uint64_t) const override { return std::nullopt; }
 };
 } // namespace
 } // namespace pomai::core

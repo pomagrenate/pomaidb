@@ -80,6 +80,8 @@ add_library(pomai STATIC
   src/core/mesh/mesh_engine.cc
   src/core/mesh/mesh_lod_manager.cc
   src/core/mesh/simplifier.cc
+  src/core/linker/object_linker.cc
+  src/core/connectivity/edge_gateway.cc
   src/core/sparse/sparse_engine.cc
   src/core/bitset/bitset_engine.cc
   src/core/ai/no_train_dispatch.cc

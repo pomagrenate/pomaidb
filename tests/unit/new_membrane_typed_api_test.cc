@@ -21,10 +21,12 @@ POMAI_TEST(NewMembrane_TypedApis_Basic) {
 
     MembraneSpec ts; ts.name = "ts"; ts.kind = MembraneKind::kTimeSeries; ts.shard_count = 1;
     MembraneSpec kv; kv.name = "kv"; kv.kind = MembraneKind::kKeyValue; kv.shard_count = 1;
+    MembraneSpec mt; mt.name = "meta"; mt.kind = MembraneKind::kMeta; mt.shard_count = 1;
     MembraneSpec sk; sk.name = "sk"; sk.kind = MembraneKind::kSketch; sk.shard_count = 1;
     MembraneSpec bl; bl.name = "bl"; bl.kind = MembraneKind::kBlob; bl.shard_count = 1;
     POMAI_EXPECT_OK(db->CreateMembrane(ts)); POMAI_EXPECT_OK(db->OpenMembrane("ts"));
     POMAI_EXPECT_OK(db->CreateMembrane(kv)); POMAI_EXPECT_OK(db->OpenMembrane("kv"));
+    POMAI_EXPECT_OK(db->CreateMembrane(mt)); POMAI_EXPECT_OK(db->OpenMembrane("meta"));
     POMAI_EXPECT_OK(db->CreateMembrane(sk)); POMAI_EXPECT_OK(db->OpenMembrane("sk"));
     POMAI_EXPECT_OK(db->CreateMembrane(bl)); POMAI_EXPECT_OK(db->OpenMembrane("bl"));
 
@@ -38,6 +40,10 @@ POMAI_TEST(NewMembrane_TypedApis_Basic) {
     std::string out;
     POMAI_EXPECT_OK(db->KvGet("kv", "dev.mode", &out));
     POMAI_EXPECT_EQ(out, std::string("eco"));
+
+    POMAI_EXPECT_OK(db->MetaPut("meta", "gid:42", "{\"status\":\"active\",\"location\":\"factory-A\"}"));
+    POMAI_EXPECT_OK(db->MetaGet("meta", "gid:42", &out));
+    POMAI_EXPECT_EQ(out, std::string("{\"status\":\"active\",\"location\":\"factory-A\"}"));
 
     POMAI_EXPECT_OK(db->SketchAdd("sk", "id-1", 3));
     uint64_t est = 0;

@@ -33,6 +33,7 @@ namespace pomai
         kMesh = 9,
         kSparse = 10,
         kBitset = 11,
+        kMeta = 12,
     };
 
     enum class MeshDetailPreference : uint8_t

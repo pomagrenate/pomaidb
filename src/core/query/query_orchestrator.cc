@@ -5,6 +5,7 @@
 
 #include "core/query/heuristic_engine.h"
 #include "core/security/key_manager.h"
+#include "core/linker/object_linker.h"
 #include "pomai/graph.h"
 #include "pomai/metadata.h"
 #include "pomai/search.h"
@@ -96,6 +97,10 @@ Status QueryOrchestrator::Execute(std::string_view default_membrane, const pomai
 
     // Graph expansion on graph membrane.
     for (auto& hit : out->hits) {
+        if (const auto linked = engine_->ResolveLinkedByVectorId(hit.id); linked.has_value()) {
+            hit.related_ids.push_back(linked->graph_vertex_id);
+            hit.related_ids.push_back(linked->mesh_id);
+        }
         std::vector<VertexId> frontier{hit.id};
         std::vector<VertexId> seen{hit.id};
         for (uint32_t hop = 0; hop < query.graph_hops; ++hop) {

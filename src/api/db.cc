@@ -251,6 +251,30 @@ namespace pomai
         Status KvDelete(std::string_view membrane, std::string_view key) override {
             return mgr_.KvDelete(membrane, key);
         }
+        Status MetaPut(std::string_view membrane, std::string_view gid, std::string_view value) override {
+            return mgr_.MetaPut(membrane, gid, value);
+        }
+        Status MetaGet(std::string_view membrane, std::string_view gid, std::string* out) override {
+            return mgr_.MetaGet(membrane, gid, out);
+        }
+        Status MetaDelete(std::string_view membrane, std::string_view gid) override {
+            return mgr_.MetaDelete(membrane, gid);
+        }
+        Status LinkObjects(std::string_view gid, uint64_t vector_id, uint64_t graph_vertex_id, uint64_t mesh_id) override {
+            return mgr_.LinkObjects(gid, vector_id, graph_vertex_id, mesh_id);
+        }
+        Status UnlinkObjects(std::string_view gid) override {
+            return mgr_.UnlinkObjects(gid);
+        }
+        Status StartEdgeGateway(uint16_t http_port, uint16_t ingest_port) override {
+            return mgr_.StartEdgeGateway(http_port, ingest_port);
+        }
+        Status StartEdgeGatewaySecure(uint16_t http_port, uint16_t ingest_port, std::string_view auth_token) override {
+            return mgr_.StartEdgeGatewaySecure(http_port, ingest_port, auth_token);
+        }
+        Status StopEdgeGateway() override {
+            return mgr_.StopEdgeGateway();
+        }
         Status SketchAdd(std::string_view membrane, std::string_view key, uint64_t increment) override {
             return mgr_.SketchAdd(membrane, key, increment);
         }

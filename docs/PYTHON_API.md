@@ -21,6 +21,21 @@ PomaiDB is exposed to Python via the **C API** and **ctypes**. The official pack
 |----------------|-------------|
 | `open_db(path, dim, **opts)` | Open database at `path` with vector dimension `dim`. Options: `shards`, `search_threads`, `fsync`, `metric` ("ip" or "l2"), `hnsw_m`, `hnsw_ef_construction`, `hnsw_ef_search`, `adaptive_threshold`. Returns opaque db handle. |
 | `put_batch(db, ids, vectors)` | Insert vectors. `ids`: list of int; `vectors`: list of list of float (n × dim). |
+| `meta_put(db, membrane_name, gid, value)` | Store metadata payload by global id in a `kMeta` membrane. |
+| `meta_get(db, membrane_name, gid)` | Load metadata payload by global id from a `kMeta` membrane. |
+| `meta_delete(db, membrane_name, gid)` | Delete metadata payload by global id from a `kMeta` membrane. |
+| `link_objects(db, gid, vector_id, graph_vertex_id, mesh_id)` | Register multi-modal GID link for vector/graph/mesh objects. |
+| `unlink_objects(db, gid)` | Remove a registered multi-modal GID link. |
+| `start_edge_gateway(db, http_port=8080, ingest_port=8090, auth_token=None)` | Start embedded HTTP + ingestion listeners (Phase 3). If `auth_token` is set, gateway requires `Authorization: Bearer <token>`. |
+| `stop_edge_gateway(db)` | Stop embedded edge listeners. |
+| `search_zero_copy(db, query, topk=10)` | Run single query with zero-copy semantic pointers and return NumPy views/dequantized arrays. |
+| `release_zero_copy_session(session_id)` | Release pinned zero-copy session returned by search results. |
+
+Gateway endpoints/protocols:
+- HTTP: `GET /health`, `POST /ingest/meta/<membrane>/<gid>`, `POST /ingest/vector/<membrane>/<id>`
+- Ingest TCP (MQTT/WS-style line protocol):
+  - no-auth: `MQTT|<membrane>|<id>|f1,f2,f3`
+  - auth: `MQTT|<token>|<membrane>|<id>|f1,f2,f3`
 | `freeze(db)`   | Flush memtable to segment and build index. Must be called before new data is visible to search. |
 | `search_batch(db, queries, topk=10)` | Batch search. `queries`: list of list of float (n_queries × dim). Returns list of `(ids, scores)` per query. |
 | `close(db)`    | Close the database. |
@@ -51,6 +66,9 @@ The shared library exposes:
 - `pomai_options_init(opts)` — initialize options struct
 - `pomai_open(opts, &db)` — open DB; returns status (null = ok)
 - `pomai_put_batch(db, upserts, n)` — batch insert
+- `pomai_meta_put(db, membrane_name, gid, value)` / `pomai_meta_get(...)` / `pomai_meta_delete(...)` — metadata membrane CRUD by GID
+- `pomai_link_objects(db, gid, vector_id, graph_vertex_id, mesh_id)` / `pomai_unlink_objects(...)` — multi-modal linker APIs
+- `pomai_edge_gateway_start(db, http_port, ingest_port)` / `pomai_edge_gateway_start_secure(db, http_port, ingest_port, auth_token)` / `pomai_edge_gateway_stop(db)` — edge connectivity lifecycle
 - `pomai_freeze(db)` — flush and build index
 - `pomai_search_batch(db, queries, n, &out)` — batch search; `out` is array of `PomaiSearchResults`
 - `pomai_search_batch_free(out, n)` — free search results

@@ -17,6 +17,8 @@ The project version is defined in the root `CMakeLists.txt` (`project(pomai VERS
 
 - **C API** (headers in `include/pomai/`, C functions such as `pomai_open`, `pomai_put_batch`, `pomai_freeze`, `pomai_search_batch`, etc.):  
   The **C ABI** is stable within a MAJOR version: existing struct layouts and function signatures will not change. New functions or optional fields may be added in MINOR releases. Callers should check `struct_size` (or equivalent) when provided for forward compatibility.
+  - MINOR additive example: metadata membrane CRUD (`pomai_meta_put`, `pomai_meta_get`, `pomai_meta_delete`) is added without changing existing structs or function signatures.
+  - MINOR additive examples: ObjectLinker APIs (`pomai_link_objects`, `pomai_unlink_objects`) and edge connectivity lifecycle APIs (`pomai_edge_gateway_start`, `pomai_edge_gateway_start_secure`, `pomai_edge_gateway_stop`) are also additive and ABI-safe.
 
 - **Python package** (`pomaidb` on PyPI / `python/` in repo):  
   The high-level Python API (e.g. `pomaidb.open()`, `pomaidb.put_batch()`, `pomaidb.search_batch()`) follows the same MAJOR-version compatibility as the C API it wraps. Breaking changes require a MAJOR bump of the Python package.

@@ -170,6 +170,36 @@ POMAI_TEST(CApiPutBatchSearchAndSnapshotScan) {
     POMAI_EXPECT_TRUE(!saw200);
 }
 
+POMAI_TEST(CApiMetaMembraneCrud) {
+    CApiFixture fx;
+    constexpr uint32_t kMetaKind = 12u; // MembraneKind::kMeta
+    CAPI_EXPECT_OK(pomai_create_membrane_kind(fx.db(), "meta", 1, 1, kMetaKind));
+
+    CAPI_EXPECT_OK(pomai_meta_put(fx.db(), "meta", "gid:7", "{\"status\":\"active\"}"));
+
+    char* out_value = nullptr;
+    size_t out_len = 0;
+    CAPI_EXPECT_OK(pomai_meta_get(fx.db(), "meta", "gid:7", &out_value, &out_len));
+    POMAI_EXPECT_TRUE(out_value != nullptr);
+    POMAI_EXPECT_EQ(std::string(out_value, out_len), std::string("{\"status\":\"active\"}"));
+    pomai_free(out_value);
+
+    CAPI_EXPECT_OK(pomai_meta_delete(fx.db(), "meta", "gid:7"));
+    pomai_status_t* st = pomai_meta_get(fx.db(), "meta", "gid:7", &out_value, &out_len);
+    POMAI_EXPECT_TRUE(st != nullptr);
+    pomai_status_free(st);
+}
+
+POMAI_TEST(CApiObjectLinkerAndGatewayLifecycle) {
+    CApiFixture fx;
+    CAPI_EXPECT_OK(pomai_link_objects(fx.db(), "gid:demo-1", 10, 20, 30));
+    CAPI_EXPECT_OK(pomai_unlink_objects(fx.db(), "gid:demo-1"));
+    CAPI_EXPECT_OK(pomai_edge_gateway_start(fx.db(), 18080, 18090));
+    CAPI_EXPECT_OK(pomai_edge_gateway_stop(fx.db()));
+    CAPI_EXPECT_OK(pomai_edge_gateway_start_secure(fx.db(), 18082, 18092, "demo-token"));
+    CAPI_EXPECT_OK(pomai_edge_gateway_stop(fx.db()));
+}
+
 
 POMAI_TEST(CApiFreezePublishesToSnapshotScan) {
     CApiFixture fx;

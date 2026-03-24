@@ -4,6 +4,7 @@
 #include "core/storage/compaction_manager.h"
 #include "pomai/graph.h"
 #include "pomai/search.h"
+#include <optional>
 
 namespace pomai::core {
 
@@ -25,6 +26,9 @@ public:
     Status GetNeighbors(std::string_view, VertexId, EdgeType, std::vector<pomai::Neighbor>* out) override {
         out->clear();
         return Status::Ok();
+    }
+    std::optional<LinkedObject> ResolveLinkedByVectorId(uint64_t) const override {
+        return std::nullopt;
     }
 };
 } // namespace

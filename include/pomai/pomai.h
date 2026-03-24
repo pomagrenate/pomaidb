@@ -124,6 +124,14 @@ namespace pomai
         virtual Status KvPut(std::string_view membrane, std::string_view key, std::string_view value) = 0;
         virtual Status KvGet(std::string_view membrane, std::string_view key, std::string* out) = 0;
         virtual Status KvDelete(std::string_view membrane, std::string_view key) = 0;
+        virtual Status MetaPut(std::string_view membrane, std::string_view gid, std::string_view value) = 0;
+        virtual Status MetaGet(std::string_view membrane, std::string_view gid, std::string* out) = 0;
+        virtual Status MetaDelete(std::string_view membrane, std::string_view gid) = 0;
+        virtual Status LinkObjects(std::string_view gid, uint64_t vector_id, uint64_t graph_vertex_id, uint64_t mesh_id) = 0;
+        virtual Status UnlinkObjects(std::string_view gid) = 0;
+        virtual Status StartEdgeGateway(uint16_t http_port, uint16_t ingest_port) = 0;
+        virtual Status StartEdgeGatewaySecure(uint16_t http_port, uint16_t ingest_port, std::string_view auth_token) = 0;
+        virtual Status StopEdgeGateway() = 0;
 
         // Sketch API
         virtual Status SketchAdd(std::string_view membrane, std::string_view key, uint64_t increment) = 0;

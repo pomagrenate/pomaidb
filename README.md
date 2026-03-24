@@ -6,7 +6,7 @@
 
 **The predictable edge-native database for multimodal AI memory.**
 
-PomaiDB is an **embedded, single-threaded edge database** written in C++20 for IoT gateways, robotics, industrial edge, and offline AI appliances. It combines **log-structured storage**, **zero-copy reads**, **typed membranes** (`kVector`, `kRag`, `kGraph`, `kText`, `kTimeSeries`, `kKeyValue`, `kSketch`, `kBlob`, `kSpatial`, `kMesh`, `kSparse`, `kBitset`), an **inference-only AI path** (no model training required), and an **offline-first RAG pipeline** so retrieval and memory operations stay on-device.
+PomaiDB is an **embedded, single-threaded edge database** written in C++20 for IoT gateways, robotics, industrial edge, and offline AI appliances. It combines **log-structured storage**, **zero-copy reads**, **typed membranes** (`kVector`, `kRag`, `kGraph`, `kText`, `kTimeSeries`, `kKeyValue`, `kMeta`, `kSketch`, `kBlob`, `kSpatial`, `kMesh`, `kSparse`, `kBitset`), an **inference-only AI path** (no model training required), and an **offline-first RAG pipeline** so retrieval and memory operations stay on-device.
 
 ---
 
@@ -17,10 +17,12 @@ PomaiDB is a **small-footprint, production-ready vector store** that runs native
 **Core capabilities (current):**
 
 - **Vector ingestion and search** — Put vectors (with optional metadata), run approximate nearest-neighbor search (ANN) with configurable index types (IVF, HNSW), batch search, and point queries. All with optional scalar quantization (SQ8) to cut memory and bandwidth.
-- **Membranes** — Logical collections with separate dimensions, sharding, and indexes. Supported kinds: `kVector`, `kRag`, `kGraph`, `kText`, `kTimeSeries`, `kKeyValue`, `kSketch`, `kBlob`, `kSpatial`, `kMesh`, `kSparse`, `kBitset`.
+- **Membranes** — Logical collections with separate dimensions, sharding, and indexes. Supported kinds: `kVector`, `kRag`, `kGraph`, `kText`, `kTimeSeries`, `kKeyValue`, `kMeta`, `kSketch`, `kBlob`, `kSpatial`, `kMesh`, `kSparse`, `kBitset`.
 - **Mesh LOD manager** — `kMesh` now supports asynchronous multi-LOD generation (high-poly + decimated levels) driven by `TaskScheduler`, with latency-first auto selection and explicit high-detail override per mesh query.
 - **Typed membrane APIs** — Native C++ + C APIs across all supported membrane kinds with strict low-RAM caps.
 - **Hybrid & multimodal search** — `QueryOrchestrator` supports vector + lexical + graph traversal paths with heuristic execution ordering, bounded frontier RAM, and metadata partition hints (`device_id`/`location_id`).
+- **ObjectLinker (Phase 2)** — shared GID links across vector/graph/mesh (`LinkObjects`), so vector hits can expand into linked graph vertex + mesh ids.
+- **Edge-native connectivity (Phase 3)** — embedded HTTP endpoints (`/health`, `/ingest/meta/...`, `/ingest/vector/...`) and lightweight MQTT/WebSocket-style ingestion listener for direct edge sensor intake, with optional bearer-token/token auth.
 - **Edge analytical aggregates (mini-OLAP)** — `Sum`, `Avg`, `Min`, `Max`, `Count`, `Top-K` over planner/runtime post-filter result sets.
 - **Virtual time-travel** — query constraints by `as_of_ts` and `as_of_lsn` for replay/debug style reads.
 - **Hardware wear-aware maintenance** — write-byte counters at WAL/segment layers and endurance-aware compaction biasing for flash longevity.

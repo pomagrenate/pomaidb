@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <optional>
 #include <vector>
 #include <span>
 #include <string_view>
@@ -18,6 +19,9 @@
 #include "core/kernel/micro_kernel.h"
 
 namespace pomai {
+namespace core {
+struct LinkedObject;
+}
 
 class StorageEngine : public core::IQueryEngine {
 public:
@@ -42,6 +46,7 @@ public:
     Status SearchLexical(std::string_view membrane, const std::string& query, uint32_t topk, std::vector<core::LexicalHit>* out) override;
     Status GetNeighbors(std::string_view membrane, VertexId src, std::vector<pomai::Neighbor>* out) override;
     Status GetNeighbors(std::string_view membrane, VertexId src, EdgeType type, std::vector<pomai::Neighbor>* out) override;
+    std::optional<core::LinkedObject> ResolveLinkedByVectorId(uint64_t vector_id) const override;
 
     Status PushSync(core::SyncReceiver* receiver);
 

@@ -21,6 +21,7 @@
 #include "storage/manifest/manifest.h"
 #include "util/logging.h"
 #include "core/graph/graph_membrane_impl.h"
+#include "core/connectivity/edge_gateway.h"
 
 
 namespace pomai::core
@@ -45,6 +46,7 @@ namespace pomai::core
 
     MembraneManager::MembraneManager(pomai::DBOptions base) : base_(std::move(base)) {
         orchestrator_ = std::make_unique<QueryOrchestrator>(this, base_.max_query_frontier);
+        edge_gateway_ = std::make_unique<EdgeGateway>(this);
     }
     MembraneManager::~MembraneManager() = default;
 
@@ -94,6 +96,8 @@ namespace pomai::core
                 state.timeseries_engine = std::make_unique<TimeSeriesEngine>(opt.path, base_.max_lifecycle_entries);
             } else if (loaded_spec.kind == pomai::MembraneKind::kKeyValue) {
                 state.keyvalue_engine = std::make_unique<KeyValueEngine>(opt.path, base_.max_kv_entries);
+            } else if (loaded_spec.kind == pomai::MembraneKind::kMeta) {
+                state.meta_engine = std::make_unique<KeyValueEngine>(opt.path, base_.max_kv_entries);
             } else if (loaded_spec.kind == pomai::MembraneKind::kSketch) {
                 state.sketch_engine = std::make_unique<SketchEngine>(base_.max_sketch_entries);
             } else if (loaded_spec.kind == pomai::MembraneKind::kBlob) {
@@ -163,6 +167,8 @@ namespace pomai::core
                     state.timeseries_engine = std::make_unique<TimeSeriesEngine>(opt.path, base_.max_lifecycle_entries);
                 } else if (mspec.kind == pomai::MembraneKind::kKeyValue) {
                     state.keyvalue_engine = std::make_unique<KeyValueEngine>(opt.path, base_.max_kv_entries);
+                } else if (mspec.kind == pomai::MembraneKind::kMeta) {
+                    state.meta_engine = std::make_unique<KeyValueEngine>(opt.path, base_.max_kv_entries);
                 } else if (mspec.kind == pomai::MembraneKind::kSketch) {
                     state.sketch_engine = std::make_unique<SketchEngine>(base_.max_sketch_entries);
                 } else if (mspec.kind == pomai::MembraneKind::kBlob) {
@@ -222,6 +228,9 @@ namespace pomai::core
             if (kv.second.keyvalue_engine) {
                 (void)kv.second.keyvalue_engine->Close();
             }
+            if (kv.second.meta_engine) {
+                (void)kv.second.meta_engine->Close();
+            }
             if (kv.second.blob_engine) {
                 (void)kv.second.blob_engine->Close();
             }
@@ -233,6 +242,7 @@ namespace pomai::core
             }
         }
         membranes_.clear();
+        if (edge_gateway_) (void)edge_gateway_->Stop();
         opened_ = false;
         return Status::Ok();
     }
@@ -300,6 +310,8 @@ namespace pomai::core
             state.timeseries_engine = std::make_unique<TimeSeriesEngine>(opt.path, base_.max_lifecycle_entries);
         } else if (spec.kind == pomai::MembraneKind::kKeyValue) {
             state.keyvalue_engine = std::make_unique<KeyValueEngine>(opt.path, base_.max_kv_entries);
+        } else if (spec.kind == pomai::MembraneKind::kMeta) {
+            state.meta_engine = std::make_unique<KeyValueEngine>(opt.path, base_.max_kv_entries);
         } else if (spec.kind == pomai::MembraneKind::kSketch) {
             state.sketch_engine = std::make_unique<SketchEngine>(base_.max_sketch_entries);
         } else if (spec.kind == pomai::MembraneKind::kBlob) {
@@ -354,6 +366,8 @@ namespace pomai::core
             return state->timeseries_engine->Open();
         } else if (state->spec.kind == pomai::MembraneKind::kKeyValue) {
             return state->keyvalue_engine->Open();
+        } else if (state->spec.kind == pomai::MembraneKind::kMeta) {
+            return state->meta_engine->Open();
         } else if (state->spec.kind == pomai::MembraneKind::kBlob) {
             return state->blob_engine->Open();
         } else if (state->spec.kind == pomai::MembraneKind::kSpatial) {
@@ -378,6 +392,8 @@ namespace pomai::core
             return state->timeseries_engine->Close();
         } else if (state->spec.kind == pomai::MembraneKind::kKeyValue) {
             return state->keyvalue_engine->Close();
+        } else if (state->spec.kind == pomai::MembraneKind::kMeta) {
+            return state->meta_engine->Close();
         } else if (state->spec.kind == pomai::MembraneKind::kBlob) {
             return state->blob_engine->Close();
         } else if (state->spec.kind == pomai::MembraneKind::kSpatial) {
@@ -658,6 +674,54 @@ namespace pomai::core
         if (!state) return Status::NotFound("membrane not found");
         if (!state->keyvalue_engine) return Status::InvalidArgument("KEYVALUE membrane required");
         return state->keyvalue_engine->Delete(key);
+    }
+
+    Status MembraneManager::MetaPut(std::string_view membrane, std::string_view gid, std::string_view value) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->meta_engine) return Status::InvalidArgument("META membrane required");
+        return state->meta_engine->Put(gid, value);
+    }
+
+    Status MembraneManager::MetaGet(std::string_view membrane, std::string_view gid, std::string* out) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->meta_engine) return Status::InvalidArgument("META membrane required");
+        return state->meta_engine->Get(gid, out);
+    }
+
+    Status MembraneManager::MetaDelete(std::string_view membrane, std::string_view gid) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->meta_engine) return Status::InvalidArgument("META membrane required");
+        return state->meta_engine->Delete(gid);
+    }
+
+    Status MembraneManager::LinkObjects(std::string_view gid, uint64_t vector_id, uint64_t graph_vertex_id, uint64_t mesh_id) {
+        return object_linker_.LinkByGid(std::string(gid), vector_id, graph_vertex_id, mesh_id);
+    }
+
+    Status MembraneManager::UnlinkObjects(std::string_view gid) {
+        return object_linker_.UnlinkByGid(std::string(gid));
+    }
+
+    std::optional<LinkedObject> MembraneManager::ResolveLinkedByVectorId(uint64_t vector_id) const {
+        return object_linker_.ResolveByVectorId(vector_id);
+    }
+
+    Status MembraneManager::StartEdgeGateway(uint16_t http_port, uint16_t ingest_port) {
+        if (!edge_gateway_) return Status::InvalidArgument("edge gateway unavailable");
+        return edge_gateway_->Start(http_port, ingest_port);
+    }
+
+    Status MembraneManager::StartEdgeGatewaySecure(uint16_t http_port, uint16_t ingest_port, std::string_view auth_token) {
+        if (!edge_gateway_) return Status::InvalidArgument("edge gateway unavailable");
+        return edge_gateway_->Start(http_port, ingest_port, std::string(auth_token));
+    }
+
+    Status MembraneManager::StopEdgeGateway() {
+        if (!edge_gateway_) return Status::Ok();
+        return edge_gateway_->Stop();
     }
 
     Status MembraneManager::SketchAdd(std::string_view membrane, std::string_view key, uint64_t increment) {

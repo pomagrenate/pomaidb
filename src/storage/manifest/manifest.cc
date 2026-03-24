@@ -256,6 +256,7 @@ namespace pomai::storage
                 case pomai::MembraneKind::kText: return "TEXT";
                 case pomai::MembraneKind::kTimeSeries: return "TIMESERIES";
                 case pomai::MembraneKind::kKeyValue: return "KEYVALUE";
+                case pomai::MembraneKind::kMeta: return "META";
                 case pomai::MembraneKind::kSketch: return "SKETCH";
                 case pomai::MembraneKind::kBlob: return "BLOB";
                 case pomai::MembraneKind::kSpatial: return "SPATIAL";
@@ -273,6 +274,7 @@ namespace pomai::storage
             if (tok == "TEXT") return pomai::MembraneKind::kText;
             if (tok == "TIMESERIES") return pomai::MembraneKind::kTimeSeries;
             if (tok == "KEYVALUE") return pomai::MembraneKind::kKeyValue;
+            if (tok == "META") return pomai::MembraneKind::kMeta;
             if (tok == "SKETCH") return pomai::MembraneKind::kSketch;
             if (tok == "BLOB") return pomai::MembraneKind::kBlob;
             if (tok == "SPATIAL") return pomai::MembraneKind::kSpatial;

@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -19,6 +20,7 @@
 #include "core/lifecycle/semantic_lifecycle.h"
 #include "core/concurrency/scheduler.h"
 #include "core/mesh/mesh_engine.h"
+#include "core/linker/object_linker.h"
 
 namespace pomai {
     class GraphMembrane;
@@ -41,6 +43,7 @@ namespace pomai::core
     class MeshEngine;
     class SparseEngine;
     class BitsetEngine;
+    class EdgeGateway;
     class SyncReceiver;
 
     class MembraneManager : public IQueryEngine
@@ -98,6 +101,15 @@ namespace pomai::core
         Status KvPut(std::string_view membrane, std::string_view key, std::string_view value);
         Status KvGet(std::string_view membrane, std::string_view key, std::string* out);
         Status KvDelete(std::string_view membrane, std::string_view key);
+        Status MetaPut(std::string_view membrane, std::string_view gid, std::string_view value);
+        Status MetaGet(std::string_view membrane, std::string_view gid, std::string* out);
+        Status MetaDelete(std::string_view membrane, std::string_view gid);
+        Status LinkObjects(std::string_view gid, uint64_t vector_id, uint64_t graph_vertex_id, uint64_t mesh_id);
+        Status UnlinkObjects(std::string_view gid);
+        std::optional<LinkedObject> ResolveLinkedByVectorId(uint64_t vector_id) const override;
+        Status StartEdgeGateway(uint16_t http_port, uint16_t ingest_port);
+        Status StartEdgeGatewaySecure(uint16_t http_port, uint16_t ingest_port, std::string_view auth_token);
+        Status StopEdgeGateway();
         Status SketchAdd(std::string_view membrane, std::string_view key, uint64_t increment);
         Status SketchEstimate(std::string_view membrane, std::string_view key, uint64_t* out);
         Status SketchSeen(std::string_view membrane, std::string_view key, bool* out);
@@ -155,6 +167,7 @@ namespace pomai::core
             std::unique_ptr<TextMembrane> text_engine;
             std::unique_ptr<TimeSeriesEngine> timeseries_engine;
             std::unique_ptr<KeyValueEngine> keyvalue_engine;
+            std::unique_ptr<KeyValueEngine> meta_engine;
             std::unique_ptr<SketchEngine> sketch_engine;
             std::unique_ptr<BlobEngine> blob_engine;
             std::unique_ptr<SpatialEngine> spatial_engine;
@@ -177,6 +190,8 @@ namespace pomai::core
 
         // For now: keep engines in-memory; later you can add lazy-open by manifest.
         std::unordered_map<std::string, MembraneState> membranes_;
+        ObjectLinker object_linker_;
+        std::unique_ptr<EdgeGateway> edge_gateway_;
         std::unique_ptr<QueryOrchestrator> orchestrator_;
         TaskScheduler scheduler_;
     };

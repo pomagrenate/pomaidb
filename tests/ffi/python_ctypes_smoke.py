@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import ctypes
+import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -75,6 +77,26 @@ lib.pomai_search_results_free.argtypes = [ctypes.POINTER(PomaiSearchResults)]
 lib.pomai_search_results_free.restype = None
 lib.pomai_close.argtypes = [ctypes.c_void_p]
 lib.pomai_close.restype = ctypes.c_void_p
+lib.pomai_create_membrane_kind.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32]
+lib.pomai_create_membrane_kind.restype = ctypes.c_void_p
+lib.pomai_meta_put.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+lib.pomai_meta_put.restype = ctypes.c_void_p
+lib.pomai_meta_get.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t)]
+lib.pomai_meta_get.restype = ctypes.c_void_p
+lib.pomai_meta_delete.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
+lib.pomai_meta_delete.restype = ctypes.c_void_p
+lib.pomai_free.argtypes = [ctypes.c_void_p]
+lib.pomai_free.restype = None
+lib.pomai_link_objects.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64]
+lib.pomai_link_objects.restype = ctypes.c_void_p
+lib.pomai_unlink_objects.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+lib.pomai_unlink_objects.restype = ctypes.c_void_p
+lib.pomai_edge_gateway_start.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16]
+lib.pomai_edge_gateway_start.restype = ctypes.c_void_p
+lib.pomai_edge_gateway_start_secure.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16, ctypes.c_char_p]
+lib.pomai_edge_gateway_start_secure.restype = ctypes.c_void_p
+lib.pomai_edge_gateway_stop.argtypes = [ctypes.c_void_p]
+lib.pomai_edge_gateway_stop.restype = ctypes.c_void_p
 lib.pomai_status_message.argtypes = [ctypes.c_void_p]
 lib.pomai_status_message.restype = ctypes.c_char_p
 lib.pomai_status_free.argtypes = [ctypes.c_void_p]
@@ -137,7 +159,36 @@ def main():
             raise RuntimeError('invalid first score')
 
         lib.pomai_search_results_free(out)
+
+        # Metadata membrane CRUD through C ABI.
+        check_status(lib.pomai_create_membrane_kind(db, b"meta", 1, 1, 12))
+        check_status(lib.pomai_meta_put(db, b"meta", b"gid:4", b'{"location":"factory-A"}'))
+        out_value = ctypes.c_char_p()
+        out_len = ctypes.c_size_t()
+        check_status(lib.pomai_meta_get(db, b"meta", b"gid:4", ctypes.byref(out_value), ctypes.byref(out_len)))
+        payload = ctypes.string_at(out_value, out_len.value).decode("utf-8", errors="replace")
+        if payload != '{"location":"factory-A"}':
+            raise RuntimeError("meta payload mismatch")
+        lib.pomai_free(out_value)
+        check_status(lib.pomai_meta_delete(db, b"meta", b"gid:4"))
+        check_status(lib.pomai_link_objects(db, b"gid:4", 4, 404, 504))
+        check_status(lib.pomai_unlink_objects(db, b"gid:4"))
+        check_status(lib.pomai_edge_gateway_start(db, 18081, 18091))
+        check_status(lib.pomai_edge_gateway_stop(db))
+        check_status(lib.pomai_edge_gateway_start_secure(db, 18083, 18093, b"demo-token"))
+        check_status(lib.pomai_edge_gateway_stop(db))
+
         check_status(lib.pomai_close(db))
+
+    # Package-level import check for merged zero-copy helpers.
+    py_pkg = ROOT / "python"
+    sys.path.insert(0, str(py_pkg))
+    import pomaidb  # type: ignore
+
+    if not hasattr(pomaidb, "search_zero_copy"):
+        raise RuntimeError("missing merged API: search_zero_copy")
+    if not hasattr(pomaidb, "release_zero_copy_session"):
+        raise RuntimeError("missing merged API: release_zero_copy_session")
 
 
 if __name__ == '__main__':

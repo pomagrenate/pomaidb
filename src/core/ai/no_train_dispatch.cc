@@ -52,6 +52,11 @@ Status InferNoTrainForKind(MembraneKind kind, std::span<const float> features, I
             out->action_required = normalized > 0.85f;
             out->explanation = "KV drift from deterministic stats";
             break;
+        case MembraneKind::kMeta:
+            out->label = normalized > 0.7f ? "metadata_drift" : "metadata_stable";
+            out->action_required = normalized > 0.85f;
+            out->explanation = "Metadata drift from deterministic stats";
+            break;
         case MembraneKind::kSketch:
             out->label = maxv > 0.8f ? "heavy_hitter_detected" : "sketch_nominal";
             out->action_required = maxv > 0.95f;

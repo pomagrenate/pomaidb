@@ -567,6 +567,60 @@ pomai_status_t* pomai_kv_get(pomai_db_t* db, const char* membrane_name, const ch
     return nullptr;
 }
 
+pomai_status_t* pomai_kv_delete(pomai_db_t* db, const char* membrane_name, const char* key) {
+    if (db == nullptr || membrane_name == nullptr || key == nullptr) return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid args");
+    return ToCStatus(db->db->KvDelete(membrane_name, key));
+}
+
+pomai_status_t* pomai_meta_put(pomai_db_t* db, const char* membrane_name, const char* gid, const char* value) {
+    if (db == nullptr || membrane_name == nullptr || gid == nullptr || value == nullptr) return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid args");
+    return ToCStatus(db->db->MetaPut(membrane_name, gid, value));
+}
+
+pomai_status_t* pomai_meta_get(pomai_db_t* db, const char* membrane_name, const char* gid, char** out_value, size_t* out_len) {
+    if (db == nullptr || membrane_name == nullptr || gid == nullptr || out_value == nullptr || out_len == nullptr) return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid args");
+    std::string v;
+    auto st = db->db->MetaGet(membrane_name, gid, &v);
+    if (!st.ok()) return ToCStatus(st);
+    char* p = static_cast<char*>(palloc_malloc_aligned(v.size() + 1, alignof(char)));
+    if (!p) return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "allocation failed");
+    std::memcpy(p, v.data(), v.size());
+    p[v.size()] = '\0';
+    *out_value = p;
+    *out_len = v.size();
+    return nullptr;
+}
+
+pomai_status_t* pomai_meta_delete(pomai_db_t* db, const char* membrane_name, const char* gid) {
+    if (db == nullptr || membrane_name == nullptr || gid == nullptr) return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid args");
+    return ToCStatus(db->db->MetaDelete(membrane_name, gid));
+}
+
+pomai_status_t* pomai_link_objects(pomai_db_t* db, const char* gid, uint64_t vector_id, uint64_t graph_vertex_id, uint64_t mesh_id) {
+    if (db == nullptr || gid == nullptr) return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid args");
+    return ToCStatus(db->db->LinkObjects(gid, vector_id, graph_vertex_id, mesh_id));
+}
+
+pomai_status_t* pomai_unlink_objects(pomai_db_t* db, const char* gid) {
+    if (db == nullptr || gid == nullptr) return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid args");
+    return ToCStatus(db->db->UnlinkObjects(gid));
+}
+
+pomai_status_t* pomai_edge_gateway_start(pomai_db_t* db, uint16_t http_port, uint16_t ingest_port) {
+    if (db == nullptr) return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid args");
+    return ToCStatus(db->db->StartEdgeGateway(http_port, ingest_port));
+}
+
+pomai_status_t* pomai_edge_gateway_start_secure(pomai_db_t* db, uint16_t http_port, uint16_t ingest_port, const char* auth_token) {
+    if (db == nullptr || auth_token == nullptr) return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid args");
+    return ToCStatus(db->db->StartEdgeGatewaySecure(http_port, ingest_port, auth_token));
+}
+
+pomai_status_t* pomai_edge_gateway_stop(pomai_db_t* db) {
+    if (db == nullptr) return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid args");
+    return ToCStatus(db->db->StopEdgeGateway());
+}
+
 pomai_status_t* pomai_sketch_add(pomai_db_t* db, const char* membrane_name, const char* key, uint64_t increment) {
     if (db == nullptr || membrane_name == nullptr || key == nullptr) return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid args");
     return ToCStatus(db->db->SketchAdd(membrane_name, key, increment));

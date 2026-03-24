@@ -37,6 +37,15 @@ POMAI_API pomai_status_t* pomai_create_membrane_kind(pomai_db_t* db, const char*
 POMAI_API pomai_status_t* pomai_ts_put(pomai_db_t* db, const char* membrane_name, uint64_t series_id, uint64_t ts, double value);
 POMAI_API pomai_status_t* pomai_kv_put(pomai_db_t* db, const char* membrane_name, const char* key, const char* value);
 POMAI_API pomai_status_t* pomai_kv_get(pomai_db_t* db, const char* membrane_name, const char* key, char** out_value, size_t* out_len);
+POMAI_API pomai_status_t* pomai_kv_delete(pomai_db_t* db, const char* membrane_name, const char* key);
+POMAI_API pomai_status_t* pomai_meta_put(pomai_db_t* db, const char* membrane_name, const char* gid, const char* value);
+POMAI_API pomai_status_t* pomai_meta_get(pomai_db_t* db, const char* membrane_name, const char* gid, char** out_value, size_t* out_len);
+POMAI_API pomai_status_t* pomai_meta_delete(pomai_db_t* db, const char* membrane_name, const char* gid);
+POMAI_API pomai_status_t* pomai_link_objects(pomai_db_t* db, const char* gid, uint64_t vector_id, uint64_t graph_vertex_id, uint64_t mesh_id);
+POMAI_API pomai_status_t* pomai_unlink_objects(pomai_db_t* db, const char* gid);
+POMAI_API pomai_status_t* pomai_edge_gateway_start(pomai_db_t* db, uint16_t http_port, uint16_t ingest_port);
+POMAI_API pomai_status_t* pomai_edge_gateway_start_secure(pomai_db_t* db, uint16_t http_port, uint16_t ingest_port, const char* auth_token);
+POMAI_API pomai_status_t* pomai_edge_gateway_stop(pomai_db_t* db);
 POMAI_API pomai_status_t* pomai_sketch_add(pomai_db_t* db, const char* membrane_name, const char* key, uint64_t increment);
 POMAI_API pomai_status_t* pomai_blob_put(pomai_db_t* db, const char* membrane_name, uint64_t blob_id, const uint8_t* data, size_t len);
 

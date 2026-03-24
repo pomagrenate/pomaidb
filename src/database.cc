@@ -236,6 +236,10 @@ Status StorageEngine::GetNeighbors(std::string_view /*membrane*/, VertexId src, 
     return GetNeighbors(src, type, out);
 }
 
+std::optional<core::LinkedObject> StorageEngine::ResolveLinkedByVectorId(uint64_t /*vector_id*/) const {
+    return std::nullopt;
+}
+
 Status StorageEngine::GetNeighbors(VertexId src, std::vector<pomai::Neighbor>* out) {
     core::Message msg = core::Message::Create(core::PodId::kGraph, core::Op::kGetNeighbors, 
         std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&src), sizeof(src)));

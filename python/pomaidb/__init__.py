@@ -12,6 +12,10 @@ from pathlib import Path
 
 __all__ = [
     "open_db", "close", "put_batch", "freeze", "search_batch",
+    "meta_put", "meta_get", "meta_delete",
+    "link_objects", "unlink_objects",
+    "start_edge_gateway", "stop_edge_gateway",
+    "search_zero_copy", "release_zero_copy_session",
     "create_rag_membrane", "put_chunk", "search_rag",
     "ingest_document", "retrieve_context",
     "PomaiDBError",
@@ -149,6 +153,25 @@ def _register_api(lib):
     lib.pomai_search_batch_free.restype = None
     lib.pomai_close.argtypes = [ctypes.c_void_p]
     lib.pomai_close.restype = ctypes.c_void_p
+    lib.pomai_meta_put.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+    lib.pomai_meta_put.restype = ctypes.c_void_p
+    lib.pomai_meta_get.argtypes = [
+        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t),
+    ]
+    lib.pomai_meta_get.restype = ctypes.c_void_p
+    lib.pomai_meta_delete.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
+    lib.pomai_meta_delete.restype = ctypes.c_void_p
+    lib.pomai_link_objects.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64]
+    lib.pomai_link_objects.restype = ctypes.c_void_p
+    lib.pomai_unlink_objects.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.pomai_unlink_objects.restype = ctypes.c_void_p
+    lib.pomai_edge_gateway_start.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16]
+    lib.pomai_edge_gateway_start.restype = ctypes.c_void_p
+    lib.pomai_edge_gateway_start_secure.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16, ctypes.c_char_p]
+    lib.pomai_edge_gateway_start_secure.restype = ctypes.c_void_p
+    lib.pomai_edge_gateway_stop.argtypes = [ctypes.c_void_p]
+    lib.pomai_edge_gateway_stop.restype = ctypes.c_void_p
     lib.pomai_status_message.argtypes = [ctypes.c_void_p]
     lib.pomai_status_message.restype = ctypes.c_char_p
     lib.pomai_status_free.argtypes = [ctypes.c_void_p]
@@ -323,6 +346,62 @@ def freeze(db):
     _check(_lib.pomai_freeze(db))
 
 
+def meta_put(db, membrane_name, gid, value):
+    """Store metadata payload by global id in a kMeta membrane."""
+    _ensure_lib()
+    _check(_lib.pomai_meta_put(db, membrane_name.encode("utf-8"), gid.encode("utf-8"), value.encode("utf-8")))
+
+
+def meta_get(db, membrane_name, gid):
+    """Load metadata payload by global id from a kMeta membrane."""
+    _ensure_lib()
+    out = ctypes.c_char_p()
+    out_len = ctypes.c_size_t()
+    _check(_lib.pomai_meta_get(db, membrane_name.encode("utf-8"), gid.encode("utf-8"), ctypes.byref(out), ctypes.byref(out_len)))
+    try:
+        if not out:
+            return ""
+        return ctypes.string_at(out, out_len.value).decode("utf-8", errors="replace")
+    finally:
+        if out:
+            _lib.pomai_free(out)
+
+
+def meta_delete(db, membrane_name, gid):
+    """Delete metadata payload by global id from a kMeta membrane."""
+    _ensure_lib()
+    _check(_lib.pomai_meta_delete(db, membrane_name.encode("utf-8"), gid.encode("utf-8")))
+
+
+def link_objects(db, gid, vector_id, graph_vertex_id, mesh_id):
+    """Link vector/graph/mesh records under a single GID."""
+    _ensure_lib()
+    _check(_lib.pomai_link_objects(db, gid.encode("utf-8"), int(vector_id), int(graph_vertex_id), int(mesh_id)))
+
+
+def unlink_objects(db, gid):
+    """Remove a previously registered GID link."""
+    _ensure_lib()
+    _check(_lib.pomai_unlink_objects(db, gid.encode("utf-8")))
+
+
+def start_edge_gateway(db, http_port=8080, ingest_port=8090, auth_token=None):
+    """Start embedded HTTP + ingestion listeners."""
+    _ensure_lib()
+    if auth_token:
+        _check(_lib.pomai_edge_gateway_start_secure(
+            db, int(http_port), int(ingest_port), auth_token.encode("utf-8")
+        ))
+    else:
+        _check(_lib.pomai_edge_gateway_start(db, int(http_port), int(ingest_port)))
+
+
+def stop_edge_gateway(db):
+    """Stop embedded HTTP + ingestion listeners."""
+    _ensure_lib()
+    _check(_lib.pomai_edge_gateway_stop(db))
+
+
 def search_batch(db, queries, topk=10):
     """Run batch search. `queries`: 2D array-like (n_queries, dim). Returns list of (ids, scores) per query."""
     _ensure_lib()
@@ -478,3 +557,6 @@ def retrieve_context(db, membrane_name, query, top_k=5, *, embedding_dim=4):
         return out_buf.value[:out_len.value].decode("utf-8", errors="replace")
     finally:
         _lib.pomai_rag_pipeline_free(pipeline)
+
+
+from .zero_copy import release_zero_copy_session, search_zero_copy
