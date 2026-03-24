@@ -32,10 +32,20 @@ PomaiDB is exposed to Python via the **C API** and **ctypes**. The official pack
 | `release_zero_copy_session(session_id)` | Release pinned zero-copy session returned by search results. |
 
 Gateway endpoints/protocols:
-- HTTP: `GET /health`, `POST /ingest/meta/<membrane>/<gid>`, `POST /ingest/vector/<membrane>/<id>`
+- HTTP: `GET /health`, `GET /metrics`, `POST /ingest/meta/<membrane>/<gid>`, `POST /ingest/vector/<membrane>/<id>`
+- HTTP responses are JSON (`{"status":"ok|error|duplicate","message":"..."}`) with proper status codes (`200/400/401/404/429`).
+- HTTP idempotency: send `X-Idempotency-Key: <key>` to make retries safe; repeated keys return `status=duplicate`.
+- Idempotency keys are persisted under DB path (`gateway/idempotency.log`) so duplicate suppression survives gateway restart.
+- Gateway writes operational audit lines to `gateway/audit.log` (`timestamp|event|detail`) for incident/debug workflows.
+- Idempotency log is periodically compacted to keep disk usage bounded.
+- Audit log also rotates (`audit.log` -> `audit.log.1`) to bound local disk growth.
+- `/metrics` exports gateway durability/ops counters including log compactions, log errors, and audit rotations.
 - Ingest TCP (MQTT/WS-style line protocol):
   - no-auth: `MQTT|<membrane>|<id>|f1,f2,f3`
   - auth: `MQTT|<token>|<membrane>|<id>|f1,f2,f3`
+  - optional idempotency + durability: `...|<idem_key>|D`
+  - durable ack: `|D` => server flushes and replies only after flush
+  - replies: `ACK|ok`, `ACK|duplicate`, or `ERR|...`
 | `freeze(db)`   | Flush memtable to segment and build index. Must be called before new data is visible to search. |
 | `search_batch(db, queries, topk=10)` | Batch search. `queries`: list of list of float (n_queries × dim). Returns list of `(ids, scores)` per query. |
 | `close(db)`    | Close the database. |

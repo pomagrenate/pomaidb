@@ -22,7 +22,7 @@ PomaiDB is a **small-footprint, production-ready vector store** that runs native
 - **Typed membrane APIs** — Native C++ + C APIs across all supported membrane kinds with strict low-RAM caps.
 - **Hybrid & multimodal search** — `QueryOrchestrator` supports vector + lexical + graph traversal paths with heuristic execution ordering, bounded frontier RAM, and metadata partition hints (`device_id`/`location_id`).
 - **ObjectLinker (Phase 2)** — shared GID links across vector/graph/mesh (`LinkObjects`), so vector hits can expand into linked graph vertex + mesh ids.
-- **Edge-native connectivity (Phase 3)** — embedded HTTP endpoints (`/health`, `/ingest/meta/...`, `/ingest/vector/...`) and lightweight MQTT/WebSocket-style ingestion listener for direct edge sensor intake, with optional bearer-token/token auth.
+- **Edge-native connectivity (Phase 3)** — embedded HTTP endpoints (`/health`, `/metrics`, `/ingest/meta/...`, `/ingest/vector/...`) and lightweight MQTT/WebSocket-style ingestion listener for direct edge sensor intake, with optional bearer-token/token auth, rate limiting, JSON error model, idempotency keys, and ACK/ERR replies.
 - **Edge analytical aggregates (mini-OLAP)** — `Sum`, `Avg`, `Min`, `Max`, `Count`, `Top-K` over planner/runtime post-filter result sets.
 - **Virtual time-travel** — query constraints by `as_of_ts` and `as_of_lsn` for replay/debug style reads.
 - **Hardware wear-aware maintenance** — write-byte counters at WAL/segment layers and endurance-aware compaction biasing for flash longevity.
