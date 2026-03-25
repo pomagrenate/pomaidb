@@ -154,4 +154,26 @@ namespace pomai
         fs::remove_all(dir);
     }
 
+    POMAI_TEST(Wal_Encrypted_RoundTrip)
+    {
+        std::string dir = pomai::test::TempDir("wal_enc_roundtrip");
+        const std::string key_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        {
+            auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever, true, key_hex);
+            POMAI_EXPECT_OK(wal->Open());
+            std::vector<float> v1 = {5.0f, 6.0f};
+            pomai::Metadata meta;
+            POMAI_EXPECT_OK(wal->AppendPut(99, pomai::VectorView(std::span<const float>(v1)), meta));
+            POMAI_EXPECT_OK(wal->AppendDelete(98));
+        }
+
+        table::MemTable mem(2, 4096);
+        auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever, true, key_hex);
+        POMAI_EXPECT_OK(wal->ReplayInto(mem));
+        auto out = GetVec(mem, 99, 2);
+        POMAI_EXPECT_EQ(out.size(), static_cast<size_t>(2));
+        POMAI_EXPECT_EQ(out[0], 5.0f);
+        fs::remove_all(dir);
+    }
+
 }

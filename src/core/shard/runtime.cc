@@ -6,12 +6,15 @@
 #include <algorithm>
 #include <chrono>
 #include <deque>
+#include "ai/analytical_engine.h"
 
 #include "core/distance.h"
 #include "core/index/ivf_coarse.h"
+#include "core/quantization/pomai_pq.h"
 #include "storage/wal/wal.h"
 #include "table/memtable.h"
-#include "table/segment.h" // Added
+#include "table/segment.h" 
+#include "core/index/hnsw_index.h"
 #include "core/shard/iterator.h"
 #include "core/shard/manifest.h"
 #include "core/shard/layer_lookup.h"
@@ -24,6 +27,7 @@
 #include "pomai/metadata.h" // Added
 #include "util/posix_file.h" // Added for FsyncDir
 #include "util/logging.h"
+#include "core/storage/sync_provider.h"
 
 namespace pomai::core
 {
@@ -230,7 +234,14 @@ namespace pomai::core
                                pomai::MetricType metric,
                                std::unique_ptr<storage::Wal> wal,
                                std::unique_ptr<table::MemTable> mem,
-                               const pomai::IndexParams& index_params)
+                               const pomai::IndexParams& index_params,
+                               std::uint64_t sync_lsn,
+                               bool endurance_aware_maintenance,
+                               std::uint64_t write_budget_bytes_per_hour,
+                               float endurance_compaction_bias,
+                               bool quantize_inmem,
+                               uint32_t write_coalesce_window_us,
+                               uint32_t write_coalesce_batch_size)
         : runtime_id_(runtime_id),
           data_dir_(std::move(data_dir)),
           dim_(dim),
@@ -238,7 +249,14 @@ namespace pomai::core
           metric_(metric),
           wal_(std::move(wal)),
           mem_(std::move(mem)),
-          index_params_(index_params)
+          index_params_(index_params),
+          last_synced_lsn_(sync_lsn),
+          endurance_aware_maintenance_(endurance_aware_maintenance),
+          write_budget_bytes_per_hour_(write_budget_bytes_per_hour),
+          endurance_compaction_bias_(endurance_compaction_bias),
+          quantize_inmem_(quantize_inmem),
+          coalesce_window_us_(write_coalesce_window_us),
+          coalesce_batch_size_(write_coalesce_batch_size)
     {
         pomai::index::IvfCoarse::Options opt;
         opt.nlist = index_params_.nlist;
@@ -264,6 +282,9 @@ namespace pomai::core
 
         s.mem_committed = 0;
         s.mem_used = 0;
+        s.bytes_written_wal = bytes_written_wal_;
+        s.bytes_written_segments = bytes_written_segments_;
+        s.bytes_written_total = bytes_written_wal_ + bytes_written_segments_;
         return s;
     }
 
@@ -343,7 +364,43 @@ namespace pomai::core
     {
         if (mem_->GetCount() == 0) return pomai::Status::Ok();
         frozen_mem_.push_back(mem_);
-        mem_ = std::make_shared<table::MemTable>(dim_, 1u << 20);
+
+        // Train ELM hnsw_router on the retiring MemTable
+        {
+            auto cursor = mem_->CreateCursor();
+            pomai::table::MemTable::CursorEntry entry;
+            std::vector<float> X;
+            std::vector<float> Y;
+            size_t count = 0;
+            while (cursor.Next(&entry) && count < 1024) {
+                if (entry.is_deleted || entry.vec.size() != dim_) continue;
+                X.insert(X.end(), entry.vec.begin(), entry.vec.end());
+                float variance = 0.0f;
+                if (!entry.vec.empty()) {
+                    float sum = 0.0f;
+                    for (float v : entry.vec) sum += v;
+                    float mean = sum / entry.vec.size();
+                    float sq_sum = 0.0f;
+                    for (float v : entry.vec) { float d = v - mean; sq_sum += d * d; }
+                    variance = sq_sum / entry.vec.size();
+                }
+                float optimal_ef = variance > 0.5f ? 16.0f : (variance < 0.1f ? 2.0f : 8.0f);
+                Y.push_back(optimal_ef);
+                count++;
+            }
+            if (count > 0) {
+                if (!AnalyticalEngine::Global().GetModel("hnsw_router")) {
+                    (void)AnalyticalEngine::Global().CreateELMModel("hnsw_router", dim_, 64, 1);
+                }
+                auto* elm = AnalyticalEngine::Global().GetModel("hnsw_router");
+                if (elm) {
+                    (void)elm->Train(std::span<const float>(X.data(), X.size()), 
+                                    std::span<const float>(Y.data(), Y.size()), count);
+                }
+            }
+        }
+
+        mem_ = std::make_shared<table::MemTable>(dim_, 1u << 20, nullptr, quantize_inmem_);
         PublishSnapshot();
         return pomai::Status::Ok();
     }
@@ -377,6 +434,39 @@ namespace pomai::core
     }
 // ... (BatchPut skipped) ...
 
+    pomai::Status VectorRuntime::FlushCoalesceBuffer()
+    {
+        if (coalesce_buffer_.empty()) return pomai::Status::Ok();
+
+        std::vector<pomai::VectorId> ids;
+        std::vector<pomai::VectorView> vecs;
+        ids.reserve(coalesce_buffer_.size());
+        vecs.reserve(coalesce_buffer_.size());
+        for (const auto& entry : coalesce_buffer_) {
+            ids.push_back(entry.id);
+            vecs.push_back(pomai::VectorView{entry.vec_data.data(), dim_});
+        }
+
+        auto st = wal_->AppendBatch(ids, vecs);
+        if (!st.ok()) { coalesce_buffer_.clear(); return st; }
+        ++wal_epoch_;
+        bytes_written_wal_ = wal_->GetBytesWritten();
+
+        std::shared_ptr<table::MemTable> m = mem_;
+        for (auto& entry : coalesce_buffer_) {
+            pomai::Metadata meta_copy = entry.meta;
+            meta_copy.lsn = wal_->GetLastLSN();
+            pomai::VectorView vv{entry.vec_data.data(), dim_};
+            (void)m->Put(entry.id, vv, meta_copy);
+        }
+
+        const bool needs_rotate = (m->GetCount() >= kMemtableSoftLimit);
+        coalesce_buffer_.clear();
+
+        if (needs_rotate) (void)RotateMemTable();
+        return pomai::Status::Ok();
+    }
+
     pomai::Status VectorRuntime::HandlePut(PutCmd &c)
     {
         if (kind_ != pomai::MembraneKind::kVector) {
@@ -390,14 +480,39 @@ namespace pomai::core
             return pomai::Status::ResourceExhausted("too many frozen memtables; backpressure");
         }
 
+        // WAL group-commit coalescing path
+        if (coalesce_window_us_ > 0) {
+            auto now = std::chrono::steady_clock::now();
+            if (!coalesce_buffer_.empty()) {
+                auto elapsed_us = static_cast<uint32_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        now - coalesce_start_).count());
+                if (elapsed_us >= coalesce_window_us_ ||
+                    coalesce_buffer_.size() >= coalesce_batch_size_) {
+                    auto st = FlushCoalesceBuffer();
+                    if (!st.ok()) return st;
+                }
+            }
+            if (coalesce_buffer_.empty()) coalesce_start_ = now;
+            CoalesceEntry entry;
+            entry.id = c.id;
+            entry.vec_data.assign(c.vec.data, c.vec.data + dim_);
+            entry.meta = c.meta;
+            coalesce_buffer_.push_back(std::move(entry));
+            return pomai::Status::Ok();
+        }
+
         // 1. Write WAL
         auto st = wal_->AppendPut(c.id, c.vec, c.meta);
         if (!st.ok())
             return st;
         ++wal_epoch_;
+        bytes_written_wal_ = wal_->GetBytesWritten();
 
         // 2. Update MemTable
-        st = m->Put(c.id, c.vec, c.meta);
+        pomai::Metadata meta_copy = c.meta;
+        meta_copy.lsn = wal_->GetLastLSN();
+        st = m->Put(c.id, c.vec, meta_copy);
         if (!st.ok()) return st;
 
         // 3. Check Threshold for Soft Freeze (e.g. 5000 items)
@@ -606,6 +721,43 @@ namespace pomai::core
         return st;
     }
 
+    pomai::Status VectorRuntime::PushSync(SyncReceiver* receiver)
+    {
+        if (!started_) return pomai::Status::Aborted("shard not started");
+        SyncCmd cmd;
+        cmd.receiver = receiver;
+        return HandleSync(cmd);
+    }
+
+    pomai::Status VectorRuntime::HandleSync(SyncCmd &c)
+    {
+        if (!c.receiver) return pomai::Status::InvalidArgument("receiver null");
+        
+        WalStreamer streamer(data_dir_, runtime_id_);
+        uint64_t new_lsn = last_synced_lsn_;
+        auto st = streamer.PushSince(last_synced_lsn_, c.receiver, &new_lsn);
+        if (st.ok()) {
+            last_synced_lsn_ = new_lsn;
+        }
+        return st;
+    }
+    pomai::Status VectorRuntime::BeginBatch() {
+        // Flush any pending coalesce entries before starting an explicit batch
+        if (!coalesce_buffer_.empty()) {
+            auto st = FlushCoalesceBuffer();
+            if (!st.ok()) return st;
+        }
+        return wal_ ? wal_->BeginBatch() : pomai::Status::Ok();
+    }
+
+    pomai::Status VectorRuntime::EndBatch() {
+        if (!coalesce_buffer_.empty()) {
+            auto st = FlushCoalesceBuffer();
+            if (!st.ok()) return st;
+        }
+        return wal_ ? wal_->EndBatch() : pomai::Status::Ok();
+    }
+
     // -------------------------
     // Handlers (single-threaded: invoked directly from Put/Delete/Search/etc.)
     // -------------------------
@@ -631,6 +783,7 @@ namespace pomai::core
         if (!st.ok())
             return st;
         ++wal_epoch_;
+        bytes_written_wal_ = wal_->GetBytesWritten();
 
         // 2. Batch update MemTable
         st = m->PutBatch(c.ids, c.vectors);
@@ -653,6 +806,7 @@ namespace pomai::core
         if (!st.ok())
             return st;
         ++wal_epoch_;
+        bytes_written_wal_ = wal_->GetBytesWritten();
 
         st = mem_->Delete(c.id);
         if (!st.ok())
@@ -738,6 +892,14 @@ namespace pomai::core
         l0_stats.file_count = static_cast<uint32_t>(segments_.size());
         l0_stats.total_size = total_size;
         l0_stats.score = static_cast<double>(segments_.size()) / 4.0; // Assume 4 files trigger L0->L1
+        l0_stats.endurance_bias = endurance_compaction_bias_;
+        if (endurance_aware_maintenance_ && write_budget_bytes_per_hour_ > 0) {
+            const std::uint64_t used = bytes_written_wal_ + bytes_written_segments_;
+            if (used > write_budget_bytes_per_hour_) {
+                // Past write budget: reduce compaction aggressiveness.
+                l0_stats.endurance_bias = std::max(1.0, static_cast<double>(endurance_compaction_bias_ * 4.0f));
+            }
+        }
         stats.push_back(l0_stats);
 
         // 2. Pick task
@@ -936,6 +1098,8 @@ namespace pomai::core
                     }
 
                     state.built_segments.push_back({state.filename, state.filepath, std::shared_ptr<table::SegmentReader>(std::move(reader))});
+                    std::error_code ec;
+                    bytes_written_segments_ += static_cast<std::uint64_t>(fs::file_size(state.filepath, ec));
                     state.builder.reset();
                     state.segment_part++;
 
@@ -1111,6 +1275,8 @@ namespace pomai::core
                 }
 
                 state.built_segments.push_back({state.filename, state.filepath, std::shared_ptr<table::SegmentReader>(std::move(reader))});
+                std::error_code ec;
+                bytes_written_segments_ += static_cast<std::uint64_t>(fs::file_size(state.filepath, ec));
                 state.builder.reset();
                 state.compact_buffers.clear();
                 state.segment_part++;
@@ -1224,6 +1390,89 @@ namespace pomai::core
         return pomai::Status::Ok();
     }
 
+    pomai::Status VectorRuntime::SearchLexical(const std::string& query,
+                                               std::uint32_t topk,
+                                               std::vector<LexicalHit> *out)
+    {
+        if (!out) return Status::InvalidArgument("out null");
+        auto snap = GetSnapshot(); // Use GetSnapshot to ensure thread-safe access
+        if (!snap) return Status::Aborted("not started");
+        auto active = mem_; // mem_ is atomic, so direct access is fine
+
+        std::unordered_map<VectorId, float> merged_scores;
+        
+        // Visibility policy: Newest Wins
+        SearchMergePolicy merge_policy;
+        std::size_t reserve_hint = 0;
+        if (active) reserve_hint += active->GetCount();
+        for (const auto& frozen : snap->frozen_memtables) reserve_hint += frozen->GetCount();
+        for (const auto& seg : snap->segments) reserve_hint += seg->Count();
+        merge_policy.Reserve(reserve_hint);
+
+        // Build the "Newest Wins" map
+        if (active) {
+            const void* src = active.get();
+            active->IterateWithMetadata([&](VectorId id, std::span<const float>, bool is_deleted, const pomai::Metadata*) {
+                merge_policy.RecordIfUnresolved(id, is_deleted, src);
+            });
+        }
+        for (auto it = snap->frozen_memtables.rbegin(); it != snap->frozen_memtables.rend(); ++it) {
+            const void* src = it->get();
+            (*it)->IterateWithMetadata([&](VectorId id, std::span<const float>, bool is_deleted, const pomai::Metadata*) {
+                merge_policy.RecordIfUnresolved(id, is_deleted, src);
+            });
+        }
+        for (const auto& seg : snap->segments) {
+            const void* src = seg.get();
+            seg->ForEach([&](VectorId id, std::span<const float>, bool is_deleted, const pomai::Metadata*) {
+                merge_policy.RecordIfUnresolved(id, is_deleted, src);
+            });
+        }
+
+        auto add_hits = [&](const std::vector<LexicalHit>& hits, const void* source) {
+            for (const auto& h : hits) {
+                const auto* entry = merge_policy.Find(h.id);
+                if (!entry || entry->source != source || entry->is_tombstone) {
+                    continue; // Skip if not visible or deleted
+                }
+                // Heuristic: sum scores across layers. In a production system, 
+                // we'd use a more sophisticated merge (BM25 across all shards).
+                merged_scores[h.id] += h.score;
+            }
+        };
+
+        // 1. Search Active MemTable
+        std::vector<LexicalHit> tmp;
+        if (active) {
+            (void)active->SearchLexical(query, topk * 2, &tmp);
+            add_hits(tmp, active.get());
+        }
+
+        // 2. Search Frozen MemTables
+        for (auto it = snap->frozen_memtables.rbegin(); it != snap->frozen_memtables.rend(); ++it) {
+            tmp.clear();
+            (void)(*it)->SearchLexical(query, topk * 2, &tmp);
+            add_hits(tmp, it->get());
+        }
+
+        // 3. Search Segments
+        for (const auto& seg : snap->segments) {
+            tmp.clear();
+            (void)seg->SearchLexical(query, topk * 2, &tmp);
+            add_hits(tmp, seg.get());
+        }
+
+        if (merged_scores.empty()) return Status::Ok();
+
+        for (const auto& kv : merged_scores) {
+            out->push_back({kv.first, kv.second});
+        }
+        std::sort(out->begin(), out->end(), [](auto& a, auto& b){ return a.score > b.score; });
+        if (out->size() > topk) out->resize(topk);
+        
+        return Status::Ok();
+    }
+
 // -------------------------
     // SearchLocalInternal: DB-grade 1-pass merge scan
     // -------------------------
@@ -1282,30 +1531,57 @@ namespace pomai::core
             const void* source = mem.get();
             LocalTopK local(topk);
             std::uint64_t local_scanned = 0;
-            mem->IterateWithMetadata([&](VectorId id, std::span<const float> vec, bool is_deleted, const pomai::Metadata* meta) {
-                ++local_scanned;
-                if (is_deleted) {
-                    return;
+
+            uint64_t min_ts = 0, max_ts = 0;
+            bool has_temporal = false;
+            for (const auto& f : opts.filters) {
+                if (f.field == "timestamp") {
+                    min_ts = f.min_ts;
+                    max_ts = f.max_ts;
+                    has_temporal = true;
+                    break;
                 }
-                if (use_visibility) {
-                    const auto* entry = merge_policy.Find(id);
-                    if (!entry || entry->source != source || entry->is_tombstone) {
-                        return;
+            }
+
+            if (has_temporal) {
+                std::vector<VectorId> ids;
+                mem->GetByTimeRange(min_ts, max_ts, &ids);
+                for (VectorId id : ids) {
+                    const float* vec_ptr = nullptr;
+                    Metadata meta_obj;
+                    auto st = mem->Get(id, &vec_ptr, &meta_obj);
+                    if (!st.ok()) continue;
+                    
+                    ++local_scanned;
+                    if (use_visibility) {
+                        const auto* entry = merge_policy.Find(id);
+                        if (!entry || entry->source != source || entry->is_tombstone) continue;
                     }
+                    if (!core::FilterEvaluator::Matches(meta_obj, opts)) continue;
+
+                    float score = (this->metric_ == pomai::MetricType::kInnerProduct || this->metric_ == pomai::MetricType::kCosine)
+                                      ? pomai::core::Dot(query, std::span<const float>(vec_ptr, dim_))
+                                      : -pomai::core::L2Sq(query, std::span<const float>(vec_ptr, dim_));
+                    local.Push(id, score);
                 }
-                const pomai::Metadata default_meta;
-                const pomai::Metadata& m = meta ? *meta : default_meta;
-                if (!core::FilterEvaluator::Matches(m, opts)) {
-                    return;
-                }
-                float score = 0.0f;
-                if (this->metric_ == pomai::MetricType::kInnerProduct || this->metric_ == pomai::MetricType::kCosine) {
-                    score = pomai::core::Dot(query, vec);
-                } else {
-                    score = -pomai::core::L2Sq(query, vec);
-                }
-                local.Push(id, score);
-            });
+            } else {
+                mem->IterateWithMetadata([&](VectorId id, std::span<const float> vec, bool is_deleted, const pomai::Metadata* meta) {
+                    ++local_scanned;
+                    if (is_deleted) return;
+                    if (use_visibility) {
+                        const auto* entry = merge_policy.Find(id);
+                        if (!entry || entry->source != source || entry->is_tombstone) return;
+                    }
+                    const pomai::Metadata default_meta;
+                    const pomai::Metadata& m = meta ? *meta : default_meta;
+                    if (!core::FilterEvaluator::Matches(m, opts)) return;
+                    
+                    float score = (this->metric_ == pomai::MetricType::kInnerProduct || this->metric_ == pomai::MetricType::kCosine)
+                                      ? pomai::core::Dot(query, vec)
+                                      : -pomai::core::L2Sq(query, vec);
+                    local.Push(id, score);
+                });
+            }
             return std::make_pair(local.Drain(), local_scanned);
         };
 
@@ -1355,7 +1631,40 @@ namespace pomai::core
                         return local.Drain();
                     }
                 }
-                if (seg->GetQuantType() != pomai::QuantizationType::kNone) {
+                // PQ-ADC fast path: precompute one distance table per query, then O(M) per candidate.
+                if (seg->GetQuantType() == pomai::QuantizationType::kPq8) {
+                    auto* pq = seg->GetPqQuantizer();
+                    if (pq) {
+                        const bool is_ip = (this->metric_ == pomai::MetricType::kInnerProduct ||
+                                            this->metric_ == pomai::MetricType::kCosine);
+                        thread_local std::vector<float> adc_table_buf;
+                        adc_table_buf.resize(pq->M() * pq->ksub());
+                        if (is_ip) pq->ComputeIPTable(query.data(), adc_table_buf.data());
+                        else       pq->ComputeL2Table(query.data(), adc_table_buf.data());
+
+                        thread_local std::vector<uint32_t> cand_reuse;
+                        cand_reuse.clear();
+                        if (seg->Search(query, effective_nprobe, &cand_reuse).ok()) {
+                            used_candidates = true;
+                            const uint8_t* base = seg->GetBaseAddr() + seg->GetEntriesStartOffset();
+                            const size_t   esz  = seg->GetEntrySize();
+                            for (uint32_t idx : cand_reuse) {
+                                local_scanned++;
+                                const uint8_t* p = base + idx * esz;
+                                if (!(*(p + 8) & 0x01)) { // not tombstone
+                                    float raw = pq->ScoreFromTable(adc_table_buf.data(), p + 12);
+                                    float score = is_ip ? raw : -raw;
+                                    local.Push(*reinterpret_cast<const uint64_t*>(p), score);
+                                }
+                            }
+                            total_scanned += local_scanned;
+                            return local.Drain();
+                        }
+                    }
+                }
+
+                if (seg->GetQuantType() != pomai::QuantizationType::kNone &&
+                    seg->GetQuantType() != pomai::QuantizationType::kPq8) {
                     const auto quant_type = seg->GetQuantType();
                     float q_min = 0.0f;
                     float q_inv_scale = 0.0f;
@@ -1372,8 +1681,8 @@ namespace pomai::core
                         for (uint32_t idx : cand_reuse) {
                             local_scanned++;
                             const uint8_t* p = seg->GetBaseAddr() + seg->GetEntriesStartOffset() + idx * seg->GetEntrySize();
-                            const uint8_t* codes_ptr = p + 12; // Assuming ID (8 bytes) + is_deleted (1 byte) + metadata_len (3 bytes) = 12 bytes offset
-                            if (!(*(p+8) & 0x01)) { // not tombstone, assuming is_deleted is at offset 8
+                            const uint8_t* codes_ptr = p + 12;
+                            if (!(*(p+8) & 0x01)) {
                                 float score = 0.0f;
                                 const bool is_ip = (this->metric_ == pomai::MetricType::kInnerProduct || this->metric_ == pomai::MetricType::kCosine);
                                 if (quant_type == pomai::QuantizationType::kSq8) {
@@ -1389,6 +1698,8 @@ namespace pomai::core
                                     } else {
                                         score = -pomai::core::L2SqFp16(query, {reinterpret_cast<const uint16_t*>(codes_ptr), dim_});
                                     }
+                                } else if (quant_type == pomai::QuantizationType::kBit) {
+                                    score = pomai::core::DotBit(query, std::span<const uint8_t>(codes_ptr, (dim_ + 7) / 8));
                                 }
                                 local.Push(*(uint64_t*)p, score);
                             }

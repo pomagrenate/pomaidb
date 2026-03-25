@@ -249,12 +249,38 @@ namespace pomai::storage
 
         static std::string MembraneKindToString(pomai::MembraneKind kind)
         {
-            return kind == pomai::MembraneKind::kRag ? "RAG" : "VECTOR";
+            switch (kind) {
+                case pomai::MembraneKind::kVector: return "VECTOR";
+                case pomai::MembraneKind::kRag: return "RAG";
+                case pomai::MembraneKind::kGraph: return "GRAPH";
+                case pomai::MembraneKind::kText: return "TEXT";
+                case pomai::MembraneKind::kTimeSeries: return "TIMESERIES";
+                case pomai::MembraneKind::kKeyValue: return "KEYVALUE";
+                case pomai::MembraneKind::kMeta: return "META";
+                case pomai::MembraneKind::kSketch: return "SKETCH";
+                case pomai::MembraneKind::kBlob: return "BLOB";
+                case pomai::MembraneKind::kSpatial: return "SPATIAL";
+                case pomai::MembraneKind::kMesh: return "MESH";
+                case pomai::MembraneKind::kSparse: return "SPARSE";
+                case pomai::MembraneKind::kBitset: return "BITSET";
+                default: return "VECTOR";
+            }
         }
 
         static pomai::MembraneKind ParseMembraneKind(std::string_view tok)
         {
             if (tok == "RAG") return pomai::MembraneKind::kRag;
+            if (tok == "GRAPH") return pomai::MembraneKind::kGraph;
+            if (tok == "TEXT") return pomai::MembraneKind::kText;
+            if (tok == "TIMESERIES") return pomai::MembraneKind::kTimeSeries;
+            if (tok == "KEYVALUE") return pomai::MembraneKind::kKeyValue;
+            if (tok == "META") return pomai::MembraneKind::kMeta;
+            if (tok == "SKETCH") return pomai::MembraneKind::kSketch;
+            if (tok == "BLOB") return pomai::MembraneKind::kBlob;
+            if (tok == "SPATIAL") return pomai::MembraneKind::kSpatial;
+            if (tok == "MESH") return pomai::MembraneKind::kMesh;
+            if (tok == "SPARSE") return pomai::MembraneKind::kSparse;
+            if (tok == "BITSET") return pomai::MembraneKind::kBitset;
             return pomai::MembraneKind::kVector;
         }
 
@@ -278,7 +304,10 @@ namespace pomai::storage
                    std::to_string(spec.index_params.hnsw_m) + " " +
                    std::to_string(spec.index_params.hnsw_ef_construction) + " " +
                    std::to_string(spec.index_params.hnsw_ef_search) + "\n";
-
+            out += "sync_lsn " + std::to_string(spec.sync_lsn) + "\n";
+            out += "ttl_sec " + std::to_string(spec.ttl_sec) + "\n";
+            out += "retention_max_count " + std::to_string(spec.retention_max_count) + "\n";
+            out += "retention_max_bytes " + std::to_string(spec.retention_max_bytes) + "\n";
             return AtomicWriteFile(MembraneManifestPath(root_path, spec.name), out);
         }
 
@@ -304,6 +333,9 @@ namespace pomai::storage
             spec->dim = 0;
             spec->metric = pomai::MetricType::kL2;
             spec->kind = pomai::MembraneKind::kVector;
+            spec->ttl_sec = 0;
+            spec->retention_max_count = 0;
+            spec->retention_max_bytes = 0;
 
             while (!sv.empty()) {
                 std::size_t eol = sv.find('\n');
@@ -342,8 +374,24 @@ namespace pomai::storage
                          (void)ParseU32(toks[2], &spec->index_params.nlist);
                          (void)ParseU32(toks[3], &spec->index_params.nprobe);
                          (void)ParseU32(toks[4], &spec->index_params.hnsw_m);
-                         (void)ParseU32(toks[5], &spec->index_params.hnsw_ef_construction);
-                         (void)ParseU32(toks[6], &spec->index_params.hnsw_ef_search);
+                          (void)ParseU32(toks[5], &spec->index_params.hnsw_ef_construction);
+                          (void)ParseU32(toks[6], &spec->index_params.hnsw_ef_search);
+                     }
+                } else if (toks[0] == "sync_lsn") {
+                    if (toks.size() > 1) {
+                         // ParseU32 only handles 32 bits, but seq yields 64. 
+                         // For now let's add a ParseU64 or just use stoull.
+                         try {
+                            spec->sync_lsn = std::stoull(std::string(toks[1]));
+                         } catch(...) {}
+                    }
+                } else if (toks[0] == "ttl_sec") {
+                    if (toks.size() > 1) (void)ParseU32(toks[1], &spec->ttl_sec);
+                } else if (toks[0] == "retention_max_count") {
+                    if (toks.size() > 1) (void)ParseU32(toks[1], &spec->retention_max_count);
+                } else if (toks[0] == "retention_max_bytes") {
+                    if (toks.size() > 1) {
+                        try { spec->retention_max_bytes = std::stoull(std::string(toks[1])); } catch(...) {}
                     }
                 }
             }
@@ -375,7 +423,11 @@ namespace pomai::storage
     {
         if (!IsValidName(spec.name))
             return pomai::Status::InvalidArgument("invalid membrane name");
-        if (spec.dim == 0)
+        const bool dim_required = (spec.kind == pomai::MembraneKind::kVector ||
+                                   spec.kind == pomai::MembraneKind::kRag ||
+                                   spec.kind == pomai::MembraneKind::kGraph ||
+                                   spec.kind == pomai::MembraneKind::kText);
+        if (dim_required && spec.dim == 0)
             return pomai::Status::InvalidArgument("dim must be > 0");
         if (spec.shard_count == 0)
             return pomai::Status::InvalidArgument("shard_count must be > 0");
@@ -484,6 +536,28 @@ namespace pomai::storage
 
         // Now load detailed spec from membrane specific manifest
         return LoadMembraneManifest(root_path, name, out);
+    }
+
+    pomai::Status Manifest::UpdateSyncLSN(std::string_view root_path, std::string_view name, uint64_t lsn) {
+        pomai::MembraneSpec spec;
+        auto st = GetMembrane(root_path, name, &spec);
+        if (!st.ok()) return st;
+
+        if (spec.sync_lsn == lsn) return pomai::Status::Ok(); // Already there
+        spec.sync_lsn = lsn;
+        return WriteMembraneManifest(root_path, spec);
+    }
+
+    pomai::Status Manifest::UpdateRetentionPolicy(std::string_view root_path, std::string_view name,
+                                                  uint32_t ttl_sec, uint32_t retention_max_count,
+                                                  uint64_t retention_max_bytes) {
+        pomai::MembraneSpec spec;
+        auto st = GetMembrane(root_path, name, &spec);
+        if (!st.ok()) return st;
+        spec.ttl_sec = ttl_sec;
+        spec.retention_max_count = retention_max_count;
+        spec.retention_max_bytes = retention_max_bytes;
+        return WriteMembraneManifest(root_path, spec);
     }
 
 } // namespace pomai::storage

@@ -23,6 +23,26 @@ namespace pomai
     {
         kVector = 0,
         kRag = 1,
+        kGraph = 2,
+        kText = 3,
+        kTimeSeries = 4,
+        kKeyValue = 5,
+        kSketch = 6,
+        kBlob = 7,
+        kSpatial = 8,
+        kMesh = 9,
+        kSparse = 10,
+        kBitset = 11,
+        kMeta = 12,
+        kAudio = 13,      // Frame-aligned audio embedding storage (keyword spotting, speaker ID)
+        kBloom = 14,      // Persistent Bloom filter for approximate set membership
+        kDocument = 15,   // JSON document store with BM25 full-text search
+    };
+
+    enum class MeshDetailPreference : uint8_t
+    {
+        kAutoLatencyFirst = 0,
+        kHighDetail = 1,
     };
 
     enum class IndexType : uint8_t
@@ -36,10 +56,24 @@ namespace pomai
         kNone = 0,
         kSq8 = 1,
         kFp16 = 2,
+        kBit = 3, // Binary Quantization (1-bit sign)
+        kPq8 = 4, // Product Quantization (PQ8): M sub-quantizers × 256 centroids, M bytes per vector
     };
 
     /** When true, vectors are stored as SQ8 (int8) with per-vector min/max for ~4x memory reduction. */
     static constexpr bool kDefaultEnableQuantization = true;
+
+    enum class EdgeProfile : uint8_t
+    {
+        // Keep user-provided settings as-is.
+        kUserDefined = 0,
+        // Low memory footprint, safer for constrained edge nodes.
+        kLowRam = 1,
+        // Balanced durability and latency defaults.
+        kBalanced = 2,
+        // Higher throughput at the cost of stronger durability guarantees.
+        kThroughput = 3,
+    };
 
     struct IndexParams
     {
@@ -56,6 +90,11 @@ namespace pomai
         // Default: 0 = always use HNSW when available (rely on ef_search for recall).
         uint32_t adaptive_threshold = 5000;
         QuantizationType quant_type = QuantizationType::kNone;
+        // PQ8 sub-quantizer count. Must divide dim. Used only when quant_type == kPq8.
+        uint32_t pq_m = 8;
+        // If true, HNSW index references the segment mmap for distances instead of
+        // duplicating the full vector pool — saves n×dim×4 bytes of RAM per segment.
+        bool hnsw_no_vector_pool = false;
 
         /** Default index params (balanced quality/memory). */
         static IndexParams Default() {
@@ -77,6 +116,8 @@ namespace pomai
             p.hnsw_ef_search = 32;
             p.adaptive_threshold = 2000;
             p.quant_type = QuantizationType::kNone;
+            p.pq_m = 4;
+            p.hnsw_no_vector_pool = true;
             return p;
         }
     };
@@ -94,6 +135,9 @@ namespace pomai
         uint32_t memtable_flush_threshold_mb = 64u;
         /** If true, when memtable exceeds threshold the vector engine will Freeze() before accepting more writes. */
         bool auto_freeze_on_pressure = true;
+    
+    // Multi-modal Triggers
+    bool enable_auto_edge = false; // If true, automatically link vectors to src_vid
         /** Optional hard cap for memtable size in MiB (0 = unlimited, derive behavior from flush threshold only). */
         uint32_t max_memtable_mb = 0;
         uint32_t search_threads = 0; // 0 => auto
@@ -104,7 +148,137 @@ namespace pomai
         uint32_t routing_probe = 0;
         uint32_t routing_warmup_mult = 20;
         uint32_t routing_keep_prev = 1;
+        bool hybrid_partition_enabled = false;
+        std::string partition_primary_key = "device_id";
+        std::string partition_secondary_key = "location_id";
         MetricType metric = MetricType::kL2;
+
+        // Edge security: encryption-at-rest.
+        bool enable_encryption_at_rest = false;
+        // Hex-encoded 32-byte key (64 hex chars) for AES-256-GCM.
+        std::string encryption_key_hex;
+
+        // Low-RAM controls (edge-first defaults).
+        // Max entries tracked by semantic lifecycle per membrane.
+        uint32_t max_lifecycle_entries = 20000;
+        // Max docs retained in lightweight text membrane index.
+        uint32_t max_text_docs = 50000;
+        // Limit graph expansion frontier in orchestrator to cap RAM.
+        uint32_t max_query_frontier = 2048;
+        uint32_t max_kv_entries = 20000;
+        uint32_t max_sketch_entries = 20000;
+        uint32_t max_blob_bytes_mb = 64;
+        uint32_t max_spatial_points = 20000;
+        uint32_t max_mesh_objects = 4000;
+        uint32_t mesh_lod_build_interval_ms = 50;
+        uint32_t mesh_lod_jobs_per_tick = 1;
+        uint32_t mesh_lod_max_queue = 1024;
+        uint32_t max_sparse_entries = 20000;
+        uint32_t max_bitset_bytes_mb = 64;
+        uint32_t max_audio_frames = 20000;     // Max audio frames per AudioEngine instance
+        uint32_t max_bloom_entries = 20000;    // Max keys per Bloom filter set
+        uint32_t max_document_entries = 50000; // Max documents per DocumentEngine
+
+        // WAL write coalescing: buffer Put calls and flush as a single AppendBatch.
+        // 0 = disabled. Recommended for kThroughput profile (500us window).
+        uint32_t write_coalesce_window_us = 0;
+        // Flush the coalesce buffer after this many pending writes regardless of window.
+        uint32_t write_coalesce_batch_size = 256;
+
+        // Hardware health / wear-leveling awareness.
+        bool endurance_aware_maintenance = false;
+        uint64_t write_budget_bytes_per_hour = 0; // 0 = disabled
+        uint32_t endurance_freeze_delay_ms = 0;
+        float endurance_compaction_bias = 1.0f; // >1 delays compaction under high wear.
+
+        // Vulkan memory bridge (Phase 1 GPU prep; optional, off by default).
+        bool vulkan_enable_memory_bridge = false;
+        bool vulkan_prefer_unified_memory = true;
+        uint32_t vulkan_staging_pool_mb = 16;
+        uint64_t vulkan_zero_copy_min_bytes = 4096;
+
+        // Optional deployment profile. Does not override index params; users keep full index freedom.
+        EdgeProfile edge_profile = EdgeProfile::kUserDefined;
+        // Gateway operational defaults.
+        uint32_t gateway_rate_limit_per_sec = 2000;
+        uint32_t gateway_idempotency_ttl_sec = 300;
+        // Optional rotating token file (line format: token|exp_unix|scope1,scope2).
+        std::string gateway_token_file;
+        // Optional upstream forwarding target for async edge->regional sync (http://host:port/path).
+        std::string gateway_upstream_sync_url;
+        bool gateway_upstream_sync_enabled = false;
+        // Optional mTLS check behind a TLS terminator (expects header presence/value).
+        bool gateway_require_mtls_proxy_header = false;
+        std::string gateway_mtls_proxy_header = "X-Client-Cert-Verified: 1";
+
+        void ApplyEdgeProfile()
+        {
+            switch (edge_profile)
+            {
+                case EdgeProfile::kLowRam:
+                    memtable_flush_threshold_mb = 16u;
+                    max_memtable_mb = 64u;
+                    auto_freeze_on_pressure = true;
+                    fsync = FsyncPolicy::kAlways;
+                    max_query_frontier = 512u;
+                    max_kv_entries = 5000u;
+                    max_text_docs = 10000u;
+                    max_blob_bytes_mb = 16u;
+                    max_spatial_points = 5000u;
+                    max_mesh_objects = 1000u;
+                    max_sparse_entries = 5000u;
+                    max_bitset_bytes_mb = 16u;
+                    max_audio_frames = 5000u;
+                    max_bloom_entries = 5000u;
+                    max_document_entries = 10000u;
+                    gateway_rate_limit_per_sec = 500u;
+                    gateway_idempotency_ttl_sec = 120u;
+                    break;
+                case EdgeProfile::kBalanced:
+                    memtable_flush_threshold_mb = 64u;
+                    max_memtable_mb = 256u;
+                    auto_freeze_on_pressure = true;
+                    fsync = FsyncPolicy::kAlways;
+                    max_query_frontier = 2048u;
+                    max_kv_entries = 20000u;
+                    max_text_docs = 50000u;
+                    max_blob_bytes_mb = 64u;
+                    max_spatial_points = 20000u;
+                    max_mesh_objects = 4000u;
+                    max_sparse_entries = 20000u;
+                    max_bitset_bytes_mb = 64u;
+                    max_audio_frames = 20000u;
+                    max_bloom_entries = 20000u;
+                    max_document_entries = 50000u;
+                    gateway_rate_limit_per_sec = 2000u;
+                    gateway_idempotency_ttl_sec = 300u;
+                    break;
+                case EdgeProfile::kThroughput:
+                    memtable_flush_threshold_mb = 128u;
+                    max_memtable_mb = 512u;
+                    auto_freeze_on_pressure = true;
+                    fsync = FsyncPolicy::kNever;
+                    max_query_frontier = 4096u;
+                    max_kv_entries = 50000u;
+                    max_text_docs = 100000u;
+                    max_blob_bytes_mb = 128u;
+                    max_spatial_points = 50000u;
+                    max_mesh_objects = 8000u;
+                    max_sparse_entries = 50000u;
+                    max_bitset_bytes_mb = 128u;
+                    max_audio_frames = 50000u;
+                    max_bloom_entries = 50000u;
+                    max_document_entries = 100000u;
+                    gateway_rate_limit_per_sec = 5000u;
+                    gateway_idempotency_ttl_sec = 600u;
+                    write_coalesce_window_us = 500u;
+                    write_coalesce_batch_size = 256u;
+                    break;
+                case EdgeProfile::kUserDefined:
+                default:
+                    break;
+            }
+        }
     };
 
     // One membrane = one logical collection.
@@ -116,6 +290,12 @@ namespace pomai
         MetricType metric = MetricType::kL2;
         IndexParams index_params;
         MembraneKind kind = MembraneKind::kVector;
+        uint64_t sync_lsn = 0;
+        // Optional retention policy (primarily used by kMeta and kKeyValue membranes).
+        // 0 means disabled for each field.
+        uint32_t ttl_sec = 0;
+        uint32_t retention_max_count = 0;
+        uint64_t retention_max_bytes = 0;
     };
 
 } // namespace pomai

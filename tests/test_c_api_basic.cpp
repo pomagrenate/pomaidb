@@ -1,8 +1,10 @@
 #include "tests/common/test_main.h"
 
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "pomai/c_api.h"
@@ -170,6 +172,75 @@ POMAI_TEST(CApiPutBatchSearchAndSnapshotScan) {
     POMAI_EXPECT_TRUE(!saw200);
 }
 
+POMAI_TEST(CApiMetaMembraneCrud) {
+    CApiFixture fx;
+    constexpr uint32_t kMetaKind = 12u; // MembraneKind::kMeta
+    CAPI_EXPECT_OK(pomai_create_membrane_kind(fx.db(), "meta", 1, 1, kMetaKind));
+
+    CAPI_EXPECT_OK(pomai_meta_put(fx.db(), "meta", "gid:7", "{\"status\":\"active\"}"));
+
+    char* out_value = nullptr;
+    size_t out_len = 0;
+    CAPI_EXPECT_OK(pomai_meta_get(fx.db(), "meta", "gid:7", &out_value, &out_len));
+    POMAI_EXPECT_TRUE(out_value != nullptr);
+    POMAI_EXPECT_EQ(std::string(out_value, out_len), std::string("{\"status\":\"active\"}"));
+    pomai_free(out_value);
+
+    CAPI_EXPECT_OK(pomai_meta_delete(fx.db(), "meta", "gid:7"));
+    pomai_status_t* st = pomai_meta_get(fx.db(), "meta", "gid:7", &out_value, &out_len);
+    POMAI_EXPECT_TRUE(st != nullptr);
+    pomai_status_free(st);
+}
+
+POMAI_TEST(CApiMetaMembraneRetentionTtl) {
+    CApiFixture fx;
+    constexpr uint32_t kMetaKind = 12u; // MembraneKind::kMeta
+    CAPI_EXPECT_OK(pomai_create_membrane_kind_with_retention(
+        fx.db(), "meta_ttl", 1, 1, kMetaKind, 1, 0, 0));
+
+    CAPI_EXPECT_OK(pomai_meta_put(fx.db(), "meta_ttl", "gid:9", "{\"status\":\"hot\"}"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+
+    char* out_value = nullptr;
+    size_t out_len = 0;
+    pomai_status_t* st = pomai_meta_get(fx.db(), "meta_ttl", "gid:9", &out_value, &out_len);
+    POMAI_EXPECT_TRUE(st != nullptr);
+    pomai_status_free(st);
+}
+
+POMAI_TEST(CApiUpdateMembraneRetention) {
+    CApiFixture fx;
+    constexpr uint32_t kMetaKind = 12u; // MembraneKind::kMeta
+    CAPI_EXPECT_OK(pomai_create_membrane_kind(fx.db(), "meta_upd", 1, 1, kMetaKind));
+    CAPI_EXPECT_OK(pomai_update_membrane_retention(fx.db(), "meta_upd", 1, 0, 0));
+    CAPI_EXPECT_OK(pomai_meta_put(fx.db(), "meta_upd", "gid:11", "{\"status\":\"warm\"}"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+
+    char* out_value = nullptr;
+    size_t out_len = 0;
+    pomai_status_t* st = pomai_meta_get(fx.db(), "meta_upd", "gid:11", &out_value, &out_len);
+    POMAI_EXPECT_TRUE(st != nullptr);
+    pomai_status_free(st);
+
+    char* json = nullptr;
+    size_t json_len = 0;
+    CAPI_EXPECT_OK(pomai_get_membrane_retention_json(fx.db(), "meta_upd", &json, &json_len));
+    POMAI_EXPECT_TRUE(json != nullptr);
+    std::string s(json, json_len);
+    POMAI_EXPECT_TRUE(s.find("\"ttl_sec\":1") != std::string::npos);
+    pomai_free(json);
+}
+
+POMAI_TEST(CApiObjectLinkerAndGatewayLifecycle) {
+    CApiFixture fx;
+    CAPI_EXPECT_OK(pomai_link_objects(fx.db(), "gid:demo-1", 10, 20, 30));
+    CAPI_EXPECT_OK(pomai_unlink_objects(fx.db(), "gid:demo-1"));
+    CAPI_EXPECT_OK(pomai_edge_gateway_start(fx.db(), 18080, 18090));
+    CAPI_EXPECT_OK(pomai_edge_gateway_stop(fx.db()));
+    CAPI_EXPECT_OK(pomai_edge_gateway_start_secure(fx.db(), 18082, 18092, "demo-token"));
+    CAPI_EXPECT_OK(pomai_edge_gateway_stop(fx.db()));
+}
+
 
 POMAI_TEST(CApiFreezePublishesToSnapshotScan) {
     CApiFixture fx;
@@ -243,6 +314,54 @@ POMAI_TEST(CApiInvalidArgs) {
     POMAI_EXPECT_TRUE(st != nullptr);
     POMAI_EXPECT_EQ(pomai_status_code(st), static_cast<int>(POMAI_STATUS_INVALID_ARGUMENT));
     pomai_status_free(st);
+}
+
+POMAI_TEST(CApiMembraneScanVector) {
+    CApiFixture fx;
+    const auto v = fx.Vec(3.0f);
+    pomai_upsert_t up{};
+    up.struct_size = sizeof(pomai_upsert_t);
+    up.id = 7;
+    up.vector = v.data();
+    up.dim = 8;
+    CAPI_EXPECT_OK(pomai_put(fx.db(), &up));
+
+    pomai_membrane_scan_options_t mopts{};
+    pomai_membrane_scan_options_init(&mopts);
+    mopts.max_records = 100;
+
+    pomai_membrane_iter_t* mit = nullptr;
+    CAPI_EXPECT_OK(pomai_membrane_scan(fx.db(), "__default__", &mopts, &mit));
+
+    bool saw7 = false;
+    while (pomai_membrane_iter_valid(mit)) {
+        pomai_membrane_record_view_t view{};
+        view.struct_size = sizeof(view);
+        CAPI_EXPECT_OK(pomai_membrane_iter_get_record(mit, &view));
+        POMAI_EXPECT_EQ(view.membrane_kind, 0u);
+        if (view.id == 7u) {
+            saw7 = true;
+            POMAI_EXPECT_EQ(view.vector_dim, 8u);
+        }
+        pomai_membrane_iter_next(mit);
+    }
+    POMAI_EXPECT_TRUE(saw7);
+    CAPI_EXPECT_OK(pomai_membrane_iter_status(mit));
+    pomai_membrane_iter_free(mit);
+}
+
+POMAI_TEST(CApiMembraneKindCapabilities) {
+    pomai_membrane_capabilities_t caps{};
+    pomai_membrane_capabilities_init(&caps);
+    caps.struct_size = sizeof(caps);
+    CAPI_EXPECT_OK(pomai_membrane_kind_capabilities(POMAI_MEMBRANE_KIND_VECTOR, &caps));
+    POMAI_EXPECT_EQ(static_cast<unsigned>(caps.kind), static_cast<unsigned>(POMAI_MEMBRANE_KIND_VECTOR));
+    POMAI_EXPECT_TRUE(caps.snapshot_isolated_scan);
+    CAPI_EXPECT_OK(pomai_membrane_kind_capabilities(POMAI_MEMBRANE_KIND_SPATIAL, &caps));
+    POMAI_EXPECT_EQ(caps.stability, POMAI_MEMBRANE_STABILITY_EXPERIMENTAL);
+    pomai_status_t* bad = pomai_membrane_kind_capabilities(200, &caps);
+    POMAI_EXPECT_TRUE(bad != nullptr);
+    pomai_status_free(bad);
 }
 
 }  // namespace

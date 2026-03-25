@@ -1,16 +1,52 @@
 #pragma once
 #include <cstdint>
+#include <string>
 #include <vector>
 
+#include "options.h"
 #include "types.h"
 
 namespace pomai
 {
+    enum class AggregateOp : uint8_t {
+        kNone = 0,
+        kSum = 1,
+        kAvg = 2,
+        kMin = 3,
+        kMax = 4,
+        kCount = 5,
+        kTopK = 6,
+    };
+
+    struct AggregateRequest {
+        AggregateOp op = AggregateOp::kNone;
+        std::string field = "score"; // score|timestamp|lsn
+        uint32_t top_k = 0;
+    };
+
+    enum class QueryExecutionOrder : uint8_t {
+        kAuto = 0,
+        kVectorFirst = 1,
+        kGraphFirst = 2,
+    };
+
+    struct MeshQueryOptions {
+        MeshDetailPreference detail = MeshDetailPreference::kAutoLatencyFirst;
+    };
+
 
     struct SearchHit
     {
         VectorId id = 0;
         float score = 0.0f; // higher is better
+        std::vector<uint64_t> related_ids; // K-hop neighbors
+    };
+
+    struct AggregateResult {
+        AggregateOp op = AggregateOp::kNone;
+        std::string field;
+        double value = 0.0;
+        std::vector<SearchHit> topk_hits;
     };
 
     struct ShardError
@@ -31,8 +67,11 @@ namespace pomai
     struct SearchResult
     {
         std::vector<SearchHit> hits;
+        std::vector<AggregateResult> aggregates;
         std::vector<ShardError> errors; // Partial failures
         uint32_t routed_shards_count = 0;
+        uint32_t total_shards_count = 0;
+        uint32_t pruned_shards_count = 0;
         uint32_t routing_probe_centroids = 0;
         uint64_t routed_buckets_count = 0; // Candidate/bucket count when routing enabled.
 
@@ -41,13 +80,57 @@ namespace pomai
 
         void Clear() {
             hits.clear();
+            aggregates.clear();
             errors.clear();
             routed_shards_count = 0;
+            total_shards_count = 0;
+            pruned_shards_count = 0;
             routing_probe_centroids = 0;
             routed_buckets_count = 0;
             zero_copy_pointers.clear();
             zero_copy_session_id = 0;
         }
+    };
+
+    /**
+     * @brief Unified Multi-modal Query specification.
+     */
+    struct MultiModalQuery {
+        std::vector<float> vector;      // Semantic query vector (Dense)
+        std::string keywords;           // Keyword query string (Lexical/BM25)
+        float alpha = 0.5f;             // Weight: alpha*Vector + (1-alpha)*Lexical
+        
+        uint32_t top_k = 10;            
+        uint32_t graph_hops = 2;        
+        EdgeType edge_type = 0;         
+
+        // Temporal Filtering
+        uint64_t start_ts = 0;
+        uint64_t end_ts = 0;
+        uint64_t as_of_ts = 0;
+        uint64_t as_of_lsn = 0;
+
+        // Cross-membrane routing (empty => use call-site membrane).
+        std::string vector_membrane;
+        std::string graph_membrane;
+        std::string text_membrane;
+
+        // Orchestrator execution policy.
+        QueryExecutionOrder execution_order = QueryExecutionOrder::kAuto;
+        
+        // Potential future filters
+        std::string filter_expression;
+        std::string partition_device_id;
+        std::string partition_location_id;
+        std::vector<AggregateRequest> aggregates;
+        // Optional spatial prefilter: center + radius meters.
+        double prefilter_lat = 0.0;
+        double prefilter_lon = 0.0;
+        double prefilter_radius_m = 0.0;
+        // Optional bitset/sparse prefilter hints.
+        uint64_t prefilter_bitset_id = 0;
+        uint64_t prefilter_sparse_id = 0;
+        MeshDetailPreference mesh_detail_preference = MeshDetailPreference::kAutoLatencyFirst;
     };
 
 } // namespace pomai

@@ -44,6 +44,8 @@ class WritableFile {
  public:
   virtual ~WritableFile() = default;
   virtual Status Append(Slice data) = 0;
+  virtual Status Pwrite(uint64_t offset, Slice data) = 0;
+  virtual uint64_t BytesWritten() const = 0;
   virtual Status Flush() = 0;
   virtual Status Sync() = 0;
   virtual Status Close() = 0;
@@ -138,8 +140,17 @@ class PosixWritableFile : public WritableFile {
   Status Append(Slice data) override {
     ssize_t w = ::write(fd_, data.data(), data.size());
     if (w < 0) return Status::IOError("Append failed");
+    bytes_written_ += static_cast<uint64_t>(w);
     return Status::Ok();
   }
+
+  Status Pwrite(uint64_t offset, Slice data) override {
+    ssize_t w = ::pwrite(fd_, data.data(), data.size(), static_cast<off_t>(offset));
+    if (w < 0) return Status::IOError("Pwrite failed");
+    bytes_written_ += static_cast<uint64_t>(w);
+    return Status::Ok();
+  }
+  uint64_t BytesWritten() const override { return bytes_written_; }
 
   Status Flush() override { return Status::Ok(); }
   Status Sync() override { return ::fdatasync(fd_) == 0 ? Status::Ok() : Status::IOError("Sync failed"); }
@@ -151,6 +162,7 @@ class PosixWritableFile : public WritableFile {
 
  protected:
   int fd_;
+  uint64_t bytes_written_ = 0;
 };
 
 /**
@@ -167,6 +179,10 @@ class SectorAlignedWritableFile : public PosixWritableFile {
     Status s = PosixWritableFile::Append(data);
     if (s.ok()) offset_ += data.size();
     return s;
+  }
+
+  Status Pwrite(uint64_t offset, Slice data) override {
+    return PosixWritableFile::Pwrite(offset, data);
   }
 
   /// Pad to sector boundary and sync.

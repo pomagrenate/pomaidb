@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "compute/vulkan/vulkan_device_context.h"
 #include "core/distance.h"
 #include "core/memory/pin_manager.h"
 #include "core/shard/runtime.h"
@@ -21,8 +22,9 @@ constexpr std::size_t kWalSegmentBytes = 64u << 20; // 64 MiB
 
 VectorEngine::VectorEngine(pomai::DBOptions opt,
                            pomai::MembraneKind kind,
-                           pomai::MetricType metric)
-    : opt_(std::move(opt)), kind_(kind), metric_(metric) {}
+                           pomai::MetricType metric,
+                           uint64_t sync_lsn)
+    : opt_(std::move(opt)), kind_(kind), metric_(metric), sync_lsn_(sync_lsn) {}
 
 VectorEngine::~VectorEngine() = default;
 
@@ -64,12 +66,13 @@ Status VectorEngine::OpenLocked() {
         return Status::IOError("vector_engine CreateDirIfMissing failed");
 
     auto wal = std::make_unique<storage::Wal>(
-        env, opt_.path, /*log_id=*/0u, kWalSegmentBytes, opt_.fsync);
+        env, opt_.path, /*log_id=*/0u, kWalSegmentBytes, opt_.fsync,
+        opt_.enable_encryption_at_rest, opt_.encryption_key_hex);
     Status st = wal->Open();
     if (!st.ok()) return st;
 
     auto mem = std::make_unique<table::MemTable>(
-        opt_.dim, kArenaBlockBytes);
+        opt_.dim, kArenaBlockBytes, nullptr, opt_.enable_quantization);
     st = wal->ReplayInto(*mem);
     if (!st.ok()) return st;
 
@@ -86,7 +89,14 @@ Status VectorEngine::OpenLocked() {
         metric_,
         std::move(wal),
         std::move(mem),
-        opt_.index_params);
+        opt_.index_params,
+        sync_lsn_,
+        opt_.endurance_aware_maintenance,
+        opt_.write_budget_bytes_per_hour,
+        opt_.endurance_compaction_bias,
+        opt_.enable_quantization,
+        opt_.write_coalesce_window_us,
+        opt_.write_coalesce_batch_size);
 
     runtime_ = std::move(rt);
     st = runtime_->Start();
@@ -95,12 +105,25 @@ Status VectorEngine::OpenLocked() {
         return st;
     }
 
+    if (opt_.vulkan_enable_memory_bridge) {
+        auto vctx = std::make_unique<pomai::compute::vulkan::VulkanComputeContext>();
+        pomai::compute::vulkan::BridgeOptions bopt;
+        bopt.prefer_unified_memory = opt_.vulkan_prefer_unified_memory;
+        bopt.staging_pool_mb = opt_.vulkan_staging_pool_mb;
+        bopt.zero_copy_min_bytes = opt_.vulkan_zero_copy_min_bytes;
+        Status vv = pomai::compute::vulkan::VulkanComputeContext::Create(bopt, vctx.get());
+        if (vv.ok()) {
+            vulkan_ctx_ = std::move(vctx);
+        }
+    }
+
     opened_ = true;
     return Status::Ok();
 }
 
 Status VectorEngine::Close() {
     if (!opened_) return Status::Ok();
+    vulkan_ctx_.reset();
     runtime_.reset();
     opened_ = false;
     return Status::Ok();
@@ -208,6 +231,16 @@ Status VectorEngine::Compact() {
     return runtime_->Compact();
 }
 
+Status VectorEngine::PushSync(SyncReceiver* receiver) {
+    auto st = EnsureOpen();
+    if (!st.ok()) return st;
+    return runtime_->PushSync(receiver);
+}
+
+uint64_t VectorEngine::GetLastSyncedLSN() const {
+    return runtime_ ? runtime_->GetLastSyncedLSN() : sync_lsn_;
+}
+
 std::size_t VectorEngine::MemTableBytesUsed() const noexcept {
     return runtime_ ? runtime_->MemTableBytesUsed() : 0u;
 }
@@ -272,6 +305,8 @@ Status VectorEngine::Search(std::span<const float> query,
 
     out->hits = std::move(hits);
     out->routed_shards_count = 1;
+    out->total_shards_count = 1;
+    out->pruned_shards_count = (!opts.partition_device_id.empty() || !opts.partition_location_id.empty()) ? 0 : 0;
     out->routing_probe_centroids = 0;
     out->routed_buckets_count = runtime_->LastQueryCandidatesScanned();
 
@@ -339,6 +374,8 @@ Status VectorEngine::SearchBatch(std::span<const float> queries,
     for (uint32_t i = 0; i < num_queries; ++i) {
         (*out)[i].hits = std::move(per_query[i]);
         (*out)[i].routed_shards_count = 1;
+        (*out)[i].total_shards_count = 1;
+        (*out)[i].pruned_shards_count = (!opts.partition_device_id.empty() || !opts.partition_location_id.empty()) ? 0 : 0;
         (*out)[i].routing_probe_centroids = 0;
         (*out)[i].routed_buckets_count = runtime_->LastQueryCandidatesScanned();
     }
@@ -370,6 +407,15 @@ Status VectorEngine::SearchBatch(std::span<const float> queries,
     }
 
     return Status::Ok();
+}
+
+Status VectorEngine::SearchLexical(const std::string& query,
+                                   std::uint32_t topk,
+                                   std::vector<LexicalHit>* out) {
+    auto st = EnsureOpen();
+    if (!st.ok()) return st;
+    if (!out) return Status::InvalidArgument("vector_engine lexical output is null");
+    return runtime_->SearchLexical(query, topk, out);
 }
 
 } // namespace pomai::core

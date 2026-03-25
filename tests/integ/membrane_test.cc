@@ -192,4 +192,61 @@ namespace
         }
     }
 
+    POMAI_TEST(Membrane_ObjectLinker_ExpandsSearchHit)
+    {
+        pomai::DBOptions opt;
+        opt.path = pomai::test::TempDir("pomai-linker-search");
+        opt.dim = 4;
+        opt.shard_count = 1;
+        opt.fsync = pomai::FsyncPolicy::kNever;
+
+        std::unique_ptr<pomai::DB> db;
+        POMAI_EXPECT_OK(pomai::DB::Open(opt, &db));
+
+        pomai::MembraneSpec vec;
+        vec.name = "vec";
+        vec.dim = 4;
+        vec.shard_count = 1;
+        vec.kind = pomai::MembraneKind::kVector;
+        pomai::MembraneSpec graph;
+        graph.name = "graph";
+        graph.dim = 4;
+        graph.shard_count = 1;
+        graph.kind = pomai::MembraneKind::kGraph;
+        pomai::MembraneSpec mesh;
+        mesh.name = "mesh";
+        mesh.shard_count = 1;
+        mesh.kind = pomai::MembraneKind::kMesh;
+
+        POMAI_EXPECT_OK(db->CreateMembrane(vec)); POMAI_EXPECT_OK(db->OpenMembrane("vec"));
+        POMAI_EXPECT_OK(db->CreateMembrane(graph)); POMAI_EXPECT_OK(db->OpenMembrane("graph"));
+        POMAI_EXPECT_OK(db->CreateMembrane(mesh)); POMAI_EXPECT_OK(db->OpenMembrane("mesh"));
+
+        const std::vector<float> v = {0.9f, 0.1f, 0.0f, 0.0f};
+        POMAI_EXPECT_OK(db->Put("vec", 501, v));
+        POMAI_EXPECT_OK(db->LinkObjects("gid:face-001", 501, 9001, 7001));
+        POMAI_EXPECT_OK(db->Freeze("vec"));
+
+        pomai::MultiModalQuery q;
+        q.vector = v;
+        q.top_k = 1;
+        q.graph_hops = 0;
+        q.vector_membrane = "vec";
+        q.graph_membrane = "graph";
+
+        pomai::SearchResult out;
+        POMAI_EXPECT_OK(db->SearchMultiModal("vec", q, &out));
+        POMAI_EXPECT_EQ(out.hits.size(), 1u);
+        bool found_graph = false;
+        bool found_mesh = false;
+        for (auto id : out.hits[0].related_ids) {
+            if (id == 9001u) found_graph = true;
+            if (id == 7001u) found_mesh = true;
+        }
+        POMAI_EXPECT_TRUE(found_graph);
+        POMAI_EXPECT_TRUE(found_mesh);
+
+        POMAI_EXPECT_OK(db->Close());
+    }
+
 } // namespace

@@ -12,7 +12,8 @@
 #include "core/shard/shard_stats.h"  // RuntimeStats
 #include "pomai/metadata.h"
 #include "pomai/search.h"
-#include "pomai/iterator.h"
+#include "core/shard/iterator.h"
+#include "core/query/lexical_index.h"
 #include "pomai/status.h"
 #include "pomai/types.h"
 #include "pomai/options.h"
@@ -39,6 +40,7 @@ namespace pomai::index
 
 namespace pomai::core
 {
+    class SyncReceiver;
 
     // Single-threaded command payloads (no std::promise; handlers return directly).
     struct PutCmd
@@ -75,6 +77,10 @@ namespace pomai::core
 
     struct FreezeCmd {};
     struct CompactCmd {};
+    struct SyncCmd
+    {
+        SyncReceiver* receiver{nullptr};
+    };
 
     struct IteratorReply
     {
@@ -84,7 +90,7 @@ namespace pomai::core
 
     struct IteratorCmd {};
 
-    using Command = std::variant<PutCmd, DelCmd, BatchPutCmd, FlushCmd, SearchCmd, FreezeCmd, CompactCmd, IteratorCmd>;
+    using Command = std::variant<PutCmd, DelCmd, BatchPutCmd, FlushCmd, SearchCmd, FreezeCmd, CompactCmd, IteratorCmd, SyncCmd>;
 
     class SearchMergePolicy;
 
@@ -98,7 +104,14 @@ namespace pomai::core
                      pomai::MetricType metric,
                      std::unique_ptr<storage::Wal> wal,
                      std::unique_ptr<table::MemTable> mem,
-                     const pomai::IndexParams& index_params);
+                     const pomai::IndexParams& index_params,
+                     uint64_t sync_lsn = 0,
+                     bool endurance_aware_maintenance = false,
+                     uint64_t write_budget_bytes_per_hour = 0,
+                     float endurance_compaction_bias = 1.0f,
+                     bool quantize_inmem = false,
+                     uint32_t write_coalesce_window_us = 0,
+                     uint32_t write_coalesce_batch_size = 256);
                      
         ~VectorRuntime();
 
@@ -137,11 +150,22 @@ namespace pomai::core
                              const SearchOptions& opts,
                              std::vector<pomai::SearchHit> *out); // Overload
 
+        pomai::Status SearchLexical(const std::string& query,
+                                   std::uint32_t topk,
+                                   std::vector<LexicalHit> *out);
+
         pomai::Status SearchBatchLocal(std::span<const float> queries,
                                        const std::vector<uint32_t>& query_indices,
                                        std::uint32_t topk,
                                        const SearchOptions& opts,
                                        std::vector<std::vector<pomai::SearchHit>>* out_results);
+
+        pomai::Status PushSync(SyncReceiver* receiver);
+        void SetLastSyncedLSN(uint64_t lsn) { last_synced_lsn_ = lsn; }
+        uint64_t GetLastSyncedLSN() const { return last_synced_lsn_; }
+
+        pomai::Status BeginBatch();
+        pomai::Status EndBatch();
 
         std::uint64_t GetOpsProcessed() const { return ops_processed_; }
         std::uint64_t LastQueryCandidatesScanned() const { return last_query_candidates_scanned_; }
@@ -162,6 +186,7 @@ namespace pomai::core
         pomai::Status HandleFlush(FlushCmd &c);
         std::optional<pomai::Status> HandleFreeze(FreezeCmd &c);
         std::optional<pomai::Status> HandleCompact(CompactCmd &c);
+        pomai::Status HandleSync(SyncCmd &c);
         IteratorReply HandleIterator(IteratorCmd &c);
         SearchReply HandleSearch(SearchCmd &c);
         // GetReply HandleGet(GetCmd &c); // Deprecated
@@ -186,6 +211,9 @@ namespace pomai::core
                                           
         // Helper to load segments
         pomai::Status LoadSegments();
+
+        // Flush coalesce buffer: single AppendBatch + apply all Puts to MemTable
+        pomai::Status FlushCoalesceBuffer();
 
         // Snapshot management
         void PublishSnapshot();
@@ -229,6 +257,24 @@ namespace pomai::core
         std::unique_ptr<BackgroundJob> background_job_;
         std::optional<pomai::Status> last_background_result_;  // Set when background job completes (single-threaded)
         std::uint64_t wal_epoch_{0};
+        std::uint64_t last_synced_lsn_{0};
+        std::uint64_t bytes_written_wal_{0};
+        std::uint64_t bytes_written_segments_{0};
+        bool endurance_aware_maintenance_{false};
+        std::uint64_t write_budget_bytes_per_hour_{0};
+        float endurance_compaction_bias_{1.0f};
+        bool quantize_inmem_{false};
+
+        // WAL group-commit coalescing (Task 3)
+        struct CoalesceEntry {
+            pomai::VectorId id{};
+            std::vector<float> vec_data;
+            pomai::Metadata meta{};
+        };
+        std::vector<CoalesceEntry> coalesce_buffer_;
+        std::chrono::steady_clock::time_point coalesce_start_;
+        uint32_t coalesce_window_us_{0};
+        uint32_t coalesce_batch_size_{256};
 
         // Reusable scratch buffers for search hot path (single-threaded; avoids per-query allocations).
         mutable std::vector<pomai::SearchHit> search_candidates_scratch_;

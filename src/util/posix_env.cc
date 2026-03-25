@@ -128,9 +128,11 @@ class PosixWritableFile : public WritableFile {
       p += static_cast<size_t>(w);
       rem -= static_cast<size_t>(w);
       offset_ += static_cast<uint64_t>(w);
+      bytes_written_ += static_cast<uint64_t>(w);
     }
     return Status::Ok();
   }
+  uint64_t BytesWritten() const override { return bytes_written_; }
 
   Status Flush() override { return Status::Ok(); }
 
@@ -153,6 +155,7 @@ class PosixWritableFile : public WritableFile {
  private:
   int fd_ = -1;
   uint64_t offset_ = 0;
+  uint64_t bytes_written_ = 0;
 };
 
 // -----------------------------------------------------------------------------

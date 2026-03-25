@@ -5,6 +5,7 @@
 #include <span>
 #include <string>
 #include <vector>
+#include <array>
 
 #include "palloc_compat.h"
 #include "pomai/env.h"
@@ -30,6 +31,8 @@ namespace pomai::storage
             std::uint32_t shard_id,
             std::size_t segment_bytes,
             pomai::FsyncPolicy fsync,
+            bool encryption_enabled = false,
+            std::string encryption_key_hex = "",
             palloc_heap_t* heap = nullptr);
         ~Wal();
 
@@ -42,6 +45,9 @@ namespace pomai::storage
         pomai::Status AppendPut(pomai::VectorId id, pomai::VectorView vec, const pomai::Metadata& meta); // Added
         pomai::Status AppendDelete(pomai::VectorId id);
         
+        /** Generic KV append for Graph and other metadata. */
+        pomai::Status AppendRawKV(std::uint8_t op, pomai::Slice key, pomai::Slice value);
+        
         // Batch append: Write multiple Put records with single fsync (5-10x faster)
         pomai::Status AppendBatch(const std::vector<pomai::VectorId>& ids,
                                   const std::vector<pomai::VectorView>& vectors);
@@ -52,6 +58,13 @@ namespace pomai::storage
         // Closes current log, deletes all WAL files, and resets state.
         // Used after successful MemTable flush to segments.
         pomai::Status Reset();
+        
+        // Transaction support: group multiple records into one atomic sync unit.
+        pomai::Status BeginBatch();
+        pomai::Status EndBatch();
+
+        std::uint64_t GetLastLSN() const { return seq_; }
+        std::uint64_t GetBytesWritten() const { return bytes_written_total_; }
 
     private:
         std::string SegmentPath(std::uint64_t gen) const;
@@ -68,11 +81,14 @@ namespace pomai::storage
 
         std::uint64_t file_off_ = 0;
         std::size_t bytes_in_seg_ = 0;
+        std::uint64_t bytes_written_total_ = 0;
 
         palloc_heap_t* heap_ = nullptr;
         class Impl;
         Impl* impl_ = nullptr;
         std::vector<std::uint8_t> scratch_;
+        bool encryption_enabled_ = false;
+        std::array<std::uint8_t, 32> encryption_key_{};
     };
 
 } // namespace pomai::storage

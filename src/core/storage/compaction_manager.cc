@@ -19,7 +19,7 @@ CompactionTask CompactionManager::PickCompaction(const std::vector<LevelStats>& 
     // Sort levels by score (descending) to find the most "distressed" level
     auto sorted_stats = stats;
     std::sort(sorted_stats.begin(), sorted_stats.end(), [](const LevelStats& a, const LevelStats& b) {
-        return a.score > b.score;
+        return (a.score / std::max(0.01, a.endurance_bias)) > (b.score / std::max(0.01, b.endurance_bias));
     });
 
     for (const auto& s : sorted_stats) {

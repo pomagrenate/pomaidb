@@ -13,10 +13,16 @@
 #include "pomai/snapshot.h"
 #include "pomai/status.h"
 #include "pomai/types.h"
+#include "core/query/lexical_index.h"
+
+namespace pomai::compute::vulkan {
+class VulkanComputeContext;
+}
 
 namespace pomai::core {
 
 class VectorRuntime;
+class SyncReceiver;
 
 // Monolithic, single-threaded vector engine for one membrane.
 // One WAL, one MemTable, one VectorRuntime — no partitioning.
@@ -24,7 +30,8 @@ class VectorEngine {
 public:
     explicit VectorEngine(pomai::DBOptions opt,
                           pomai::MembraneKind kind,
-                          pomai::MetricType metric);
+                          pomai::MetricType metric,
+                          uint64_t sync_lsn = 0);
     ~VectorEngine();
 
     VectorEngine(const VectorEngine&) = delete;
@@ -71,6 +78,9 @@ public:
                   std::uint32_t topk,
                   const SearchOptions& opts,
                   pomai::SearchResult* out);
+    Status SearchLexical(const std::string& query,
+                        std::uint32_t topk,
+                        std::vector<LexicalHit>* out);
     Status SearchBatch(std::span<const float> queries,
                        std::uint32_t num_queries,
                        std::uint32_t topk,
@@ -80,6 +90,9 @@ public:
                        std::uint32_t topk,
                        const SearchOptions& opts,
                        std::vector<pomai::SearchResult>* out);
+
+    Status PushSync(SyncReceiver* receiver);
+    uint64_t GetLastSyncedLSN() const;
 
     /** Current active memtable bytes used for this membrane (for backpressure). */
     std::size_t MemTableBytesUsed() const noexcept;
@@ -98,8 +111,12 @@ private:
     pomai::MembraneKind kind_;
     pomai::MetricType metric_;
     bool opened_{false};
+    uint64_t sync_lsn_{0};
 
     std::unique_ptr<VectorRuntime> runtime_;
+
+    /// Optional Vulkan compute/memory context when `vulkan_enable_memory_bridge` is set.
+    std::unique_ptr<pomai::compute::vulkan::VulkanComputeContext> vulkan_ctx_;
 };
 
 } // namespace pomai::core

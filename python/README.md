@@ -31,3 +31,19 @@ pomaidb.close(db)
 ```
 
 See [docs/PYTHON_API.md](../docs/PYTHON_API.md) for full API and ctypes details.
+
+## Zero-copy helper
+
+`pomaidb` now ships a built-in zero-copy helper module (merged from legacy `bindings/python`):
+
+```python
+import pomaidb
+
+rows = pomaidb.search_zero_copy(db, [0.1] * 128, topk=5)
+for row in rows:
+    print(row["id"], row["score"], row["session_id"])
+    if row["dequant_f32"] is not None:
+        print(row["dequant_f32"][:4])
+    if row["session_id"]:
+        pomaidb.release_zero_copy_session(row["session_id"])
+```

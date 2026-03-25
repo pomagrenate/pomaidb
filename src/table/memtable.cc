@@ -58,8 +58,10 @@ std::size_t MemTable::BytesUsed() const noexcept {
 // ------------------------------------------------
 // MemTable constructor
 // ------------------------------------------------
-MemTable::MemTable(std::uint32_t dim, std::size_t arena_block_bytes, palloc_heap_t* heap)
-    : dim_(dim), arena_(arena_block_bytes, heap),
+MemTable::MemTable(std::uint32_t dim, std::size_t arena_block_bytes,
+                   palloc_heap_t* heap, bool quantize_inmem)
+    : dim_(dim), quantize_inmem_(quantize_inmem),
+      arena_(arena_block_bytes, heap),
       map_(/* initial_cap = */ 128)
 {}
 
@@ -78,16 +80,59 @@ pomai::Status MemTable::Put(pomai::VectorId id, pomai::VectorView vec,
     if (vec.dim != dim_)
         return pomai::Status::InvalidArgument("dim mismatch");
 
-    float* dst = static_cast<float*>(arena_.Allocate(vec.size_bytes(), alignof(float)));
-    std::memcpy(dst, vec.data, vec.size_bytes());
+    float* dst = nullptr;
+    if (quantize_inmem_ && dim_ > 0) {
+        // Layout: [float min][float inv_scale][uint8_t codes[dim_]]
+        // Total: 8 + dim_ bytes, aligned to float
+        const std::size_t alloc_bytes = sizeof(float) * 2 + dim_;
+        dst = static_cast<float*>(arena_.Allocate(alloc_bytes, alignof(float)));
+        // Compute per-vector min and inv_scale
+        float vmin = vec.data[0], vmax = vec.data[0];
+        for (uint32_t i = 1; i < dim_; ++i) {
+            if (vec.data[i] < vmin) vmin = vec.data[i];
+            if (vec.data[i] > vmax) vmax = vec.data[i];
+        }
+        float range = vmax - vmin;
+        float inv_scale = (range > 0.0f) ? (255.0f / range) : 0.0f;
+        dst[0] = vmin;
+        dst[1] = inv_scale;
+        uint8_t* codes = reinterpret_cast<uint8_t*>(dst + 2);
+        for (uint32_t i = 0; i < dim_; ++i) {
+            float scaled = (range > 0.0f) ? ((vec.data[i] - vmin) / range * 255.0f) : 0.0f;
+            codes[i] = static_cast<uint8_t>(scaled < 0.0f ? 0.0f : (scaled > 255.0f ? 255.0f : scaled));
+        }
+    } else {
+        dst = static_cast<float*>(arena_.Allocate(vec.size_bytes(), alignof(float)));
+        std::memcpy(dst, vec.data, vec.size_bytes());
+    }
 
-    // Writer holds seqlock during map mutation.
     seqlock_.BeginWrite();
     map_.Put(id, dst);
     seqlock_.EndWrite();
 
-    if (!meta.tenant.empty()) {
+    // Temporal Index Management
+    auto it_old = metadata_.find(id);
+    if (it_old != metadata_.end()) {
+        uint64_t old_ts = it_old->second.timestamp;
+        if (old_ts > 0) {
+            auto range = temporal_index_.equal_range(old_ts);
+            for (auto it = range.first; it != range.second; ++it) {
+                if (it->second == id) {
+                    temporal_index_.erase(it);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!meta.tenant.empty() || meta.src_vid != 0 || meta.timestamp != 0 || !meta.text.empty()) {
         metadata_[id] = meta;
+        if (meta.timestamp > 0) {
+            temporal_index_.insert({meta.timestamp, id});
+        }
+        if (!meta.text.empty()) {
+            lexical_index_.Add(id, meta.text);
+        }
     } else {
         metadata_.erase(id);
     }
@@ -133,6 +178,21 @@ pomai::Status MemTable::Delete(pomai::VectorId id) {
     map_.Put(id, nullptr); // nullptr = tombstone
     seqlock_.EndWrite();
 
+    auto it = metadata_.find(id);
+    if (it != metadata_.end()) {
+        uint64_t ts = it->second.timestamp;
+        if (ts > 0) {
+            auto range = temporal_index_.equal_range(ts);
+            for (auto search_it = range.first; search_it != range.second; ++search_it) {
+                if (search_it->second == id) {
+                    temporal_index_.erase(search_it);
+                    break;
+                }
+            }
+        }
+    }
+
+    lexical_index_.Remove(id);
     metadata_.erase(id);
     return pomai::Status::Ok();
 }
@@ -182,6 +242,8 @@ void MemTable::Clear() {
     seqlock_.EndWrite();
 
     metadata_.clear();
+    temporal_index_.clear();
+    lexical_index_.Clear();
     arena_.Clear();
 }
 
@@ -200,16 +262,31 @@ MemTable::Cursor MemTable::CreateCursor() const {
         });
     } while (!seqlock_.EndRead(seq));
 
-    return Cursor(this, std::move(snap));
+    return Cursor(this, std::move(snap), quantize_inmem_);
 }
 
 bool MemTable::Cursor::Next(CursorEntry* out) {
     if (!out || idx_ >= snap_.size()) return false;
 
-    const Entry& e         = snap_[idx_++];
+    const Entry& e          = snap_[idx_++];
     const bool   is_deleted = (e.ptr == nullptr);
     std::span<const float> vec;
-    if (!is_deleted) vec = {e.ptr, mem_->dim_};
+
+    if (!is_deleted) {
+        if (quantized_) {
+            // Layout: [float min][float inv_scale][uint8_t codes[dim_]]
+            float vmin      = e.ptr[0];
+            float inv_scale = e.ptr[1];
+            const uint8_t* codes = reinterpret_cast<const uint8_t*>(e.ptr + 2);
+            decode_buf_.resize(mem_->dim_);
+            const float scale = inv_scale > 0.0f ? (1.0f / inv_scale) : 0.0f;
+            for (uint32_t i = 0; i < mem_->dim_; ++i)
+                decode_buf_[i] = vmin + codes[i] * scale;
+            vec = {decode_buf_.data(), mem_->dim_};
+        } else {
+            vec = {e.ptr, mem_->dim_};
+        }
+    }
 
     const pomai::Metadata* meta_ptr = nullptr;
     if (!is_deleted) {

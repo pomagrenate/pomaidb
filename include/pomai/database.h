@@ -18,6 +18,13 @@
 #include "pomai/snapshot.h"
 #include "pomai/status.h"
 #include "pomai/types.h"
+#include "pomai/hooks.h"
+#include "pomai/graph.h"
+#include "pomai/options.h"
+
+namespace pomai::core {
+    class SyncReceiver;
+}
 
 namespace pomai {
 
@@ -44,6 +51,25 @@ struct EmbeddedOptions {
     bool auto_freeze_on_pressure = true;
     /** Memtable flush threshold in MiB; when exceeded, auto-freeze runs. 0 = use pressure percent of max_memtable_mb. */
     std::uint32_t memtable_flush_threshold_mb = 64u;
+
+    /** If true, automatically link vectors to src_vid via AutoEdgeHook. */
+    bool enable_auto_edge = false;
+
+    // Edge security: encryption-at-rest.
+    bool enable_encryption_at_rest = false;
+    std::string encryption_key_hex;
+
+    // Low-RAM controls.
+    uint32_t max_lifecycle_entries = 20000;
+    uint32_t max_text_docs = 50000;
+    uint32_t max_query_frontier = 2048;
+    uint32_t max_kv_entries = 20000;
+    uint32_t max_sketch_entries = 20000;
+    uint32_t max_blob_bytes_mb = 64;
+    uint32_t max_spatial_points = 20000;
+    uint32_t max_mesh_objects = 4000;
+    uint32_t max_sparse_entries = 20000;
+    uint32_t max_bitset_bytes_mb = 64;
 };
 
 /**
@@ -134,17 +160,53 @@ public:
     Status Search(std::span<const float> query, std::uint32_t topk,
                   const SearchOptions& opts,
                   SearchResult* out);
-
     /** Batch search (multiple queries). */
     Status SearchBatch(std::span<const float> queries, std::uint32_t num_queries,
                        std::uint32_t topk, const SearchOptions& opts,
                        std::vector<SearchResult>* out);
+    
+    /** 
+     * @brief GraphRAG Search: Vector hit + K-hop Graph expansion.
+     * 1. Performs Vector Search to find start nodes.
+     * 2. Expands neighborhood by k-hops.
+     * 3. Returns combined context (hits + related entities).
+     */
+    Status SearchGraphRAG(std::span<const float> query, std::uint32_t topk,
+                          const SearchOptions& opts, uint32_t k_hops,
+                          std::vector<SearchResult>* out);
+
+    /**
+     * @brief Unified Multi-modal Search: Vector search + Graph context.
+     * Uses QueryPlanner to orchestrate the retrieval.
+     */
+    Status SearchMultiModal(const MultiModalQuery& query, SearchResult* out);
+    Status SearchMultiModal(std::string_view membrane, const MultiModalQuery& query, SearchResult* out);
+
+    Status MaybeApplyBackpressure();
+
+    /** Graph Operations */
+    Status AddVertex(VertexId id, TagId tag, const Metadata& meta);
+    Status AddEdge(VertexId src, VertexId dst, EdgeType type, uint32_t rank, const Metadata& meta);
+    Status GetNeighbors(VertexId src, std::vector<Neighbor>* out);
+    Status GetNeighbors(VertexId src, EdgeType type, std::vector<Neighbor>* out);
 
     /** Snapshot (point-in-time view). */
     Status GetSnapshot(std::shared_ptr<Snapshot>* out);
     /** Iterator over snapshot; snap must be from GetSnapshot(). */
     Status NewIterator(const std::shared_ptr<Snapshot>& snap,
                       std::unique_ptr<SnapshotIterator>* out);
+
+    /**
+     * @brief Register a post-ingestion hook.
+     * Hooks are called after a successful Put or AddVector.
+     */
+    void AddPostPutHook(std::shared_ptr<PostPutHook> hook);
+
+    /** 
+     * @brief Register a receiver for WAL-based edge-to-cloud synchronization.
+     * The database will periodically push new entries to this receiver.
+     */
+    void RegisterSyncReceiver(std::shared_ptr<core::SyncReceiver> receiver);
 
     [[nodiscard]] bool IsOpen() const { return opened_; }
 
@@ -153,12 +215,16 @@ private:
     bool opened_ = false;
 
     /** When memtable exceeds threshold: return ResourceExhausted or Freeze() if auto. Single-threaded. */
-    Status MaybeApplyBackpressure();
+    // Threshold check
 
     // Memtable backpressure (set in Open from options or env). Single-threaded: no lock.
     std::size_t max_memtable_bytes_ = 0;
     std::size_t pressure_threshold_bytes_ = 0;
     bool auto_freeze_on_pressure_ = false;
+
+    // Internal scheduler and task management
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace pomai

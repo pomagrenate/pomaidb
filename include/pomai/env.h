@@ -55,6 +55,7 @@ class WritableFile {
  public:
   virtual ~WritableFile() = default;
   virtual Status Append(Slice data) = 0;
+  virtual uint64_t BytesWritten() const = 0;
   virtual Status Flush() = 0;
   virtual Status Sync() = 0;
   virtual Status Close() = 0;
