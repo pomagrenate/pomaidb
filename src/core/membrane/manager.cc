@@ -120,6 +120,12 @@ namespace pomai::core
                 state.sparse_engine = std::make_unique<SparseEngine>(base_.max_sparse_entries);
             } else if (loaded_spec.kind == pomai::MembraneKind::kBitset) {
                 state.bitset_engine = std::make_unique<BitsetEngine>(static_cast<std::size_t>(base_.max_bitset_bytes_mb) * 1024u * 1024u);
+            } else if (loaded_spec.kind == pomai::MembraneKind::kAudio) {
+                state.audio_engine = std::make_unique<AudioEngine>(opt.path, base_.max_audio_frames);
+            } else if (loaded_spec.kind == pomai::MembraneKind::kBloom) {
+                state.bloom_engine = std::make_unique<BloomEngine>(base_.max_bloom_entries);
+            } else if (loaded_spec.kind == pomai::MembraneKind::kDocument) {
+                state.document_engine = std::make_unique<DocumentEngine>(opt.path, base_.max_document_entries);
             } else {
                 state.text_engine = std::make_unique<TextMembrane>(base_.max_text_docs);
             }
@@ -191,6 +197,12 @@ namespace pomai::core
                     state.sparse_engine = std::make_unique<SparseEngine>(base_.max_sparse_entries);
                 } else if (mspec.kind == pomai::MembraneKind::kBitset) {
                     state.bitset_engine = std::make_unique<BitsetEngine>(static_cast<std::size_t>(base_.max_bitset_bytes_mb) * 1024u * 1024u);
+                } else if (mspec.kind == pomai::MembraneKind::kAudio) {
+                    state.audio_engine = std::make_unique<AudioEngine>(opt.path, base_.max_audio_frames);
+                } else if (mspec.kind == pomai::MembraneKind::kBloom) {
+                    state.bloom_engine = std::make_unique<BloomEngine>(base_.max_bloom_entries);
+                } else if (mspec.kind == pomai::MembraneKind::kDocument) {
+                    state.document_engine = std::make_unique<DocumentEngine>(opt.path, base_.max_document_entries);
                 } else {
                     state.text_engine = std::make_unique<TextMembrane>(base_.max_text_docs);
                 }
@@ -249,6 +261,15 @@ namespace pomai::core
             }
             if (kv.second.mesh_engine) {
                 (void)kv.second.mesh_engine->Close();
+            }
+            if (kv.second.audio_engine) {
+                (void)kv.second.audio_engine->Close();
+            }
+            if (kv.second.bloom_engine) {
+                (void)kv.second.bloom_engine->Close();
+            }
+            if (kv.second.document_engine) {
+                (void)kv.second.document_engine->Close();
             }
         }
         membranes_.clear();
@@ -334,6 +355,12 @@ namespace pomai::core
             state.sparse_engine = std::make_unique<SparseEngine>(base_.max_sparse_entries);
         } else if (spec.kind == pomai::MembraneKind::kBitset) {
             state.bitset_engine = std::make_unique<BitsetEngine>(static_cast<std::size_t>(base_.max_bitset_bytes_mb) * 1024u * 1024u);
+        } else if (spec.kind == pomai::MembraneKind::kAudio) {
+            state.audio_engine = std::make_unique<AudioEngine>(opt.path, base_.max_audio_frames);
+        } else if (spec.kind == pomai::MembraneKind::kBloom) {
+            state.bloom_engine = std::make_unique<BloomEngine>(base_.max_bloom_entries);
+        } else if (spec.kind == pomai::MembraneKind::kDocument) {
+            state.document_engine = std::make_unique<DocumentEngine>(opt.path, base_.max_document_entries);
         } else {
             state.text_engine = std::make_unique<TextMembrane>(base_.max_text_docs);
         }
@@ -1101,6 +1128,100 @@ namespace pomai::core
         for (auto& kv : membranes_) {
             if (kv.second.mesh_engine) (void)kv.second.mesh_engine->ProcessLodJobs(jobs);
         }
+    }
+
+    // ── Audio membrane ────────────────────────────────────────────────────────
+
+    Status MembraneManager::AudioPut(std::string_view membrane, uint64_t clip_id,
+                                     uint64_t timestamp_ms, std::span<const float> embedding) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->audio_engine) return Status::InvalidArgument("AUDIO membrane required");
+        return state->audio_engine->Put(clip_id, timestamp_ms, embedding);
+    }
+
+    Status MembraneManager::AudioDelete(std::string_view membrane, uint64_t clip_id) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->audio_engine) return Status::InvalidArgument("AUDIO membrane required");
+        return state->audio_engine->Delete(clip_id);
+    }
+
+    Status MembraneManager::AudioSearch(std::string_view membrane, std::span<const float> query,
+                                        uint64_t time_start_ms, uint64_t time_end_ms,
+                                        uint32_t topk, std::vector<AudioHit>* out) {
+        if (!out) return Status::InvalidArgument("out is null");
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->audio_engine) return Status::InvalidArgument("AUDIO membrane required");
+        return state->audio_engine->Search(query, time_start_ms, time_end_ms, topk, out);
+    }
+
+    // ── Bloom filter membrane ─────────────────────────────────────────────────
+
+    Status MembraneManager::BloomAdd(std::string_view membrane, uint64_t filter_id,
+                                     std::string_view key) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->bloom_engine) return Status::InvalidArgument("BLOOM membrane required");
+        return state->bloom_engine->Add(filter_id, key);
+    }
+
+    Status MembraneManager::BloomMightContain(std::string_view membrane, uint64_t filter_id,
+                                              std::string_view key, bool* out) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->bloom_engine) return Status::InvalidArgument("BLOOM membrane required");
+        return state->bloom_engine->MightContain(filter_id, key, out);
+    }
+
+    Status MembraneManager::BloomDrop(std::string_view membrane, uint64_t filter_id) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->bloom_engine) return Status::InvalidArgument("BLOOM membrane required");
+        return state->bloom_engine->Drop(filter_id);
+    }
+
+    Status MembraneManager::BloomEstimateFPR(std::string_view membrane, uint64_t filter_id,
+                                             double* out) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->bloom_engine) return Status::InvalidArgument("BLOOM membrane required");
+        return state->bloom_engine->EstimateFPR(filter_id, out);
+    }
+
+    // ── Document membrane ─────────────────────────────────────────────────────
+
+    Status MembraneManager::DocumentPut(std::string_view membrane, uint64_t doc_id,
+                                        std::string_view json_content) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->document_engine) return Status::InvalidArgument("DOCUMENT membrane required");
+        return state->document_engine->Put(doc_id, json_content);
+    }
+
+    Status MembraneManager::DocumentGet(std::string_view membrane, uint64_t doc_id,
+                                        std::string* out) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->document_engine) return Status::InvalidArgument("DOCUMENT membrane required");
+        return state->document_engine->Get(doc_id, out);
+    }
+
+    Status MembraneManager::DocumentDelete(std::string_view membrane, uint64_t doc_id) {
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->document_engine) return Status::InvalidArgument("DOCUMENT membrane required");
+        return state->document_engine->Delete(doc_id);
+    }
+
+    Status MembraneManager::DocumentSearch(std::string_view membrane, const std::string& query,
+                                           uint32_t topk, std::vector<DocumentHit>* out) {
+        if (!out) return Status::InvalidArgument("out is null");
+        auto* state = GetMembraneOrNull(membrane);
+        if (!state) return Status::NotFound("membrane not found");
+        if (!state->document_engine) return Status::InvalidArgument("DOCUMENT membrane required");
+        return state->document_engine->Search(query, topk, out);
     }
 
 } // namespace pomai::core

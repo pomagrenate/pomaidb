@@ -22,6 +22,9 @@
 #include "core/concurrency/scheduler.h"
 #include "core/mesh/mesh_engine.h"
 #include "core/linker/object_linker.h"
+#include "core/audio/audio_engine.h"
+#include "core/bloom/bloom_engine.h"
+#include "core/document/document_engine.h"
 
 namespace pomai {
     class GraphMembrane;
@@ -141,6 +144,27 @@ namespace pomai::core
         Status BitsetXor(std::string_view membrane, uint64_t a, uint64_t b, std::vector<uint8_t>* out);
         Status BitsetHamming(std::string_view membrane, uint64_t a, uint64_t b, double* out);
         Status BitsetJaccard(std::string_view membrane, uint64_t a, uint64_t b, double* out);
+
+        // Audio membrane APIs
+        Status AudioPut(std::string_view membrane, uint64_t clip_id, uint64_t timestamp_ms,
+                        std::span<const float> embedding);
+        Status AudioDelete(std::string_view membrane, uint64_t clip_id);
+        Status AudioSearch(std::string_view membrane, std::span<const float> query,
+                           uint64_t time_start_ms, uint64_t time_end_ms,
+                           uint32_t topk, std::vector<AudioHit>* out);
+
+        // Bloom filter membrane APIs
+        Status BloomAdd(std::string_view membrane, uint64_t filter_id, std::string_view key);
+        Status BloomMightContain(std::string_view membrane, uint64_t filter_id, std::string_view key, bool* out);
+        Status BloomDrop(std::string_view membrane, uint64_t filter_id);
+        Status BloomEstimateFPR(std::string_view membrane, uint64_t filter_id, double* out);
+
+        // Document membrane APIs
+        Status DocumentPut(std::string_view membrane, uint64_t doc_id, std::string_view json_content);
+        Status DocumentGet(std::string_view membrane, uint64_t doc_id, std::string* out);
+        Status DocumentDelete(std::string_view membrane, uint64_t doc_id);
+        Status DocumentSearch(std::string_view membrane, const std::string& query,
+                              uint32_t topk, std::vector<DocumentHit>* out);
         
         // Graph Operations
         Status AddVertex(std::string_view membrane, VertexId id, TagId tag, const Metadata& meta);
@@ -181,6 +205,9 @@ namespace pomai::core
             std::unique_ptr<MeshEngine> mesh_engine;
             std::unique_ptr<SparseEngine> sparse_engine;
             std::unique_ptr<BitsetEngine> bitset_engine;
+            std::unique_ptr<AudioEngine> audio_engine;
+            std::unique_ptr<BloomEngine> bloom_engine;
+            std::unique_ptr<DocumentEngine> document_engine;
             SemanticLifecycle lifecycle;
             std::vector<std::shared_ptr<PostPutHook>> hooks;
         };

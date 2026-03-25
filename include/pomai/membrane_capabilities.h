@@ -50,11 +50,14 @@ constexpr const char* MembraneKindApiName(MembraneKind kind) noexcept {
     case MembraneKind::kSparse: return "sparse";
     case MembraneKind::kBitset: return "bitset";
     case MembraneKind::kMeta: return "meta";
+    case MembraneKind::kAudio: return "audio";
+    case MembraneKind::kBloom: return "bloom";
+    case MembraneKind::kDocument: return "document";
     }
     return "unknown";
 }
 
-constexpr bool IsValidMembraneKindValue(uint8_t v) noexcept { return v <= static_cast<uint8_t>(MembraneKind::kMeta); }
+constexpr bool IsValidMembraneKindValue(uint8_t v) noexcept { return v <= static_cast<uint8_t>(MembraneKind::kDocument); }
 
 constexpr MembraneKindCapabilities GetMembraneKindCapabilities(MembraneKind kind) noexcept {
     switch (kind) {
@@ -84,6 +87,12 @@ constexpr MembraneKindCapabilities GetMembraneKindCapabilities(MembraneKind kind
         return {MembraneKind::kBitset, true, true, true, false, MembraneStability::kExperimental};
     case MembraneKind::kMeta:
         return {MembraneKind::kMeta, true, true, true, false, MembraneStability::kStable};
+    case MembraneKind::kAudio:
+        return {MembraneKind::kAudio, true, true, true, false, MembraneStability::kExperimental};
+    case MembraneKind::kBloom:
+        return {MembraneKind::kBloom, true, true, true, false, MembraneStability::kExperimental};
+    case MembraneKind::kDocument:
+        return {MembraneKind::kDocument, true, true, true, false, MembraneStability::kExperimental};
     default:
         return {};
     }

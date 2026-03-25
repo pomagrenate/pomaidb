@@ -10,6 +10,7 @@
 
 #include "core/distance.h"
 #include "core/index/ivf_coarse.h"
+#include "core/quantization/pomai_pq.h"
 #include "storage/wal/wal.h"
 #include "table/memtable.h"
 #include "table/segment.h" 
@@ -237,7 +238,10 @@ namespace pomai::core
                                std::uint64_t sync_lsn,
                                bool endurance_aware_maintenance,
                                std::uint64_t write_budget_bytes_per_hour,
-                               float endurance_compaction_bias)
+                               float endurance_compaction_bias,
+                               bool quantize_inmem,
+                               uint32_t write_coalesce_window_us,
+                               uint32_t write_coalesce_batch_size)
         : runtime_id_(runtime_id),
           data_dir_(std::move(data_dir)),
           dim_(dim),
@@ -249,7 +253,10 @@ namespace pomai::core
           last_synced_lsn_(sync_lsn),
           endurance_aware_maintenance_(endurance_aware_maintenance),
           write_budget_bytes_per_hour_(write_budget_bytes_per_hour),
-          endurance_compaction_bias_(endurance_compaction_bias)
+          endurance_compaction_bias_(endurance_compaction_bias),
+          quantize_inmem_(quantize_inmem),
+          coalesce_window_us_(write_coalesce_window_us),
+          coalesce_batch_size_(write_coalesce_batch_size)
     {
         pomai::index::IvfCoarse::Options opt;
         opt.nlist = index_params_.nlist;
@@ -393,7 +400,7 @@ namespace pomai::core
             }
         }
 
-        mem_ = std::make_shared<table::MemTable>(dim_, 1u << 20);
+        mem_ = std::make_shared<table::MemTable>(dim_, 1u << 20, nullptr, quantize_inmem_);
         PublishSnapshot();
         return pomai::Status::Ok();
     }
@@ -427,6 +434,39 @@ namespace pomai::core
     }
 // ... (BatchPut skipped) ...
 
+    pomai::Status VectorRuntime::FlushCoalesceBuffer()
+    {
+        if (coalesce_buffer_.empty()) return pomai::Status::Ok();
+
+        std::vector<pomai::VectorId> ids;
+        std::vector<pomai::VectorView> vecs;
+        ids.reserve(coalesce_buffer_.size());
+        vecs.reserve(coalesce_buffer_.size());
+        for (const auto& entry : coalesce_buffer_) {
+            ids.push_back(entry.id);
+            vecs.push_back(pomai::VectorView{entry.vec_data.data(), dim_});
+        }
+
+        auto st = wal_->AppendBatch(ids, vecs);
+        if (!st.ok()) { coalesce_buffer_.clear(); return st; }
+        ++wal_epoch_;
+        bytes_written_wal_ = wal_->GetBytesWritten();
+
+        std::shared_ptr<table::MemTable> m = mem_;
+        for (auto& entry : coalesce_buffer_) {
+            pomai::Metadata meta_copy = entry.meta;
+            meta_copy.lsn = wal_->GetLastLSN();
+            pomai::VectorView vv{entry.vec_data.data(), dim_};
+            (void)m->Put(entry.id, vv, meta_copy);
+        }
+
+        const bool needs_rotate = (m->GetCount() >= kMemtableSoftLimit);
+        coalesce_buffer_.clear();
+
+        if (needs_rotate) (void)RotateMemTable();
+        return pomai::Status::Ok();
+    }
+
     pomai::Status VectorRuntime::HandlePut(PutCmd &c)
     {
         if (kind_ != pomai::MembraneKind::kVector) {
@@ -438,6 +478,28 @@ namespace pomai::core
         std::shared_ptr<table::MemTable> m = mem_;
         if (frozen_mem_.size() >= kMaxFrozenMemtables && m->GetCount() >= kMemtableSoftLimit) {
             return pomai::Status::ResourceExhausted("too many frozen memtables; backpressure");
+        }
+
+        // WAL group-commit coalescing path
+        if (coalesce_window_us_ > 0) {
+            auto now = std::chrono::steady_clock::now();
+            if (!coalesce_buffer_.empty()) {
+                auto elapsed_us = static_cast<uint32_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        now - coalesce_start_).count());
+                if (elapsed_us >= coalesce_window_us_ ||
+                    coalesce_buffer_.size() >= coalesce_batch_size_) {
+                    auto st = FlushCoalesceBuffer();
+                    if (!st.ok()) return st;
+                }
+            }
+            if (coalesce_buffer_.empty()) coalesce_start_ = now;
+            CoalesceEntry entry;
+            entry.id = c.id;
+            entry.vec_data.assign(c.vec.data, c.vec.data + dim_);
+            entry.meta = c.meta;
+            coalesce_buffer_.push_back(std::move(entry));
+            return pomai::Status::Ok();
         }
 
         // 1. Write WAL
@@ -680,10 +742,19 @@ namespace pomai::core
         return st;
     }
     pomai::Status VectorRuntime::BeginBatch() {
+        // Flush any pending coalesce entries before starting an explicit batch
+        if (!coalesce_buffer_.empty()) {
+            auto st = FlushCoalesceBuffer();
+            if (!st.ok()) return st;
+        }
         return wal_ ? wal_->BeginBatch() : pomai::Status::Ok();
     }
 
     pomai::Status VectorRuntime::EndBatch() {
+        if (!coalesce_buffer_.empty()) {
+            auto st = FlushCoalesceBuffer();
+            if (!st.ok()) return st;
+        }
         return wal_ ? wal_->EndBatch() : pomai::Status::Ok();
     }
 
@@ -1560,7 +1631,40 @@ namespace pomai::core
                         return local.Drain();
                     }
                 }
-                if (seg->GetQuantType() != pomai::QuantizationType::kNone) {
+                // PQ-ADC fast path: precompute one distance table per query, then O(M) per candidate.
+                if (seg->GetQuantType() == pomai::QuantizationType::kPq8) {
+                    auto* pq = seg->GetPqQuantizer();
+                    if (pq) {
+                        const bool is_ip = (this->metric_ == pomai::MetricType::kInnerProduct ||
+                                            this->metric_ == pomai::MetricType::kCosine);
+                        thread_local std::vector<float> adc_table_buf;
+                        adc_table_buf.resize(pq->M() * pq->ksub());
+                        if (is_ip) pq->ComputeIPTable(query.data(), adc_table_buf.data());
+                        else       pq->ComputeL2Table(query.data(), adc_table_buf.data());
+
+                        thread_local std::vector<uint32_t> cand_reuse;
+                        cand_reuse.clear();
+                        if (seg->Search(query, effective_nprobe, &cand_reuse).ok()) {
+                            used_candidates = true;
+                            const uint8_t* base = seg->GetBaseAddr() + seg->GetEntriesStartOffset();
+                            const size_t   esz  = seg->GetEntrySize();
+                            for (uint32_t idx : cand_reuse) {
+                                local_scanned++;
+                                const uint8_t* p = base + idx * esz;
+                                if (!(*(p + 8) & 0x01)) { // not tombstone
+                                    float raw = pq->ScoreFromTable(adc_table_buf.data(), p + 12);
+                                    float score = is_ip ? raw : -raw;
+                                    local.Push(*reinterpret_cast<const uint64_t*>(p), score);
+                                }
+                            }
+                            total_scanned += local_scanned;
+                            return local.Drain();
+                        }
+                    }
+                }
+
+                if (seg->GetQuantType() != pomai::QuantizationType::kNone &&
+                    seg->GetQuantType() != pomai::QuantizationType::kPq8) {
                     const auto quant_type = seg->GetQuantType();
                     float q_min = 0.0f;
                     float q_inv_scale = 0.0f;
@@ -1577,8 +1681,8 @@ namespace pomai::core
                         for (uint32_t idx : cand_reuse) {
                             local_scanned++;
                             const uint8_t* p = seg->GetBaseAddr() + seg->GetEntriesStartOffset() + idx * seg->GetEntrySize();
-                            const uint8_t* codes_ptr = p + 12; // Assuming ID (8 bytes) + is_deleted (1 byte) + metadata_len (3 bytes) = 12 bytes offset
-                            if (!(*(p+8) & 0x01)) { // not tombstone, assuming is_deleted is at offset 8
+                            const uint8_t* codes_ptr = p + 12;
+                            if (!(*(p+8) & 0x01)) {
                                 float score = 0.0f;
                                 const bool is_ip = (this->metric_ == pomai::MetricType::kInnerProduct || this->metric_ == pomai::MetricType::kCosine);
                                 if (quant_type == pomai::QuantizationType::kSq8) {

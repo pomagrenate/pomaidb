@@ -34,6 +34,9 @@ namespace pomai
         kSparse = 10,
         kBitset = 11,
         kMeta = 12,
+        kAudio = 13,      // Frame-aligned audio embedding storage (keyword spotting, speaker ID)
+        kBloom = 14,      // Persistent Bloom filter for approximate set membership
+        kDocument = 15,   // JSON document store with BM25 full-text search
     };
 
     enum class MeshDetailPreference : uint8_t
@@ -54,6 +57,7 @@ namespace pomai
         kSq8 = 1,
         kFp16 = 2,
         kBit = 3, // Binary Quantization (1-bit sign)
+        kPq8 = 4, // Product Quantization (PQ8): M sub-quantizers × 256 centroids, M bytes per vector
     };
 
     /** When true, vectors are stored as SQ8 (int8) with per-vector min/max for ~4x memory reduction. */
@@ -86,6 +90,11 @@ namespace pomai
         // Default: 0 = always use HNSW when available (rely on ef_search for recall).
         uint32_t adaptive_threshold = 5000;
         QuantizationType quant_type = QuantizationType::kNone;
+        // PQ8 sub-quantizer count. Must divide dim. Used only when quant_type == kPq8.
+        uint32_t pq_m = 8;
+        // If true, HNSW index references the segment mmap for distances instead of
+        // duplicating the full vector pool — saves n×dim×4 bytes of RAM per segment.
+        bool hnsw_no_vector_pool = false;
 
         /** Default index params (balanced quality/memory). */
         static IndexParams Default() {
@@ -107,6 +116,8 @@ namespace pomai
             p.hnsw_ef_search = 32;
             p.adaptive_threshold = 2000;
             p.quant_type = QuantizationType::kNone;
+            p.pq_m = 4;
+            p.hnsw_no_vector_pool = true;
             return p;
         }
     };
@@ -164,6 +175,15 @@ namespace pomai
         uint32_t mesh_lod_max_queue = 1024;
         uint32_t max_sparse_entries = 20000;
         uint32_t max_bitset_bytes_mb = 64;
+        uint32_t max_audio_frames = 20000;     // Max audio frames per AudioEngine instance
+        uint32_t max_bloom_entries = 20000;    // Max keys per Bloom filter set
+        uint32_t max_document_entries = 50000; // Max documents per DocumentEngine
+
+        // WAL write coalescing: buffer Put calls and flush as a single AppendBatch.
+        // 0 = disabled. Recommended for kThroughput profile (500us window).
+        uint32_t write_coalesce_window_us = 0;
+        // Flush the coalesce buffer after this many pending writes regardless of window.
+        uint32_t write_coalesce_batch_size = 256;
 
         // Hardware health / wear-leveling awareness.
         bool endurance_aware_maintenance = false;
@@ -208,6 +228,9 @@ namespace pomai
                     max_mesh_objects = 1000u;
                     max_sparse_entries = 5000u;
                     max_bitset_bytes_mb = 16u;
+                    max_audio_frames = 5000u;
+                    max_bloom_entries = 5000u;
+                    max_document_entries = 10000u;
                     gateway_rate_limit_per_sec = 500u;
                     gateway_idempotency_ttl_sec = 120u;
                     break;
@@ -224,6 +247,9 @@ namespace pomai
                     max_mesh_objects = 4000u;
                     max_sparse_entries = 20000u;
                     max_bitset_bytes_mb = 64u;
+                    max_audio_frames = 20000u;
+                    max_bloom_entries = 20000u;
+                    max_document_entries = 50000u;
                     gateway_rate_limit_per_sec = 2000u;
                     gateway_idempotency_ttl_sec = 300u;
                     break;
@@ -240,8 +266,13 @@ namespace pomai
                     max_mesh_objects = 8000u;
                     max_sparse_entries = 50000u;
                     max_bitset_bytes_mb = 128u;
+                    max_audio_frames = 50000u;
+                    max_bloom_entries = 50000u;
+                    max_document_entries = 100000u;
                     gateway_rate_limit_per_sec = 5000u;
                     gateway_idempotency_ttl_sec = 600u;
+                    write_coalesce_window_us = 500u;
+                    write_coalesce_batch_size = 256u;
                     break;
                 case EdgeProfile::kUserDefined:
                 default:

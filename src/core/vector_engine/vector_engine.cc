@@ -72,7 +72,7 @@ Status VectorEngine::OpenLocked() {
     if (!st.ok()) return st;
 
     auto mem = std::make_unique<table::MemTable>(
-        opt_.dim, kArenaBlockBytes);
+        opt_.dim, kArenaBlockBytes, nullptr, opt_.enable_quantization);
     st = wal->ReplayInto(*mem);
     if (!st.ok()) return st;
 
@@ -93,7 +93,10 @@ Status VectorEngine::OpenLocked() {
         sync_lsn_,
         opt_.endurance_aware_maintenance,
         opt_.write_budget_bytes_per_hour,
-        opt_.endurance_compaction_bias); // Added
+        opt_.endurance_compaction_bias,
+        opt_.enable_quantization,
+        opt_.write_coalesce_window_us,
+        opt_.write_coalesce_batch_size);
 
     runtime_ = std::move(rt);
     st = runtime_->Start();

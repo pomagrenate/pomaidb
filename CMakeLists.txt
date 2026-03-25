@@ -95,6 +95,9 @@ add_library(pomai STATIC
   src/core/connectivity/edge_gateway.cc
   src/core/sparse/sparse_engine.cc
   src/core/bitset/bitset_engine.cc
+  src/core/audio/audio_engine.cc
+  src/core/bloom/bloom_engine.cc
+  src/core/document/document_engine.cc
   src/core/ai/no_train_dispatch.cc
   src/core/lifecycle/semantic_lifecycle.cc
   src/core/security/aes_gcm.cc

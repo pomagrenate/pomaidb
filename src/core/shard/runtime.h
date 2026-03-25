@@ -108,7 +108,10 @@ namespace pomai::core
                      uint64_t sync_lsn = 0,
                      bool endurance_aware_maintenance = false,
                      uint64_t write_budget_bytes_per_hour = 0,
-                     float endurance_compaction_bias = 1.0f);
+                     float endurance_compaction_bias = 1.0f,
+                     bool quantize_inmem = false,
+                     uint32_t write_coalesce_window_us = 0,
+                     uint32_t write_coalesce_batch_size = 256);
                      
         ~VectorRuntime();
 
@@ -209,6 +212,9 @@ namespace pomai::core
         // Helper to load segments
         pomai::Status LoadSegments();
 
+        // Flush coalesce buffer: single AppendBatch + apply all Puts to MemTable
+        pomai::Status FlushCoalesceBuffer();
+
         // Snapshot management
         void PublishSnapshot();
         
@@ -257,6 +263,18 @@ namespace pomai::core
         bool endurance_aware_maintenance_{false};
         std::uint64_t write_budget_bytes_per_hour_{0};
         float endurance_compaction_bias_{1.0f};
+        bool quantize_inmem_{false};
+
+        // WAL group-commit coalescing (Task 3)
+        struct CoalesceEntry {
+            pomai::VectorId id{};
+            std::vector<float> vec_data;
+            pomai::Metadata meta{};
+        };
+        std::vector<CoalesceEntry> coalesce_buffer_;
+        std::chrono::steady_clock::time_point coalesce_start_;
+        uint32_t coalesce_window_us_{0};
+        uint32_t coalesce_batch_size_{256};
 
         // Reusable scratch buffers for search hot path (single-threaded; avoids per-query allocations).
         mutable std::vector<pomai::SearchHit> search_candidates_scratch_;

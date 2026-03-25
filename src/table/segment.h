@@ -19,7 +19,7 @@
 
 // Forward declare in correct namespace
 namespace pomai::index { class HnswIndex; class IvfFlatIndex; }
-namespace pomai::core { class LexicalIndex; struct LexicalHit; }
+namespace pomai::core { class LexicalIndex; struct LexicalHit; class ProductQuantizer; }
 
 namespace pomai::table
 {
@@ -174,7 +174,12 @@ namespace pomai::table
                  std::span<const float> vec_span;
                  
                  if (!is_deleted) {
-                     if (quant_type_ != pomai::QuantizationType::kNone) {
+                     if (quant_type_ == pomai::QuantizationType::kPq8 && pq_) {
+                         // Decode PQ codes back to float (used during flush/iteration)
+                         decoded.resize(dim_);
+                         pq_->Decode(static_cast<const uint8_t*>(vec_ptr), decoded.data());
+                         vec_span = decoded;
+                     } else if (quant_type_ != pomai::QuantizationType::kNone && quantizer_) {
                          size_t codes_bytes = dim_;
                          if (quant_type_ == pomai::QuantizationType::kFp16) codes_bytes *= 2;
                          else if (quant_type_ == pomai::QuantizationType::kBit) codes_bytes = (dim_ + 7) / 8;
@@ -203,6 +208,8 @@ namespace pomai::table
         const pomai::index::HnswIndex* GetHnswIndex() const { return hnsw_index_.get(); }
         bool HasIndex() const { return index_ != nullptr; }
         bool HasHnswIndex() const { return hnsw_index_ != nullptr; }
+        /// Returns the Product Quantizer loaded from the .pq sidecar (nullptr if not present).
+        const core::ProductQuantizer* GetPqQuantizer() const { return pq_.get(); }
 
     private:
         SegmentReader();
@@ -225,6 +232,8 @@ namespace pomai::table
         
         std::unique_ptr<pomai::index::IvfFlatIndex> index_;
         std::unique_ptr<pomai::index::HnswIndex> hnsw_index_;
+        // kPq8: Product Quantizer loaded from .pq sidecar for ADC scoring.
+        std::unique_ptr<core::ProductQuantizer> pq_;
         
         // V7: Lexical Index support
         mutable std::unique_ptr<core::LexicalIndex> lexical_index_;

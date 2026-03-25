@@ -75,7 +75,10 @@ pomai::Status HnswIndex::Search(std::span<const float> query,
         return pomai::Status::Ok();
     if (id_map_.empty())
         return pomai::Status::Ok();
-    if (vector_pool_.size() < id_map_.size() * static_cast<size_t>(dim_))
+
+    // In no-pool mode, the segment must inject a vector getter first.
+    if (!no_vector_pool_ &&
+        vector_pool_.size() < id_map_.size() * static_cast<size_t>(dim_))
         return pomai::Status::Corruption("HnswIndex vector pool is inconsistent");
 
     const std::size_t n = id_map_.size();
@@ -84,13 +87,20 @@ pomai::Status HnswIndex::Search(std::span<const float> query,
     const bool is_ip = (metric_ == pomai::MetricType::kInnerProduct ||
                         metric_ == pomai::MetricType::kCosine);
 
-    // Graph ANN search (same distance semantics as Add()).
-    pomai::hnsw::HNSW::QueryDistanceComputer qdis = [&](pomai::hnsw::storage_idx_t internal_id) -> float {
-        const float* v = &vector_pool_[static_cast<size_t>(internal_id) * dim_];
-        std::span<const float> v_span(v, dim_);
-        if (is_ip) {
-            return 1.0f - pomai::core::Dot(query, v_span);
+    // Resolve vector pointer: pool path or mmap getter path.
+    auto get_vec = [&](pomai::hnsw::storage_idx_t internal_id) -> const float* {
+        if (no_vector_pool_ && vector_getter_) {
+            uint32_t entry_idx = entry_index_map_[static_cast<size_t>(internal_id)];
+            return vector_getter_(entry_idx);
         }
+        return &vector_pool_[static_cast<size_t>(internal_id) * dim_];
+    };
+
+    // Graph ANN search.
+    pomai::hnsw::HNSW::QueryDistanceComputer qdis = [&](pomai::hnsw::storage_idx_t internal_id) -> float {
+        const float* v = get_vec(internal_id);
+        std::span<const float> v_span(v, dim_);
+        if (is_ip) return 1.0f - pomai::core::Dot(query, v_span);
         return pomai::core::L2Sq(query, v_span);
     };
 
@@ -110,7 +120,7 @@ pomai::Status HnswIndex::Search(std::span<const float> query,
         std::vector<Candidate> cand;
         cand.reserve(n);
         for (std::size_t internal = 0; internal < n; ++internal) {
-            const float* v = &vector_pool_[internal * dim_];
+            const float* v = get_vec(static_cast<pomai::hnsw::storage_idx_t>(internal));
             std::span<const float> v_span(v, dim_);
             float score_or_dist = is_ip ? pomai::core::Dot(query, v_span)
                                         : pomai::core::L2Sq(query, v_span);
@@ -143,37 +153,73 @@ pomai::Status HnswIndex::Search(std::span<const float> query,
     out_dists->reserve(internal_dists.size());
     for (size_t i = 0; i < internal_ids.size(); ++i) {
         const auto ii = internal_ids[i];
-        if (ii < 0 || static_cast<size_t>(ii) >= id_map_.size()) {
-            continue;
-        }
+        if (ii < 0 || static_cast<size_t>(ii) >= id_map_.size()) continue;
         out_ids->push_back(id_map_[static_cast<size_t>(ii)]);
-        // Runtime expects dot similarity for IP/Cosine, and L2^2 for L2 (negated to score).
-        if (is_ip) {
-            out_dists->push_back(1.0f - internal_dists[i]);
-        } else {
-            out_dists->push_back(internal_dists[i]);
-        }
+        if (is_ip) out_dists->push_back(1.0f - internal_dists[i]);
+        else        out_dists->push_back(internal_dists[i]);
     }
 
     return pomai::Status::Ok();
 }
 
+// File format v1 (with pool): [magic][fmt=1][HNSW][dim][metric][n][id_map][entry_index_map][pool]
+// File format v2 (no pool):   [magic][fmt=2][HNSW][dim][metric][n][id_map][entry_index_map]
+// Legacy (no magic):          [HNSW][dim][metric][n][id_map][pool]
+
 pomai::Status HnswIndex::Save(const std::string& path) const
 {
     FILE* f = fopen(path.c_str(), "wb");
     if (!f) return pomai::Status::IOError("Cannot open " + path + " for writing");
-    
+
+    uint32_t fmt = 1u;
+    fwrite(&kFileMagic, sizeof(uint32_t), 1, f);
+    fwrite(&fmt, sizeof(uint32_t), 1, f);
+
     index_->save(f);
-    
-    // Save metadata
+
     fwrite(&dim_, sizeof(uint32_t), 1, f);
     fwrite(&metric_, sizeof(pomai::MetricType), 1, f);
-    
+
     size_t n = id_map_.size();
     fwrite(&n, sizeof(size_t), 1, f);
     fwrite(id_map_.data(), sizeof(VectorId), n, f);
+
+    // Always write entry_index_map (may be empty for old-style saves).
+    size_t eim_size = entry_index_map_.size();
+    fwrite(&eim_size, sizeof(size_t), 1, f);
+    if (eim_size > 0)
+        fwrite(entry_index_map_.data(), sizeof(uint32_t), eim_size, f);
+
     fwrite(vector_pool_.data(), sizeof(float), n * dim_, f);
-    
+
+    fclose(f);
+    return pomai::Status::Ok();
+}
+
+pomai::Status HnswIndex::SaveNoPool(const std::string& path) const
+{
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) return pomai::Status::IOError("Cannot open " + path + " for writing");
+
+    uint32_t fmt = 2u;
+    fwrite(&kFileMagic, sizeof(uint32_t), 1, f);
+    fwrite(&fmt, sizeof(uint32_t), 1, f);
+
+    index_->save(f);
+
+    fwrite(&dim_, sizeof(uint32_t), 1, f);
+    fwrite(&metric_, sizeof(pomai::MetricType), 1, f);
+
+    size_t n = id_map_.size();
+    fwrite(&n, sizeof(size_t), 1, f);
+    fwrite(id_map_.data(), sizeof(VectorId), n, f);
+
+    size_t eim_size = entry_index_map_.size();
+    fwrite(&eim_size, sizeof(size_t), 1, f);
+    if (eim_size > 0)
+        fwrite(entry_index_map_.data(), sizeof(uint32_t), eim_size, f);
+    // No vector pool written.
+
     fclose(f);
     return pomai::Status::Ok();
 }
@@ -183,6 +229,18 @@ pomai::Status HnswIndex::Load(const std::string& path,
 {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return pomai::Status::IOError("Cannot open " + path + " for reading");
+
+    // Detect file format by reading potential magic header.
+    uint32_t magic = 0;
+    bool has_magic = false;
+    uint32_t fmt_version = 0;
+    if (fread(&magic, sizeof(uint32_t), 1, f) == 1 && magic == kFileMagic) {
+        has_magic = true;
+        fread(&fmt_version, sizeof(uint32_t), 1, f);
+    } else {
+        // Legacy format: seek back to start.
+        fseek(f, 0, SEEK_SET);
+    }
 
     auto idx = std::make_unique<pomai::hnsw::HNSW>();
     idx->load(f);
@@ -197,23 +255,19 @@ pomai::Status HnswIndex::Load(const std::string& path,
     std::vector<VectorId> id_map(n);
     fread(id_map.data(), sizeof(VectorId), n, f);
 
-    pomai::util::AlignedVector<float> vector_pool;
-    vector_pool.resize(n * dim);
-    const size_t pool_bytes = n * dim * sizeof(float);
-    size_t offset = 0;
-    std::vector<char> scratch(pomai::storage::kStreamReadChunkSize);
-    while (offset < pool_bytes) {
-        size_t to_read = std::min(pomai::storage::kStreamReadChunkSize, pool_bytes - offset);
-        size_t nr = fread(scratch.data(), 1, to_read, f);
-        if (nr != to_read) {
-            fclose(f);
-            return pomai::Status::IOError("HNSW vector pool read failed");
-        }
-        std::memcpy(reinterpret_cast<char*>(vector_pool.data()) + offset, scratch.data(), nr);
-        offset += nr;
-    }
+    std::vector<uint32_t> entry_index_map;
+    bool no_pool = false;
 
-    fclose(f);
+    if (has_magic) {
+        // Read entry_index_map present in v1 and v2.
+        size_t eim_size = 0;
+        fread(&eim_size, sizeof(size_t), 1, f);
+        if (eim_size > 0) {
+            entry_index_map.resize(eim_size);
+            fread(entry_index_map.data(), sizeof(uint32_t), eim_size, f);
+        }
+        no_pool = (fmt_version == 2u);
+    }
 
     HnswOptions opts;
     opts.M = idx->M;
@@ -223,8 +277,30 @@ pomai::Status HnswIndex::Load(const std::string& path,
     auto result = std::make_unique<HnswIndex>(dim, opts, metric);
     result->index_ = std::move(idx);
     result->id_map_ = std::move(id_map);
-    result->vector_pool_ = std::move(vector_pool);
-    
+    result->entry_index_map_ = std::move(entry_index_map);
+    result->no_vector_pool_ = no_pool;
+
+    if (!no_pool) {
+        // Load vector pool (legacy or v1).
+        pomai::util::AlignedVector<float> vector_pool;
+        vector_pool.resize(n * dim);
+        const size_t pool_bytes = n * dim * sizeof(float);
+        size_t offset = 0;
+        std::vector<char> scratch(pomai::storage::kStreamReadChunkSize);
+        while (offset < pool_bytes) {
+            size_t to_read = std::min(pomai::storage::kStreamReadChunkSize, pool_bytes - offset);
+            size_t nr = fread(scratch.data(), 1, to_read, f);
+            if (nr != to_read) {
+                fclose(f);
+                return pomai::Status::IOError("HNSW vector pool read failed");
+            }
+            std::memcpy(reinterpret_cast<char*>(vector_pool.data()) + offset, scratch.data(), nr);
+            offset += nr;
+        }
+        result->vector_pool_ = std::move(vector_pool);
+    }
+
+    fclose(f);
     *out = std::move(result);
     return pomai::Status::Ok();
 }
