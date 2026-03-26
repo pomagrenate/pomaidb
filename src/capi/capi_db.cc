@@ -222,6 +222,9 @@ void pomai_options_init(pomai_options_t* opts) {
     opts->gateway_upstream_sync_enabled = false;
     opts->gateway_require_mtls_proxy_header = false;
     opts->gateway_mtls_proxy_header = nullptr;
+    opts->tick_max_ops = 8;
+    opts->tick_max_ms = 5;
+    opts->strict_deterministic = false;
 }
 
 void pomai_options_apply_preset(pomai_options_t* opts, pomai_embedded_preset_t preset) {
@@ -229,9 +232,9 @@ void pomai_options_apply_preset(pomai_options_t* opts, pomai_embedded_preset_t p
     pomai::DBOptions db_opts;
     // Map C preset to C++ EdgeProfile
     pomai::EdgeProfile profile = pomai::EdgeProfile::kUserDefined;
-    if (preset == POMAI_EMBEDDED_PRESET_ESP32_S3) profile = pomai::EdgeProfile::kLowRam;
-    else if (preset == POMAI_EMBEDDED_PRESET_ARM_CORTEX_M85) profile = pomai::EdgeProfile::kBalanced;
-    else if (preset == POMAI_EMBEDDED_PRESET_RPI_ZERO_2W) profile = pomai::EdgeProfile::kThroughput;
+    if (preset == POMAI_EMBEDDED_PRESET_ESP32_S3) profile = pomai::EdgeProfile::kEdgeSafe;
+    else if (preset == POMAI_EMBEDDED_PRESET_ARM_CORTEX_M85) profile = pomai::EdgeProfile::kEdgeBalanced;
+    else if (preset == POMAI_EMBEDDED_PRESET_RPI_ZERO_2W) profile = pomai::EdgeProfile::kEdgeFast;
     
     db_opts.edge_profile = profile;
     db_opts.ApplyEdgeProfile();
@@ -306,12 +309,21 @@ pomai_status_t* pomai_options_resolve_json(const pomai_options_t* opts, char** o
         opts->gateway_mtls_proxy_header != nullptr) {
         db_opts.gateway_mtls_proxy_header = opts->gateway_mtls_proxy_header;
     }
+    if (opts->struct_size >= static_cast<uint32_t>(offsetof(pomai_options_t, tick_max_ops) + sizeof(uint32_t))) {
+        db_opts.tick_max_ops = opts->tick_max_ops;
+    }
+    if (opts->struct_size >= static_cast<uint32_t>(offsetof(pomai_options_t, tick_max_ms) + sizeof(uint32_t))) {
+        db_opts.tick_max_ms = opts->tick_max_ms;
+    }
+    if (opts->struct_size >= static_cast<uint32_t>(offsetof(pomai_options_t, strict_deterministic) + sizeof(bool))) {
+        db_opts.strict_deterministic = opts->strict_deterministic;
+    }
     db_opts.ApplyEdgeProfile();
 
     const char* profile_name = "user_defined";
-    if (db_opts.edge_profile == pomai::EdgeProfile::kLowRam) profile_name = "edge-low-ram";
-    if (db_opts.edge_profile == pomai::EdgeProfile::kBalanced) profile_name = "edge-balanced";
-    if (db_opts.edge_profile == pomai::EdgeProfile::kThroughput) profile_name = "edge-throughput";
+    if (db_opts.edge_profile == pomai::EdgeProfile::kEdgeSafe) profile_name = "edge_safe";
+    if (db_opts.edge_profile == pomai::EdgeProfile::kEdgeBalanced) profile_name = "edge_balanced";
+    if (db_opts.edge_profile == pomai::EdgeProfile::kEdgeFast) profile_name = "edge_fast";
 
     std::string json = "{";
     json += "\"profile\":\"" + std::string(profile_name) + "\",";
@@ -323,6 +335,9 @@ pomai_status_t* pomai_options_resolve_json(const pomai_options_t* opts, char** o
     json += "\"gateway_rate_limit_per_sec\":" + std::to_string(db_opts.gateway_rate_limit_per_sec) + ",";
     json += "\"gateway_idempotency_ttl_sec\":" + std::to_string(db_opts.gateway_idempotency_ttl_sec) + ",";
     json += "\"gateway_upstream_sync_enabled\":" + std::string(db_opts.gateway_upstream_sync_enabled ? "true" : "false") + ",";
+    json += "\"strict_deterministic\":" + std::string(db_opts.strict_deterministic ? "true" : "false") + ",";
+    json += "\"tick_max_ops\":" + std::to_string(db_opts.tick_max_ops) + ",";
+    json += "\"tick_max_ms\":" + std::to_string(db_opts.tick_max_ms) + ",";
     json += "\"gateway_upstream_sync_url\":\"" + JsonEscape(db_opts.gateway_upstream_sync_url) + "\",";
     json += "\"gateway_token_file\":\"" + JsonEscape(db_opts.gateway_token_file) + "\",";
     json += "\"gateway_require_mtls_proxy_header\":" + std::string(db_opts.gateway_require_mtls_proxy_header ? "true" : "false") + ",";
@@ -403,6 +418,15 @@ pomai_status_t* pomai_open(const pomai_options_t* opts, pomai_db_t** out_db) {
     if (opts->struct_size >= static_cast<uint32_t>(offsetof(pomai_options_t, gateway_mtls_proxy_header) + sizeof(const char*)) &&
         opts->gateway_mtls_proxy_header != nullptr) {
         db_opts.gateway_mtls_proxy_header = opts->gateway_mtls_proxy_header;
+    }
+    if (opts->struct_size >= static_cast<uint32_t>(offsetof(pomai_options_t, tick_max_ops) + sizeof(uint32_t))) {
+        db_opts.tick_max_ops = opts->tick_max_ops;
+    }
+    if (opts->struct_size >= static_cast<uint32_t>(offsetof(pomai_options_t, tick_max_ms) + sizeof(uint32_t))) {
+        db_opts.tick_max_ms = opts->tick_max_ms;
+    }
+    if (opts->struct_size >= static_cast<uint32_t>(offsetof(pomai_options_t, strict_deterministic) + sizeof(bool))) {
+        db_opts.strict_deterministic = opts->strict_deterministic;
     }
     db_opts.ApplyEdgeProfile();
 

@@ -53,6 +53,15 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_health(args) -> int:
+    healthz = json.loads(http_get(f"http://{args.host}:{args.port}/v1/healthz", args.token))
+    if args.assert_ok and healthz.get("status") != "ok":
+        print(json.dumps({"status": "failed", "healthz": healthz}))
+        return 2
+    print(json.dumps({"status": "ok", "healthz": healthz}))
+    return 0
+
+
 def cmd_metrics(args) -> int:
     print(http_get(f"http://{args.host}:{args.port}/v1/metrics", args.token))
     return 0
@@ -149,7 +158,11 @@ def cmd_query(args) -> int:
     return 0
 
 def cmd_explain(args) -> int:
+    template_key = f"v1:{int(args.enable_graph_rerank)}:{int(args.include_docs)}"
     plan = {
+        "schema_version": "v1",
+        "template_key": template_key,
+        "template_cache_hit": True,
         "query_mode": "multi_modal_lite",
         "steps": [
             "vector_prefilter",
@@ -276,6 +289,16 @@ def cmd_lifecycle(args) -> int:
     return 0
 
 
+def cmd_profile(args) -> int:
+    db = pomaidb.open_db(args.path, args.dim, shards=args.shards, metric=args.metric, profile=args.set)
+    try:
+        resolved = pomaidb.resolve_effective_options(args.path, args.dim, shards=args.shards, metric=args.metric, profile=args.set)
+        print(resolved)
+    finally:
+        pomaidb.close(db)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="pomaictl edge operations helper")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -296,6 +319,12 @@ def main() -> int:
         c.add_argument("--port", type=int, default=8080)
         c.add_argument("--token", default=None)
         c.set_defaults(func=fn)
+    h = sub.add_parser("health")
+    h.add_argument("--host", default="127.0.0.1")
+    h.add_argument("--port", type=int, default=8080)
+    h.add_argument("--token", default=None)
+    h.add_argument("--assert", dest="assert_ok", action="store_true", help="Exit non-zero if healthz.status != ok")
+    h.set_defaults(func=cmd_health)
 
     ing = sub.add_parser("ingest-http", help="POST to /v1/ingest/... (body from --body or --body-file)")
     ing.add_argument("--host", default="127.0.0.1")
@@ -376,6 +405,14 @@ def main() -> int:
     l.add_argument("--show", action="store_true", help="Show current retention policy for membrane")
     l.add_argument("--kind", type=int, default=12, help="Membrane kind when --create is used (default: 12/meta)")
     l.set_defaults(func=cmd_lifecycle)
+
+    pr = sub.add_parser("profile")
+    pr.add_argument("--path", required=True)
+    pr.add_argument("--dim", type=int, required=True)
+    pr.add_argument("--shards", type=int, default=1)
+    pr.add_argument("--metric", default="ip")
+    pr.add_argument("--set", required=True, choices=["edge_safe", "edge_balanced", "edge_fast", "user_defined"])
+    pr.set_defaults(func=cmd_profile)
 
     sn = sub.add_parser("snapshot")
     sn.add_argument("--mode", choices=["export", "import"], required=True)

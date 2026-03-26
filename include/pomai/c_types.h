@@ -83,6 +83,9 @@ typedef struct {
     bool gateway_upstream_sync_enabled;
     bool gateway_require_mtls_proxy_header;
     const char* gateway_mtls_proxy_header;
+    uint32_t tick_max_ops;
+    uint32_t tick_max_ms;
+    bool strict_deterministic;
 } pomai_options_t;
 
 typedef struct {

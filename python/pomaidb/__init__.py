@@ -129,6 +129,9 @@ def _register_api(lib):
             ("gateway_upstream_sync_enabled", ctypes.c_bool),
             ("gateway_require_mtls_proxy_header", ctypes.c_bool),
             ("gateway_mtls_proxy_header", ctypes.c_char_p),
+            ("tick_max_ops", ctypes.c_uint32),
+            ("tick_max_ms", ctypes.c_uint32),
+            ("strict_deterministic", ctypes.c_bool),
         ]
 
     class PomaiUpsert(ctypes.Structure):
@@ -528,12 +531,15 @@ def open_db(path, dim, *, shards=1, search_threads=0, fsync=False, metric="ip", 
     profile_map = {
         None: 0,
         "user_defined": 0,
+        "edge_safe": 1,
+        "edge_balanced": 2,
+        "edge_fast": 3,
         "edge-low-ram": 1,
         "edge-balanced": 2,
         "edge-throughput": 3,
     }
     if profile not in profile_map:
-        raise ValueError("profile must be one of: edge-low-ram, edge-balanced, edge-throughput, user_defined")
+        raise ValueError("profile must be one of: edge_safe, edge_balanced, edge_fast, user_defined")
     opts.edge_profile = profile_map[profile]
     if "gateway_rate_limit_per_sec" in hnsw_kw:
         opts.gateway_rate_limit_per_sec = int(hnsw_kw.get("gateway_rate_limit_per_sec"))
@@ -545,6 +551,11 @@ def open_db(path, dim, *, shards=1, search_threads=0, fsync=False, metric="ip", 
         opts.gateway_upstream_sync_url = str(hnsw_kw.get("gateway_upstream_sync_url")).encode("utf-8")
     opts.gateway_upstream_sync_enabled = bool(hnsw_kw.get("gateway_upstream_sync_enabled", False))
     opts.gateway_require_mtls_proxy_header = bool(hnsw_kw.get("gateway_require_mtls_proxy_header", False))
+    if "tick_max_ops" in hnsw_kw:
+        opts.tick_max_ops = int(hnsw_kw.get("tick_max_ops"))
+    if "tick_max_ms" in hnsw_kw:
+        opts.tick_max_ms = int(hnsw_kw.get("tick_max_ms"))
+    opts.strict_deterministic = bool(hnsw_kw.get("strict_deterministic", False))
     if "gateway_mtls_proxy_header" in hnsw_kw and hnsw_kw.get("gateway_mtls_proxy_header"):
         opts.gateway_mtls_proxy_header = str(hnsw_kw.get("gateway_mtls_proxy_header")).encode("utf-8")
     db = ctypes.c_void_p()
@@ -572,12 +583,15 @@ def resolve_effective_options(path, dim, *, shards=1, search_threads=0, fsync=Fa
     profile_map = {
         None: 0,
         "user_defined": 0,
+        "edge_safe": 1,
+        "edge_balanced": 2,
+        "edge_fast": 3,
         "edge-low-ram": 1,
         "edge-balanced": 2,
         "edge-throughput": 3,
     }
     if profile not in profile_map:
-        raise ValueError("profile must be one of: edge-low-ram, edge-balanced, edge-throughput, user_defined")
+        raise ValueError("profile must be one of: edge_safe, edge_balanced, edge_fast, user_defined")
     opts.edge_profile = profile_map[profile]
     if "gateway_rate_limit_per_sec" in hnsw_kw:
         opts.gateway_rate_limit_per_sec = int(hnsw_kw.get("gateway_rate_limit_per_sec"))
@@ -589,6 +603,11 @@ def resolve_effective_options(path, dim, *, shards=1, search_threads=0, fsync=Fa
         opts.gateway_upstream_sync_url = str(hnsw_kw.get("gateway_upstream_sync_url")).encode("utf-8")
     opts.gateway_upstream_sync_enabled = bool(hnsw_kw.get("gateway_upstream_sync_enabled", False))
     opts.gateway_require_mtls_proxy_header = bool(hnsw_kw.get("gateway_require_mtls_proxy_header", False))
+    if "tick_max_ops" in hnsw_kw:
+        opts.tick_max_ops = int(hnsw_kw.get("tick_max_ops"))
+    if "tick_max_ms" in hnsw_kw:
+        opts.tick_max_ms = int(hnsw_kw.get("tick_max_ms"))
+    opts.strict_deterministic = bool(hnsw_kw.get("strict_deterministic", False))
     if "gateway_mtls_proxy_header" in hnsw_kw and hnsw_kw.get("gateway_mtls_proxy_header"):
         opts.gateway_mtls_proxy_header = str(hnsw_kw.get("gateway_mtls_proxy_header")).encode("utf-8")
     out = ctypes.c_char_p()

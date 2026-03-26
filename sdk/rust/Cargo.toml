@@ -1,0 +1,10 @@
+[package]
+name = "pomaidb"
+version = "0.1.0-alpha.1"
+edition = "2021"
+description = "Rust SDK alpha for PomaiDB"
+license = "MIT"
+
+[lib]
+name = "pomaidb"
+path = "src/lib.rs"
