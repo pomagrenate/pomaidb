@@ -17,10 +17,13 @@ jobs:
         uses: lukka/get-cmake@latest
 
       - name: Configure
-        run: cmake -S . -B build -DPOMAI_BUILD_TESTS=ON -DPOMAI_BUILD_BENCH=OFF
+        run: cmake -S . -B build -DPOMAI_BUILD_TESTS=ON -DPOMAI_BUILD_BENCH=OFF -DPOMAI_REGISTER_BENCH_CTEST=ON
 
       - name: Build
         run: cmake --build build --config Release --parallel
+
+      - name: API Contract Check
+        run: ./scripts/check_api_contract.sh
 
       # GitHub-hosted runners typically have no usable Vulkan ICD/GPU; GPU tests would flake or fail.
       # Set POMAI_SKIP_VULKAN_TESTS=0 locally or install mesa-vulkan-drivers (Lavapipe) to exercise Vulkan.
@@ -28,3 +31,8 @@ jobs:
         env:
           POMAI_SKIP_VULKAN_TESTS: 1
         run: ctest --test-dir build --output-on-failure -C Release --timeout 120
+
+      - name: CTest Bench (ci-fast)
+        env:
+          POMAI_SKIP_VULKAN_TESTS: 1
+        run: ctest --test-dir build -L bench --output-on-failure -C Release --timeout 600

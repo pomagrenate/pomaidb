@@ -2,6 +2,7 @@
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 import urllib.request
 
@@ -137,6 +138,96 @@ def cmd_ingest_http(args) -> int:
     print(out)
     return 0
 
+def cmd_query(args) -> int:
+    db = _open_local_db(args)
+    try:
+        vals = [float(x.strip()) for x in args.vector.split(",") if x.strip()]
+        out = pomaidb.search_batch(db, [vals], topk=args.topk)
+        print(json.dumps({"status": "ok", "membrane": args.membrane, "topk": args.topk, "results": out}))
+    finally:
+        pomaidb.close(db)
+    return 0
+
+def cmd_explain(args) -> int:
+    plan = {
+        "query_mode": "multi_modal_lite",
+        "steps": [
+            "vector_prefilter",
+            "graph_rerank" if args.enable_graph_rerank else "graph_rerank_skipped",
+            "document_evidence" if args.include_docs else "document_evidence_skipped",
+        ],
+        "notes": "Planner-lite explain output for operator debugging.",
+    }
+    print(json.dumps(plan))
+    return 0
+
+def cmd_replay(args) -> int:
+    src = Path(args.file)
+    n = 0
+    with src.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            ev = json.loads(line)
+            et = ev.get("type", "")
+            membrane = ev.get("membrane", "")
+            if et == "vector_put":
+                path = f"/v1/ingest/vector/{membrane}/{ev.get('id', 0)}"
+                body = ev.get("aux_v", "")
+            elif et == "timeseries_put":
+                path = f"/v1/ingest/timeseries/{membrane}/{ev.get('id', 0)}/{ev.get('id2', 0)}"
+                body = ev.get("aux_v", "")
+            elif et == "kv_put":
+                path = f"/v1/ingest/keyvalue/{membrane}/{ev.get('aux_k', '')}"
+                body = ev.get("aux_v", "")
+            elif et == "document_put":
+                path = f"/v1/ingest/document/{membrane}/{ev.get('id', 0)}"
+                body = ev.get("aux_v", "")
+            else:
+                continue
+            _ = http_post(f"http://{args.host}:{args.port}{path}", body, args.token, idempotency=f"replay-{n}")
+            n += 1
+    print(json.dumps({"status": "ok", "replayed_events": n}))
+    return 0
+
+def cmd_inspect_segment(args) -> int:
+    membrane_dir = Path(args.path) / "membranes" / args.membrane
+    segs = sorted(membrane_dir.glob("seg_*.dat"))
+    out = []
+    for p in segs:
+        out.append({"file": p.name, "bytes": p.stat().st_size})
+    print(json.dumps({"status": "ok", "membrane": args.membrane, "segments": out}))
+    return 0
+
+def cmd_snapshot(args) -> int:
+    db_path = Path(args.path).resolve()
+    out = Path(args.output).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if args.mode == "export":
+        subprocess.run(["tar", "--zstd", "-cf", str(out), "-C", str(db_path.parent), db_path.name], check=True)
+        print(json.dumps({"status": "ok", "action": "export", "snapshot": str(out)}))
+    else:
+        target = Path(args.target).resolve()
+        target.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["tar", "--zstd", "-xf", str(out), "-C", str(target)], check=True)
+        print(json.dumps({"status": "ok", "action": "import", "snapshot": str(out), "target": str(target)}))
+    return 0
+
+def cmd_doctor_repair(args) -> int:
+    checks = {
+        "manifest_exists": (Path(args.path) / "MANIFEST").exists(),
+        "gateway_dir_exists": (Path(args.path) / "gateway").exists(),
+    }
+    repaired = []
+    if args.repair and not checks["gateway_dir_exists"]:
+        (Path(args.path) / "gateway").mkdir(parents=True, exist_ok=True)
+        checks["gateway_dir_exists"] = True
+        repaired.append("gateway_dir_created")
+    status = "ok" if all(checks.values()) else "degraded"
+    print(json.dumps({"status": status, "checks": checks, "repaired": repaired, "dry_run": args.dry_run}))
+    return 0
+
 
 def cmd_verify(args) -> int:
     db_path = Path(args.path)
@@ -239,6 +330,34 @@ def main() -> int:
     c.add_argument("--membrane", required=True)
     c.set_defaults(func=cmd_compact)
 
+    q = sub.add_parser("query")
+    q.add_argument("--path", required=True)
+    q.add_argument("--dim", type=int, required=True)
+    q.add_argument("--shards", type=int, default=1)
+    q.add_argument("--metric", default="ip")
+    q.add_argument("--profile", default="user_defined")
+    q.add_argument("--membrane", default="__default__")
+    q.add_argument("--vector", required=True, help="comma-separated floats")
+    q.add_argument("--topk", type=int, default=10)
+    q.set_defaults(func=cmd_query)
+
+    ex = sub.add_parser("explain")
+    ex.add_argument("--enable-graph-rerank", action="store_true")
+    ex.add_argument("--include-docs", action="store_true")
+    ex.set_defaults(func=cmd_explain)
+
+    rp = sub.add_parser("replay")
+    rp.add_argument("--host", default="127.0.0.1")
+    rp.add_argument("--port", type=int, default=8080)
+    rp.add_argument("--token", default=None)
+    rp.add_argument("--file", required=True, help="ndjson of sync events")
+    rp.set_defaults(func=cmd_replay)
+
+    isg = sub.add_parser("inspect-segment")
+    isg.add_argument("--path", required=True)
+    isg.add_argument("--membrane", required=True)
+    isg.set_defaults(func=cmd_inspect_segment)
+
     v = sub.add_parser("verify")
     v.add_argument("--path", required=True)
     v.set_defaults(func=cmd_verify)
@@ -257,6 +376,19 @@ def main() -> int:
     l.add_argument("--show", action="store_true", help="Show current retention policy for membrane")
     l.add_argument("--kind", type=int, default=12, help="Membrane kind when --create is used (default: 12/meta)")
     l.set_defaults(func=cmd_lifecycle)
+
+    sn = sub.add_parser("snapshot")
+    sn.add_argument("--mode", choices=["export", "import"], required=True)
+    sn.add_argument("--path", required=True, help="db path for export")
+    sn.add_argument("--output", required=True, help="snapshot tar.zst path")
+    sn.add_argument("--target", default=".", help="import destination parent directory")
+    sn.set_defaults(func=cmd_snapshot)
+
+    dr = sub.add_parser("doctor-repair")
+    dr.add_argument("--path", required=True)
+    dr.add_argument("--repair", action="store_true")
+    dr.add_argument("--dry-run", action="store_true")
+    dr.set_defaults(func=cmd_doctor_repair)
 
     args = ap.parse_args()
     return int(args.func(args))

@@ -11,6 +11,8 @@ DATASET="small"
 BUILD_DIR="build"
 BENCH_EXEC="./build/comprehensive_bench"
 RESULTS_FILE="/tmp/pomai_perf_results.json"
+BASELINE_FILE="${POMAI_PERF_BASELINE:-tools/perf_baseline.json}"
+MAX_REGRESSION_PCT="${POMAI_PERF_MAX_REGRESSION_PCT:-15}"
 
 # Parse arguments
 for arg in "$@"; do
@@ -144,6 +146,30 @@ if build_sec > $MAX_BUILD_SEC:
     failed = True
 else:
     print(f"    ✅ PASSED")
+
+# Optional regression gate against baseline profile
+import os
+baseline_file = "$BASELINE_FILE"
+if os.path.exists(baseline_file):
+    with open(baseline_file) as bf:
+        base = json.load(bf)
+    base_qps = base.get("throughput", {}).get("qps", 0.0)
+    base_p99 = base.get("search_latency_us", {}).get("p99", 0.0)
+    max_reg = float("$MAX_REGRESSION_PCT")
+    if base_qps and base_qps > 0:
+        qps_drop = ((base_qps - qps) / base_qps) * 100.0
+        print(f"  QPS Regression: {qps_drop:.2f}%")
+        if qps_drop > max_reg:
+            print(f"    ❌ FAILED: QPS regression > {max_reg}%")
+            failed = True
+    if base_p99 and base_p99 > 0:
+        p99_rise = ((p99_us - base_p99) / base_p99) * 100.0
+        print(f"  P99 Regression: {p99_rise:.2f}%")
+        if p99_rise > max_reg:
+            print(f"    ❌ FAILED: P99 regression > {max_reg}%")
+            failed = True
+else:
+    print(f"  Baseline: not found at {baseline_file} (skipping regression gate)")
 
 print("")
 if failed:

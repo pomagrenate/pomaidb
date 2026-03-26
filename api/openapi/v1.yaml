@@ -1,0 +1,85 @@
+openapi: 3.0.3
+info:
+  title: PomaiDB Edge Gateway API
+  version: 1.0.0
+paths:
+  /v1/health:
+    get:
+      summary: Liveness endpoint
+      responses:
+        "200":
+          description: Gateway is alive
+  /v1/healthz:
+    get:
+      summary: Health grade endpoint
+      responses:
+        "200":
+          description: Health rationale
+  /v1/metrics:
+    get:
+      summary: Prometheus-like text metrics
+      responses:
+        "200":
+          description: Metrics payload
+  /v1/ingest/vector/{membrane}/{id}:
+    post:
+      summary: Ingest a vector (CSV floats body)
+      parameters:
+        - in: path
+          name: membrane
+          required: true
+          schema: { type: string }
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: uint64 }
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+              example: "0.1,0.2,0.3"
+      responses:
+        "200":
+          description: Accepted
+  /v1/ingest/graph/vertex/{membrane}/{vid}/{tag}:
+    post:
+      summary: Add graph vertex
+      responses:
+        "200": { description: Accepted }
+  /v1/ingest/graph/edge/{membrane}/{src}/{dst}/{type}/{rank}:
+    post:
+      summary: Add graph edge
+      responses:
+        "200": { description: Accepted }
+  /v1/ingest/mesh/{membrane}/{mesh_id}:
+    post:
+      summary: Put mesh vertices (CSV floats body)
+      responses:
+        "200": { description: Accepted }
+  /v1/ingest/audio/{membrane}/{clip_id}/{timestamp_ms}:
+    post:
+      summary: Put audio embedding (CSV floats body)
+      responses:
+        "200": { description: Accepted }
+  /v1/ingest/timeseries/{membrane}/{series_id}/{timestamp_ms}:
+    post:
+      summary: Put timeseries scalar value
+      responses:
+        "200": { description: Accepted }
+  /v1/ingest/keyvalue/{membrane}/{key}:
+    post:
+      summary: Put keyvalue record
+      responses:
+        "200": { description: Accepted }
+  /v1/ingest/document/{membrane}/{doc_id}:
+    post:
+      summary: Put document JSON payload
+      responses:
+        "200": { description: Accepted }
+  /v1/ingest/rag/{membrane}/{chunk_id}/{doc_id}:
+    post:
+      summary: Put rag chunk (CSV uint32 tokens body)
+      responses:
+        "200": { description: Accepted }

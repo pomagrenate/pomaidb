@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <cstdlib>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -213,6 +214,14 @@ static uint64_t StableHashU64(std::string_view s) {
     return h;
 }
 
+static void AppendDeadLetterEvent(const std::string& path, const std::string& json_line) {
+    if (path.empty()) return;
+    std::ofstream out(path, std::ios::app);
+    if (!out.good()) return;
+    out << json_line << "\n";
+    out.flush();
+}
+
 bool LooksLikeHttpRequest(std::string_view s) {
     size_t i = 0;
     while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n')) {
@@ -249,6 +258,7 @@ Status EdgeGateway::Start(uint16_t http_port, uint16_t ingest_port, std::string 
     audit_log_path_ = manager_->GetOptions().path + "/gateway/audit.log";
     seq_state_path_ = manager_->GetOptions().path + "/gateway/ingest.seq";
     sync_checkpoint_path_ = manager_->GetOptions().path + "/gateway/sync.checkpoint";
+    sync_dead_letter_path_ = manager_->GetOptions().path + "/gateway/sync.deadletter.ndjson";
     const auto load_st = LoadIdempotencyLog();
     if (!load_st.ok()) {
         running_ = false;
@@ -539,7 +549,8 @@ std::string EdgeGateway::HealthGradeJson() const {
     std::ostringstream body;
     body << "{\"grade\":\"" << grade << "\",\"reason\":\"" << reason << "\",\"ingest_seq\":" << ingest_seq_
          << ",\"sync_checkpoint_seq\":" << sync_checkpoint_seq_ << ",\"sync_queue_depth\":" << sync_depth
-         << ",\"sync_backlog_drops_total\":" << sync_backlog_drops_total_ << "}";
+         << ",\"sync_backlog_drops_total\":" << sync_backlog_drops_total_
+         << ",\"sync_dead_letter_total\":" << sync_dead_letter_total_ << "}";
     return body.str();
 }
 
@@ -641,7 +652,10 @@ void EdgeGateway::ProcessSync() {
     const uint64_t now_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                      std::chrono::system_clock::now().time_since_epoch())
                                                      .count());
-    if (now_ms < last_sync_attempt_unix_ms_ + sync_retry_ms_) return;
+    const uint64_t retry_wait_ms = std::min<uint64_t>(
+        sync_retry_backoff_max_ms_,
+        sync_retry_ms_ * (1ull << std::min<uint32_t>(sync_queue_.front().retry_count, 8u)));
+    if (now_ms < last_sync_attempt_unix_ms_ + retry_wait_ms) return;
 
     std::string host, path;
     uint16_t port = 80;
@@ -657,15 +671,19 @@ void EdgeGateway::ProcessSync() {
     }
 
     std::ostringstream body;
-    body << "{\"seq\":" << ev.seq << ",\"type\":\"" << JsonEscapeMembraneField(ev.type) << "\",\"membrane\":\""
+    body << "{\"schema_version\":1,\"seq\":" << ev.seq << ",\"type\":\"" << JsonEscapeMembraneField(ev.type) << "\",\"membrane\":\""
          << JsonEscapeMembraneField(ev.membrane) << "\",\"id\":" << ev.id << ",\"id2\":" << ev.id2 << ",\"u32_a\":" << ev.u32_a
          << ",\"u32_b\":" << ev.u32_b << ",\"aux_k\":\"" << JsonEscapeMembraneField(ev.aux_k) << "\",\"aux_v\":\""
          << JsonEscapeMembraneField(ev.aux_v) << "\"}";
+    const std::string sync_secret = std::getenv("POMAI_SYNC_HMAC_KEY") ? std::getenv("POMAI_SYNC_HMAC_KEY") : "";
+    const uint64_t sig = StableHashU64(body.str() + sync_secret);
+    std::ostringstream envelope;
+    envelope << "{\"sig\":\"" << sig << "\",\"payload\":" << body.str() << "}";
 
     sync_attempts_total_++;
     last_sync_attempt_unix_ms_ = now_ms;
     
-    const bool ok = HttpPostJson(host, port, path, body.str());
+    const bool ok = HttpPostJson(host, port, path, envelope.str());
     if (ok) {
         sync_success_total_++;
         sync_checkpoint_seq_ = ev.seq;
@@ -677,6 +695,16 @@ void EdgeGateway::ProcessSync() {
         sync_queue_.pop_front();
     } else {
         sync_fail_total_++;
+        ev.retry_count++;
+        if (ev.retry_count >= 8) {
+            std::ostringstream dlq;
+            dlq << "{\"reason\":\"max_retries\",\"seq\":" << ev.seq << ",\"type\":\"" << JsonEscapeMembraneField(ev.type)
+                << "\",\"membrane\":\"" << JsonEscapeMembraneField(ev.membrane) << "\",\"retry_count\":" << ev.retry_count
+                << ",\"payload\":" << body.str() << "}";
+            AppendDeadLetterEvent(sync_dead_letter_path_, dlq.str());
+            sync_dead_letter_total_++;
+            sync_queue_.pop_front();
+        }
     }
 }
 
@@ -725,10 +753,13 @@ void EdgeGateway::ServeHttpConnection(int client, const std::string& req) {
         oss << "sync_success_total " << sync_success_total_ << "\n";
         oss << "sync_fail_total " << sync_fail_total_ << "\n";
         oss << "sync_backlog_drops_total " << sync_backlog_drops_total_ << "\n";
+        oss << "sync_dead_letter_total " << sync_dead_letter_total_ << "\n";
         oss << "sync_checkpoint_seq " << sync_checkpoint_seq_ << "\n";
         {
             (void)0; // sync_mu_ removed
             oss << "sync_queue_depth " << sync_queue_.size() << "\n";
+            const uint64_t behind = (ingest_seq_ > sync_checkpoint_seq_) ? (ingest_seq_ - sync_checkpoint_seq_) : 0;
+            oss << "sync_lag_events " << behind << "\n";
         }
         const std::string body = oss.str();
         const std::string head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n";
