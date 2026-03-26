@@ -280,7 +280,7 @@ bool AgentMemory::DecodeMetadata(const std::string& encoded,
 Status AgentMemory::AppendMessage(const AgentMemoryRecord& record,
                                   VectorId* out_id)
 {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::mutex> lock(mu_);
     auto st = EnsureOpenLocked();
     if (!st.ok())
         return st;
@@ -305,6 +305,8 @@ Status AgentMemory::AppendMessage(const AgentMemoryRecord& record,
         *out_id = id;
     }
 
+    lock.unlock();
+
     // Lazy per-agent pruning based on soft cap.
     if (options_.max_messages_per_agent > 0)
     {
@@ -323,7 +325,7 @@ Status AgentMemory::AppendMessage(const AgentMemoryRecord& record,
 Status AgentMemory::AppendBatch(const std::vector<AgentMemoryRecord>& records,
                                 std::vector<VectorId>* out_ids)
 {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::mutex> lock(mu_);
     auto st = EnsureOpenLocked();
     if (!st.ok())
         return st;
@@ -369,6 +371,8 @@ Status AgentMemory::AppendBatch(const std::vector<AgentMemoryRecord>& records,
     }
 
     (void)db_->TryFreezeIfPressured();
+
+    lock.unlock();
 
     // Soft caps checked against the last record's agent / device totals.
     if (!records.empty() && options_.max_messages_per_agent > 0)
