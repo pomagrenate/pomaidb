@@ -26,7 +26,16 @@ double MeshRmsdF32(const float* a_xyz, const float* b_xyz, std::size_t points) {
     if (!a_xyz || !b_xyz || points == 0) return 0.0;
     double sum = 0.0;
     const std::size_t n = points * 3;
-    for (std::size_t i = 0; i < n; ++i) {
+    
+    std::size_t i = 0;
+    for (; i + 3 < n; i += 4) {
+        const double d0 = static_cast<double>(a_xyz[i]) - static_cast<double>(b_xyz[i]);
+        const double d1 = static_cast<double>(a_xyz[i+1]) - static_cast<double>(b_xyz[i+1]);
+        const double d2 = static_cast<double>(a_xyz[i+2]) - static_cast<double>(b_xyz[i+2]);
+        const double d3 = static_cast<double>(a_xyz[i+3]) - static_cast<double>(b_xyz[i+3]);
+        sum += (d0 * d0) + (d1 * d1) + (d2 * d2) + (d3 * d3);
+    }
+    for (; i < n; ++i) {
         const double d = static_cast<double>(a_xyz[i]) - static_cast<double>(b_xyz[i]);
         sum += d * d;
     }
@@ -74,9 +83,19 @@ std::uint32_t SparseIntersectU32(const std::uint32_t* a_idx, std::size_t a_n,
 double BitsetHamming(const std::uint8_t* a, const std::uint8_t* b, std::size_t n_bytes) {
     if (!a || !b || n_bytes == 0) return 0.0;
     std::uint64_t diff = 0;
-    for (std::size_t i = 0; i < n_bytes; ++i) {
+    
+    const std::uint64_t* a64 = reinterpret_cast<const std::uint64_t*>(a);
+    const std::uint64_t* b64 = reinterpret_cast<const std::uint64_t*>(b);
+    std::size_t n64 = n_bytes / 8;
+    
+    for (std::size_t i = 0; i < n64; ++i) {
+        diff += static_cast<std::uint64_t>(__builtin_popcountll(a64[i] ^ b64[i]));
+    }
+    
+    for (std::size_t i = n64 * 8; i < n_bytes; ++i) {
         diff += static_cast<std::uint64_t>(__builtin_popcount(static_cast<unsigned int>(a[i] ^ b[i])));
     }
+    
     return static_cast<double>(diff);
 }
 

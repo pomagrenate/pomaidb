@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <deque>
 #include <memory>
 #include <string>
@@ -29,6 +30,7 @@ namespace pomai::core {
         /** Register a service pod. kernel takes ownership. */
         Status RegisterPod(std::unique_ptr<Pod> pod) {
             if (!pod) return Status::InvalidArgument("pod is null");
+            std::lock_guard<std::recursive_mutex> lock(mu_);
             PodId id = pod->Id();
             if (pods_.count(id)) return Status::AlreadyExists("pod already registered");
             
@@ -39,6 +41,7 @@ namespace pomai::core {
 
         /** Unregister and stop a pod. */
         void UnregisterPod(PodId id) {
+            std::lock_guard<std::recursive_mutex> lock(mu_);
             auto it = pods_.find(id);
             if (it != pods_.end()) {
                 it->second->OnStop();
@@ -71,6 +74,7 @@ namespace pomai::core {
                 }
             }
 
+            std::lock_guard<std::recursive_mutex> lock(mu_);
             if (elm && elm->InputDim() == 2 && elm->OutputDim() >= 1) {
                 float x[2] = { static_cast<float>(queue_.size()), static_cast<float>(msg.payload.size()) };
                 float pred[1] = { 0.0f };
@@ -90,11 +94,16 @@ namespace pomai::core {
          * Returns true if a message was processed.
          */
         bool DispatchOne() {
-            if (queue_.empty()) return false;
+            Message msg;
+            {
+                std::lock_guard<std::recursive_mutex> lock(mu_);
+                if (queue_.empty()) return false;
 
-            Message msg = std::move(queue_.front());
-            queue_.pop_front();
+                msg = std::move(queue_.front());
+                queue_.pop_front();
+            }
 
+            std::lock_guard<std::recursive_mutex> lock(mu_);
             auto it = pods_.find(msg.target);
             if (it != pods_.end()) {
                 // Check memory quota before execution
@@ -133,6 +142,7 @@ namespace pomai::core {
         }
 
     private:
+        mutable std::recursive_mutex mu_;
         std::unordered_map<PodId, std::unique_ptr<Pod>> pods_;
         std::deque<Message> queue_;
     };

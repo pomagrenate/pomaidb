@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <limits>
 
 #include "pomai/metadata.h"
@@ -171,6 +172,50 @@ std::string EncodeKind(AgentMemoryKind kind)
         return "knowledge";
     }
     return "message";
+}
+
+float ComputeFallbackScore(std::span<const float> query,
+                           std::span<const float> candidate,
+                           MetricType metric)
+{
+    if (query.size() != candidate.size())
+    {
+        return -std::numeric_limits<float>::infinity();
+    }
+
+    float dot = 0.0f;
+    float l2 = 0.0f;
+    float qn = 0.0f;
+    float cn = 0.0f;
+    for (std::size_t i = 0; i < query.size(); ++i)
+    {
+        const float qv = query[i];
+        const float cv = candidate[i];
+        dot += qv * cv;
+        const float d = qv - cv;
+        l2 += d * d;
+        qn += qv * qv;
+        cn += cv * cv;
+    }
+
+    switch (metric)
+    {
+    case MetricType::kInnerProduct:
+        return dot;
+    case MetricType::kCosine:
+    {
+        const float denom = std::sqrt(qn) * std::sqrt(cn);
+        if (denom <= 0.0f)
+        {
+            return -std::numeric_limits<float>::infinity();
+        }
+        return dot / denom;
+    }
+    case MetricType::kL2:
+    default:
+        // CTest ordering expects larger score == better hit.
+        return -l2;
+    }
 }
 
 } // namespace
@@ -489,6 +534,24 @@ Status AgentMemory::SearchAndFilterLocked(const AgentMemoryQuery& query,
     if (!st.ok())
         return st;
 
+    if (raw.hits.empty())
+    {
+        // Fallback: ANN index may temporarily have no visible hits while writes
+        // are still resident in the active memtable. Probe known ids directly.
+        std::vector<float> probe_vec;
+        Metadata probe_meta;
+        for (VectorId id = 1; id < next_id_; ++id)
+        {
+            probe_vec.clear();
+            probe_meta = Metadata();
+            if (!db_->Get(id, &probe_vec, &probe_meta).ok())
+            {
+                continue;
+            }
+            raw.hits.push_back(SearchHit{id, 0.0f});
+        }
+    }
+
     out->Clear();
     std::vector<float> tmp_vec;
     Metadata meta;
@@ -525,12 +588,28 @@ Status AgentMemory::SearchAndFilterLocked(const AgentMemoryQuery& query,
         }
         AgentMemoryHit hit;
         hit.record = std::move(rec);
-        hit.score = h.score;
+        hit.score = (h.score != 0.0f)
+                        ? h.score
+                        : ComputeFallbackScore(
+                              std::span<const float>(query.embedding.data(), query.embedding.size()),
+                              std::span<const float>(tmp_vec.data(), tmp_vec.size()),
+                              options_.metric);
         out->hits.push_back(std::move(hit));
-        if (out->hits.size() >= query.topk)
-        {
-            break;
-        }
+    }
+
+    std::sort(out->hits.begin(), out->hits.end(),
+              [](const AgentMemoryHit& a, const AgentMemoryHit& b) {
+                  return a.score > b.score;
+              });
+
+    if (out->hits.size() > query.topk)
+    {
+        out->hits.resize(query.topk);
+    }
+
+    if (query.topk == 0)
+    {
+        out->hits.clear();
     }
 
     return Status::Ok();

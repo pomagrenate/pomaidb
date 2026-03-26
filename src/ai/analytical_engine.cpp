@@ -2,6 +2,7 @@
 #include <cmath>
 #include <algorithm>
 #include <map>
+#include <mutex>
 
 namespace pomai::core {
 
@@ -132,6 +133,7 @@ void ELMModel::Predict(std::span<const float> input,
 
 struct AnalyticalEngine::Impl {
     std::map<std::string, std::unique_ptr<AnalyticalModel>> models;
+    std::recursive_mutex mu;
 };
 
 AnalyticalEngine::AnalyticalEngine() : impl_(std::make_unique<Impl>()) {}
@@ -143,11 +145,13 @@ AnalyticalEngine& AnalyticalEngine::Global() {
 }
 
 Status AnalyticalEngine::CreateELMModel(const std::string& name, size_t in_dim, size_t hidden_dim, size_t out_dim) {
+    std::lock_guard<std::recursive_mutex> lock(impl_->mu);
     impl_->models[name] = std::make_unique<ELMModel>(in_dim, hidden_dim, out_dim);
     return Status::Ok();
 }
 
 AnalyticalModel* AnalyticalEngine::GetModel(const std::string& name) {
+    std::lock_guard<std::recursive_mutex> lock(impl_->mu);
     auto it = impl_->models.find(name);
     return it != impl_->models.end() ? it->second.get() : nullptr;
 }
