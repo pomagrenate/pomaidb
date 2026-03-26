@@ -23,8 +23,17 @@ constexpr std::size_t kWalSegmentBytes = 64u << 20; // 64 MiB
 VectorEngine::VectorEngine(pomai::DBOptions opt,
                            pomai::MembraneKind kind,
                            pomai::MetricType metric,
+                           uint32_t ttl_sec,
+                           uint32_t retention_max_count,
+                           uint64_t retention_max_bytes,
                            uint64_t sync_lsn)
-    : opt_(std::move(opt)), kind_(kind), metric_(metric), sync_lsn_(sync_lsn) {}
+    : opt_(std::move(opt)),
+      kind_(kind),
+      metric_(metric),
+      ttl_sec_(ttl_sec),
+      retention_max_count_(retention_max_count),
+      retention_max_bytes_(retention_max_bytes),
+      sync_lsn_(sync_lsn) {}
 
 VectorEngine::~VectorEngine() = default;
 
@@ -102,7 +111,10 @@ Status VectorEngine::OpenLocked() {
         opt_.endurance_compaction_bias,
         quantize_inmem,
         opt_.write_coalesce_window_us,
-        opt_.write_coalesce_batch_size);
+        opt_.write_coalesce_batch_size,
+        ttl_sec_,
+        retention_max_count_,
+        retention_max_bytes_);
 
     runtime_ = std::move(rt);
     st = runtime_->Start();
