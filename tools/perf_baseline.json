@@ -1,0 +1,8 @@
+{
+  "throughput": {
+    "qps": 300.0
+  },
+  "search_latency_us": {
+    "p99": 10000.0
+  }
+}

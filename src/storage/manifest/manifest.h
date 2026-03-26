@@ -39,6 +39,7 @@ namespace pomai::storage
                                                    uint32_t ttl_sec,
                                                    uint32_t retention_max_count,
                                                    uint64_t retention_max_bytes);
+        static pomai::Status CheckCompatibility(std::string_view root_path);
     };
 
 } // namespace pomai::storage

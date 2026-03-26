@@ -48,6 +48,7 @@ public:
      * Should be called frequently from the main loop.
      */
     void Poll();
+    void PollBudget(uint32_t max_ops, uint32_t max_ms, bool deterministic);
 
 private:
     struct ScheduledTask {

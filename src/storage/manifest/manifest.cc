@@ -560,4 +560,17 @@ namespace pomai::storage
         return WriteMembraneManifest(root_path, spec);
     }
 
+    pomai::Status Manifest::CheckCompatibility(std::string_view root_path) {
+        std::string content;
+        auto st = ReadAll(RootManifestPath(root_path), &content);
+        if (!st.ok()) return st;
+        const std::string_view sv(content);
+        const std::size_t nl = sv.find('\n');
+        const std::string_view header = (nl == std::string_view::npos) ? sv : sv.substr(0, nl);
+        if (header != "pomai.manifest.v3") {
+            return pomai::Status::Aborted("manifest compatibility check failed");
+        }
+        return pomai::Status::Ok();
+    }
+
 } // namespace pomai::storage

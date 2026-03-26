@@ -94,6 +94,10 @@ namespace pomai::core
 
     Status MembraneManager::Open()
     {
+        auto compat = storage::Manifest::CheckCompatibility(base_.path);
+        if (!compat.ok() && compat.code() != pomai::ErrorCode::kIO) {
+            return compat;
+        }
         opened_ = true;
         const auto interval_ms = base_.mesh_lod_build_interval_ms == 0 ? 50u : base_.mesh_lod_build_interval_ms;
         scheduler_.RegisterPeriodic(std::make_unique<MeshLodTask>(this), std::chrono::milliseconds(interval_ms));
@@ -1172,8 +1176,12 @@ namespace pomai::core
     }
 
     void MembraneManager::PollMaintenance() { 
-        scheduler_.Poll(); 
-        if (edge_gateway_) edge_gateway_->Tick();
+        scheduler_.PollBudget(base_.tick_max_ops, base_.tick_max_ms, base_.strict_deterministic);
+        if (!edge_gateway_) return;
+        const uint32_t edge_ticks = std::max<uint32_t>(1u, std::min<uint32_t>(base_.tick_max_ops, 4u));
+        for (uint32_t i = 0; i < edge_ticks; ++i) {
+            edge_gateway_->Tick();
+        }
     }
     void MembraneManager::RunMeshLodSlice() {
         const std::size_t jobs = base_.mesh_lod_jobs_per_tick == 0 ? 1u : static_cast<std::size_t>(base_.mesh_lod_jobs_per_tick);

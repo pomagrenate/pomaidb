@@ -99,6 +99,20 @@ namespace pomai::storage {
         gen_ = 0;
         while (env_->FileExists(SegmentPath(gen_)).ok())
             ++gen_;
+        for (std::uint64_t g = 0; g < gen_; ++g) {
+            std::unique_ptr<pomai::RandomAccessFile> raf;
+            st = env_->NewRandomAccessFile(SegmentPath(g), &raf);
+            if (!st.ok() || !raf) return st.ok() ? pomai::Status::IOError("wal header open failed") : st;
+            pomai::Slice hs;
+            WalFileHeader hdr{};
+            st = raf->Read(0, sizeof(hdr), &hs);
+            if (!st.ok()) return st;
+            if (hs.size() != sizeof(hdr)) return pomai::Status::Aborted("wal header short");
+            std::memcpy(&hdr, hs.data(), sizeof(hdr));
+            if (std::memcmp(hdr.magic, kWalMagic, sizeof(hdr.magic)) != 0 || hdr.version != kWalVersion) {
+                return pomai::Status::Aborted("wal compatibility check failed");
+            }
+        }
 
         void* raw = heap_
             ? palloc_heap_malloc_aligned(heap_, sizeof(Impl), alignof(Impl))

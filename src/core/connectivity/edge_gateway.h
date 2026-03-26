@@ -43,6 +43,7 @@ private:
         uint32_t u32_b = 0;
         std::string aux_k;
         std::string aux_v;
+        uint32_t retry_count = 0;
     };
 
     bool IsAuthorized(const std::string& request) const;
@@ -111,10 +112,13 @@ private:
     uint64_t sync_success_total_ = 0;
     uint64_t sync_fail_total_ = 0;
     uint64_t sync_backlog_drops_total_ = 0;
+    uint64_t sync_dead_letter_total_ = 0;
     uint64_t sync_retry_ms_ = 1000;
+    uint64_t sync_retry_backoff_max_ms_ = 30000;
     uint64_t sync_max_queue_ = 10000;
     std::deque<SyncEvent> sync_queue_;
     std::string sync_checkpoint_path_;
+    std::string sync_dead_letter_path_;
     uint64_t sync_checkpoint_seq_ = 0;
     uint64_t idempotency_ttl_sec_ = 300;
     uint64_t last_sync_attempt_unix_ms_ = 0;

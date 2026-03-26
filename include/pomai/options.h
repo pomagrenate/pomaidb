@@ -67,12 +67,16 @@ namespace pomai
     {
         // Keep user-provided settings as-is.
         kUserDefined = 0,
-        // Low memory footprint, safer for constrained edge nodes.
-        kLowRam = 1,
+        // Production durability-first profile.
+        kEdgeSafe = 1,
         // Balanced durability and latency defaults.
-        kBalanced = 2,
-        // Higher throughput at the cost of stronger durability guarantees.
-        kThroughput = 3,
+        kEdgeBalanced = 2,
+        // Throughput-first profile for permissive durability environments.
+        kEdgeFast = 3,
+        // Backward-compatible aliases.
+        kLowRam = kEdgeSafe,
+        kBalanced = kEdgeBalanced,
+        kThroughput = kEdgeFast,
     };
 
     struct IndexParams
@@ -199,6 +203,11 @@ namespace pomai
 
         // Optional deployment profile. Does not override index params; users keep full index freedom.
         EdgeProfile edge_profile = EdgeProfile::kUserDefined;
+        // Single-thread cooperative scheduler budget per tick.
+        uint32_t tick_max_ops = 8;
+        uint32_t tick_max_ms = 5;
+        // Opt-in deterministic mode for replay-sensitive paths.
+        bool strict_deterministic = false;
         // Gateway operational defaults.
         uint32_t gateway_rate_limit_per_sec = 2000;
         uint32_t gateway_idempotency_ttl_sec = 300;
@@ -215,7 +224,7 @@ namespace pomai
         {
             switch (edge_profile)
             {
-                case EdgeProfile::kLowRam:
+                case EdgeProfile::kEdgeSafe:
                     memtable_flush_threshold_mb = 16u;
                     max_memtable_mb = 64u;
                     auto_freeze_on_pressure = true;
@@ -234,7 +243,7 @@ namespace pomai
                     gateway_rate_limit_per_sec = 500u;
                     gateway_idempotency_ttl_sec = 120u;
                     break;
-                case EdgeProfile::kBalanced:
+                case EdgeProfile::kEdgeBalanced:
                     memtable_flush_threshold_mb = 64u;
                     max_memtable_mb = 256u;
                     auto_freeze_on_pressure = true;
@@ -253,7 +262,7 @@ namespace pomai
                     gateway_rate_limit_per_sec = 2000u;
                     gateway_idempotency_ttl_sec = 300u;
                     break;
-                case EdgeProfile::kThroughput:
+                case EdgeProfile::kEdgeFast:
                     memtable_flush_threshold_mb = 128u;
                     max_memtable_mb = 512u;
                     auto_freeze_on_pressure = true;
