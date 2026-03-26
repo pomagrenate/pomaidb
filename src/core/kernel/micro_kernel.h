@@ -1,7 +1,5 @@
 #pragma once
 
-#include <mutex>
-#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -12,12 +10,14 @@
 #include "pomai/status.h"
 #include "ai/analytical_engine.h"
 #include "core/metrics/metrics_registry.h"
+#include "core/util/ring_buffer.h"
 
 namespace pomai::core {
 
     /**
      * Pomegranate MicroKernel: The central coordinator for Pods.
      * Manages sequential execution of tasks via an in-memory message queue.
+     * Optimized for Edge: Zero-Lock (Single-Threaded) and Static Memory (Zero-Allocation).
      */
     class MicroKernel {
     public:
@@ -31,7 +31,6 @@ namespace pomai::core {
         /** Register a service pod. kernel takes ownership. */
         Status RegisterPod(std::unique_ptr<Pod> pod) {
             if (!pod) return Status::InvalidArgument("pod is null");
-            std::lock_guard<std::recursive_mutex> lock(mu_);
             PodId id = pod->Id();
             if (pods_.count(id)) return Status::AlreadyExists("pod already registered");
             
@@ -42,7 +41,6 @@ namespace pomai::core {
 
         /** Unregister and stop a pod. */
         void UnregisterPod(PodId id) {
-            std::lock_guard<std::recursive_mutex> lock(mu_);
             auto it = pods_.find(id);
             if (it != pods_.end()) {
                 it->second->OnStop();
@@ -52,76 +50,63 @@ namespace pomai::core {
 
         /** Post a message for later execution. */
         void Enqueue(Message&& msg) {
+            metrics::MetricsRegistry::Instance().Increment("kernel_messages_enqueued");
+            
             // Apply ELM-based Backpressure
             auto* elm = AnalyticalEngine::Global().GetModel("kernel_pressure");
             if (!elm) {
-                // Lazily Train strict mathematical relationship: latency ~ queue_size * 5 + payload_size * 0.1
+                // Lazily Train strict mathematical relationship
                 (void)AnalyticalEngine::Global().CreateELMModel("kernel_pressure", 2, 8, 1);
                 elm = AnalyticalEngine::Global().GetModel("kernel_pressure");
                 if (elm) {
-                    float X[8] = {
-                        0.0f, 0.0f,
-                        10.0f, 100.0f,
-                        100.0f, 1000.0f,
-                        200.0f, 5000.0f
-                    };
-                    float Y[4] = {
-                        0.0f,
-                        60.0f,
-                        600.0f,
-                        1500.0f
-                    };
+                    float X[8] = {0.0f, 0.0f, 10.0f, 100.0f, 100.0f, 1000.0f, 200.0f, 5000.0f};
+                    float Y[4] = {0.0f, 60.0f, 600.0f, 1500.0f};
                     (void)elm->Train(std::span<const float>(X, 8), std::span<const float>(Y, 4), 4);
                 }
             }
 
-            std::lock_guard<std::recursive_mutex> lock(mu_);
-            metrics::MetricsRegistry::Instance().Increment("kernel_messages_enqueued");
             if (elm && elm->InputDim() == 2 && elm->OutputDim() >= 1) {
                 float x[2] = { static_cast<float>(queue_.size()), static_cast<float>(msg.payload.size()) };
                 float pred[1] = { 0.0f };
                 elm->Predict(std::span<const float>(x, 2), std::span<float>(pred, 1));
-                if (pred[0] > 1000.0f) { // Threshold for system stall
+                if (pred[0] > 1000.0f) { 
                     metrics::MetricsRegistry::Instance().Increment("kernel_load_shed");
                     if (msg.result_ptr) {
                         *static_cast<Status*>(msg.result_ptr) = Status::ResourceExhausted("ELM predicted system timeout under load");
                     }
-                    return; // Drop message (Load shedding)
+                    return; 
                 }
             }
-            queue_.push_back(std::move(msg));
+            
+            if (!queue_.push_back(std::move(msg))) {
+                metrics::MetricsRegistry::Instance().Increment("kernel_queue_overflow");
+                if (msg.result_ptr) {
+                    *static_cast<Status*>(msg.result_ptr) = Status::ResourceExhausted("Kernel message queue overflow");
+                }
+            }
         }
 
-        /** 
-         * Synchronously execute one message from the queue. 
-         * Returns true if a message was processed.
-         */
+        /** Synchronously execute one message from the queue. */
         bool DispatchOne() {
-            Message msg;
-            {
-                std::lock_guard<std::recursive_mutex> lock(mu_);
-                if (queue_.empty()) return false;
-
-                msg = std::move(queue_.front());
-                queue_.pop_front();
-            }
-
-            std::lock_guard<std::recursive_mutex> lock(mu_);
+            if (queue_.empty()) return false;
+            
+            // Pop first to prevent infinite recursion in re-entrant ProcessAll calls
+            std::optional<Message> msg_opt = queue_.pop_front();
+            if (!msg_opt) return false;
+            
+            Message msg = std::move(*msg_opt);
             auto it = pods_.find(msg.target);
             if (it != pods_.end()) {
-                // Check memory quota before execution
-                auto quota = it->second->GetQuota();
-                if (quota.is_exceeded()) {
-                     // TODO: Log warning or reject if strict
-                }
-                
                 metrics::MetricsRegistry::Instance().Increment("kernel_messages_dispatched");
-                it->second->Handle(std::move(msg));
-            } else {
-                // Target pod not found
-                // TODO: Handle orphaned messages
-            }
+                
+                // Tracing for observability
+                if (msg.trace.enabled) {
+                    msg.trace.hop_count++;
+                }
 
+                it->second->Handle(std::move(msg));
+            }
+            
             return true;
         }
 
@@ -139,16 +124,15 @@ namespace pomai::core {
             queue_.clear();
         }
 
-        /** Direct access to a pod (use sparingly, prefer message passing). */
+        /** Direct access to a pod (use sparingly). */
         Pod* GetPod(PodId id) {
             auto it = pods_.find(id);
             return (it != pods_.end()) ? it->second.get() : nullptr;
         }
 
     private:
-        mutable std::recursive_mutex mu_;
         std::unordered_map<PodId, std::unique_ptr<Pod>> pods_;
-        std::deque<Message> queue_;
+        util::StaticRingBuffer<Message, 1024> queue_;
     };
 
 } // namespace pomai::core

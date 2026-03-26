@@ -3,10 +3,8 @@
 #include "palloc_compat.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdint>
 #include <limits>
-#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -68,8 +66,6 @@ struct palloc_page_pool_impl {
 
   size_t clock_hand = 0;
   uint64_t epoch = 0;
-
-  std::mutex mu;
 
   ~palloc_page_pool_impl() {
     // Flush best-effort but ignore errors during destruction.
@@ -279,7 +275,6 @@ struct palloc_page_pool {
   palloc_page_pool_impl impl;
 };
 
-static std::mutex g_default_pool_mu;
 static palloc_page_pool* g_default_pool = nullptr;
 
 extern "C" {
@@ -342,7 +337,6 @@ void* palloc_fetch_page(palloc_page_pool* pool, uint64_t page_id,
                         int for_write, int* is_new) {
   if (!pool) return nullptr;
   palloc_page_pool_impl& impl = pool->impl;
-  std::lock_guard<std::mutex> lock(impl.mu);
 
   auto it = impl.page_index.find(page_id);
   if (it != impl.page_index.end()) {
@@ -380,7 +374,6 @@ void palloc_unpin_page(palloc_page_pool* pool, uint64_t page_id,
                        int mark_dirty_if_modified) {
   if (!pool) return;
   palloc_page_pool_impl& impl = pool->impl;
-  std::lock_guard<std::mutex> lock(impl.mu);
   auto it = impl.page_index.find(page_id);
   if (it == impl.page_index.end()) return;
   size_t frame = it->second;
@@ -399,7 +392,6 @@ void palloc_unpin_page(palloc_page_pool* pool, uint64_t page_id,
 int palloc_flush_page(palloc_page_pool* pool, uint64_t page_id) {
   if (!pool) return -1;
   palloc_page_pool_impl& impl = pool->impl;
-  std::lock_guard<std::mutex> lock(impl.mu);
   auto it = impl.page_index.find(page_id);
   if (it == impl.page_index.end()) {
     return 0;  // nothing to do
@@ -411,7 +403,6 @@ int palloc_flush_page(palloc_page_pool* pool, uint64_t page_id) {
 int palloc_flush_all(palloc_page_pool* pool) {
   if (!pool) return -1;
   palloc_page_pool_impl& impl = pool->impl;
-  std::lock_guard<std::mutex> lock(impl.mu);
   return impl.flush_all_locked() ? 0 : -1;
 }
 
@@ -419,7 +410,6 @@ void palloc_page_pool_get_stats(palloc_page_pool* pool,
                                 palloc_page_pool_stats* out_stats) {
   if (!pool || !out_stats) return;
   palloc_page_pool_impl& impl = pool->impl;
-  std::lock_guard<std::mutex> lock(impl.mu);
   out_stats->page_size = impl.page_size;
   out_stats->capacity_bytes = impl.capacity_bytes;
   out_stats->resident_pages = impl.resident_pages;
@@ -429,7 +419,6 @@ void palloc_page_pool_get_stats(palloc_page_pool* pool,
 }
 
 palloc_page_pool* palloc_get_default_page_pool(const char* swap_file_path_hint) {
-  std::lock_guard<std::mutex> lock(g_default_pool_mu);
   if (g_default_pool) return g_default_pool;
   palloc_page_pool_options opts{};
   opts.page_size = 0;          // derive from profile
