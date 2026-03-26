@@ -11,6 +11,7 @@
 #include "core/kernel/pod.h"
 #include "pomai/status.h"
 #include "ai/analytical_engine.h"
+#include "core/metrics/metrics_registry.h"
 
 namespace pomai::core {
 
@@ -75,11 +76,13 @@ namespace pomai::core {
             }
 
             std::lock_guard<std::recursive_mutex> lock(mu_);
+            metrics::MetricsRegistry::Instance().Increment("kernel_messages_enqueued");
             if (elm && elm->InputDim() == 2 && elm->OutputDim() >= 1) {
                 float x[2] = { static_cast<float>(queue_.size()), static_cast<float>(msg.payload.size()) };
                 float pred[1] = { 0.0f };
                 elm->Predict(std::span<const float>(x, 2), std::span<float>(pred, 1));
                 if (pred[0] > 1000.0f) { // Threshold for system stall
+                    metrics::MetricsRegistry::Instance().Increment("kernel_load_shed");
                     if (msg.result_ptr) {
                         *static_cast<Status*>(msg.result_ptr) = Status::ResourceExhausted("ELM predicted system timeout under load");
                     }
@@ -112,6 +115,7 @@ namespace pomai::core {
                      // TODO: Log warning or reject if strict
                 }
                 
+                metrics::MetricsRegistry::Instance().Increment("kernel_messages_dispatched");
                 it->second->Handle(std::move(msg));
             } else {
                 // Target pod not found

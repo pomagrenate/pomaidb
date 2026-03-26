@@ -1,5 +1,5 @@
 #include "palloc_page_pool.h"
-
+#include "core/metrics/metrics_registry.h"
 #include "palloc_compat.h"
 
 #include <algorithm>
@@ -204,7 +204,7 @@ struct palloc_page_pool_impl {
     for (size_t pass = 0; pass < 2 * n; ++pass) {
       PageMeta& m = pages[clock_hand];
       size_t idx = clock_hand;
-      clock_hand = (clock_hand + 1) % n;
+      clock_hand = (clock_hand + 1) % max_resident_pages; // Use max_resident_pages as per user's snippet
       if (!m.in_use || m.pin_count != 0) continue;
       if (m.ref_bit) {
         m.ref_bit = false;
@@ -218,6 +218,7 @@ struct palloc_page_pool_impl {
       }
       // Remove from resident index.
       page_index.erase(m.page_id);
+      pomai::core::metrics::MetricsRegistry::Instance().Increment("palloc_page_eviction");
       ++evictions;
       m.page_id = page_id;
       m.pin_count = 0;
@@ -351,10 +352,12 @@ void* palloc_fetch_page(palloc_page_pool* pool, uint64_t page_id,
     m.ref_bit = true;
     m.last_access_epoch = ++impl.epoch;
     if (is_new) *is_new = 0;
+    pomai::core::metrics::MetricsRegistry::Instance().Increment("palloc_page_hit");
     (void)for_write;
     return impl.frame_ptr(frame);
   }
 
+  pomai::core::metrics::MetricsRegistry::Instance().Increment("palloc_page_miss");
   bool local_is_new = false;
   size_t frame = impl.allocate_frame_for_page(page_id, for_write != 0, &local_is_new);
   if (frame == impl.pages.size()) {
