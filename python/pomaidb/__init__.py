@@ -256,6 +256,13 @@ def _register_api(lib):
             ("records", ctypes.POINTER(PomaiAgentMemoryRecord)),
         ]
 
+    class PomaiNeighbor(ctypes.Structure):
+        _fields_ = [
+            ("dst", ctypes.c_uint64),
+            ("type", ctypes.c_uint32),
+            ("rank", ctypes.c_uint32),
+        ]
+
     class PomaiAgentMemorySearchResult(ctypes.Structure):
         _fields_ = [
             ("struct_size", ctypes.c_uint32),
@@ -481,6 +488,16 @@ def _register_api(lib):
     lib.pomai_agent_memory_prune_device.restype = ctypes.c_void_p
     lib.pomai_agent_memory_freeze_if_needed.argtypes = [ctypes.c_void_p]
     lib.pomai_agent_memory_freeze_if_needed.restype = ctypes.c_void_p
+
+    # Graph C API
+    lib.pomai_graph_add_vertex.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t]
+    lib.pomai_graph_add_vertex.restype = ctypes.c_void_p
+    lib.pomai_graph_add_edge.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t]
+    lib.pomai_graph_add_edge.restype = ctypes.c_void_p
+    lib.pomai_graph_get_neighbors.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.POINTER(ctypes.POINTER(PomaiNeighbor)), ctypes.POINTER(ctypes.c_size_t)]
+    lib.pomai_graph_get_neighbors.restype = ctypes.c_void_p
+    lib.pomai_graph_neighbors_free.argtypes = [ctypes.POINTER(PomaiNeighbor)]
+    lib.pomai_graph_neighbors_free.restype = None
 
     lib._pomai_options = PomaiOptions
     lib._pomai_upsert = PomaiUpsert
@@ -821,8 +838,8 @@ def create_rag_membrane(db, name, dim, shard_count=1):
     _check(_lib.pomai_create_rag_membrane(db, name.encode("utf-8"), dim, shard_count))
 
 
-def put_chunk(db, membrane_name, chunk_id, doc_id, token_ids, vector=None):
-    """Insert a RAG chunk. token_ids: list of int (token IDs); vector: optional list of float (embedding)."""
+def put_chunk(db, membrane_name, chunk_id, doc_id, token_ids, vector=None, text=None):
+    """Insert a RAG chunk. token_ids: list of int (token IDs); vector: optional list of float (embedding); text: optional string."""
     _ensure_lib()
     chunk = _lib._pomai_rag_chunk()
     chunk.struct_size = ctypes.sizeof(_lib._pomai_rag_chunk())
@@ -838,8 +855,13 @@ def put_chunk(db, membrane_name, chunk_id, doc_id, token_ids, vector=None):
     else:
         chunk.vector = None
         chunk.dim = 0
-    chunk.chunk_text = None
-    chunk.chunk_text_len = 0
+    if text:
+        text_buf = text.encode("utf-8")
+        chunk.chunk_text = ctypes.c_char_p(text_buf)
+        chunk.chunk_text_len = len(text_buf)
+    else:
+        chunk.chunk_text = None
+        chunk.chunk_text_len = 0
     _check(_lib.pomai_put_chunk(db, membrane_name.encode("utf-8"), ctypes.byref(chunk)))
 
 
@@ -888,7 +910,7 @@ def search_rag(db, membrane_name, token_ids=None, vector=None, topk=10, candidat
         _lib.pomai_rag_search_result_free(ctypes.byref(result))
 
 
-def ingest_document(db, membrane_name, doc_id, text, *, max_chunk_bytes=512, max_doc_bytes=4 * 1024 * 1024):
+def ingest_document(db, membrane_name, doc_id, text, *, dim=384, max_chunk_bytes=512, max_doc_bytes=4 * 1024 * 1024):
     """Ingest a document into the RAG membrane: chunk, embed (mock), tokenize, store. Offline; no external API."""
     _ensure_lib()
     opts = _lib._pomai_rag_chunk_options()
@@ -898,8 +920,7 @@ def ingest_document(db, membrane_name, doc_id, text, *, max_chunk_bytes=512, max
     opts.max_chunks_per_batch = 32
     opts.overlap_bytes = 0
     pipeline = ctypes.c_void_p()
-    dim = 4  # match mock embedder; membrane dim must match
-    _check(_lib.pomai_rag_pipeline_create(db, membrane_name.encode("utf-8"), dim, ctypes.byref(opts), ctypes.byref(pipeline)))
+    _check(_lib.pomai_rag_pipeline_create(db, membrane_name.encode("utf-8"), int(dim), ctypes.byref(opts), ctypes.byref(pipeline)))
     try:
         text_buf = text.encode("utf-8")
         _check(_lib.pomai_rag_ingest_document(pipeline, int(doc_id), text_buf, len(text_buf)))
@@ -1194,6 +1215,36 @@ def agent_memory_freeze_if_needed(mem):
     """Flush memory indexes to disk if pending."""
     _ensure_lib()
     _check(_lib.pomai_agent_memory_freeze_if_needed(mem))
+
+def graph_add_vertex(db, vertex_id, tag=0, metadata=None):
+    """Add a vertex to the graph."""
+    _ensure_lib()
+    m_ptr = (ctypes.c_uint8 * len(metadata)).from_buffer_copy(metadata) if metadata else None
+    m_len = len(metadata) if metadata else 0
+    _check(_lib.pomai_graph_add_vertex(db, int(vertex_id), int(tag), m_ptr, m_len))
+
+def graph_add_edge(db, src_id, dst_id, edge_type=0, rank=0, metadata=None):
+    """Add an edge to the graph."""
+    _ensure_lib()
+    m_ptr = (ctypes.c_uint8 * len(metadata)).from_buffer_copy(metadata) if metadata else None
+    m_len = len(metadata) if metadata else 0
+    _check(_lib.pomai_graph_add_edge(db, int(src_id), int(dst_id), int(edge_type), int(rank), m_ptr, m_len))
+
+def graph_get_neighbors(db, vertex_id):
+    """Get neighbors of a vertex. Returns list of (dst, type, rank) tuples."""
+    _ensure_lib()
+    out_ptr = ctypes.POINTER(PomaiNeighbor)()
+    out_count = ctypes.c_size_t()
+    _check(_lib.pomai_graph_get_neighbors(db, int(vertex_id), ctypes.byref(out_ptr), ctypes.byref(out_count)))
+    try:
+        res = []
+        for i in range(out_count.value):
+            n = out_ptr[i]
+            res.append((int(n.dst), int(n.type), int(n.rank)))
+        return res
+    finally:
+        if out_ptr:
+            _lib.pomai_graph_neighbors_free(out_ptr)
 
 
 from .zero_copy import release_zero_copy_session, search_zero_copy
