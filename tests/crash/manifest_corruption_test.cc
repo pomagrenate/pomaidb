@@ -1,7 +1,7 @@
 #include "tests/common/test_main.h"
 #include "tests/common/test_tmpdir.h"
-#include "pomai/pomai.h"
-#include "core/shard/manifest.h"
+#include "pomai.h"
+#include "segment_manifest.h"
 
 #include <fstream>
 #include <filesystem>

@@ -1,4 +1,4 @@
-#include "pomai/pomai.h"
+#include "pomai.h"
 
 #include <cstdint>
 #include <fstream>
@@ -39,8 +39,6 @@ int main() {
   opt.dim = 32;
   opt.shard_count = 1;
   opt.max_lifecycle_entries = 2000;
-  opt.max_text_docs = 5000;
-  opt.max_query_frontier = 512;
 
   std::unique_ptr<pomai::DB> db;
   auto st = pomai::DB::Open(opt, &db);

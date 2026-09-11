@@ -2,7 +2,7 @@
 
 #include "tests/common/test_main.h"
 #include "tests/common/test_tmpdir.h"
-#include "pomai/env.h"
+#include "env.h"
 #include <cstring>
 #include <string>
 

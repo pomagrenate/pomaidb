@@ -40,6 +40,12 @@ venv
 ./build*
 .venv-benchmark
 benchmarks/cross_engine/output
-benchmarks/cross_engine/benchmarks
 /build_fuzz
 /Testing
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+out/

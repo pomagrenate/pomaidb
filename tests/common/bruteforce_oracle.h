@@ -5,8 +5,8 @@
 #include <vector>
 #include <memory> 
 
-#include "pomai/search.h"
-#include "pomai/types.h"
+#include "search.h"
+#include "types.h"
 
 namespace pomai::table {
     class MemTable;

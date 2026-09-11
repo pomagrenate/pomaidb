@@ -3,10 +3,10 @@
 #include <span>
 #include <vector>
 
-#include "pomai/metadata.h"
-#include "pomai/status.h"
-#include "pomai/types.h"
-#include "table/memtable.h"
+#include "metadata.h"
+#include "status.h"
+#include "types.h"
+#include "memtable.h"
 
 POMAI_TEST(MemTable_PutDeleteForEach)
 {

@@ -26,39 +26,23 @@ try:
     pomaidb.delete(db, 1)
     print("Delete works.")
     
-    pomaidb.create_membrane_kind(db, "my_kv", 0, 1, pomaidb.MEMBRANE_KIND_KEYVALUE)
-    pomaidb.kv_put(db, "my_kv", "key1", "val1")
-    assert pomaidb.kv_get(db, "my_kv", "key1") == "val1"
-    pomaidb.kv_delete(db, "my_kv", "key1")
-    print("KV works.")
-    
-    pomaidb.create_membrane_kind(db, "my_blob", 0, 1, pomaidb.MEMBRANE_KIND_BLOB)
-    pomaidb.blob_put(db, "my_blob", 1, b"\x01\x02\x03")
-    print("Blob works.")
+    # Test vector membrane creation and listing
+    pomaidb.create_membrane(db, "vec_memb", dim=128, shard_count=1)
+    membranes = pomaidb.list_membranes(db)
+    assert "vec_memb" in membranes
+    print("Membrane list works:", membranes)
+
+    # Put and search in membrane
+    pomaidb.put(db, 10, [0.2]*128, membrane="vec_memb")
+    pomaidb.freeze(db, membrane="vec_memb")
+    hits = pomaidb.search(db, [0.2]*128, topk=5, membrane="vec_memb")
+    assert len(hits) > 0
+    assert hits[0][0] == 10
+    print("Membrane search works:", hits)
 
     pomaidb.close(db)
     print("DB Closed.")
-    
-    # Test AgentMemory
-    print("Opening AgentMemory...")
-    mem = pomaidb.agent_memory_open(dirpath + "/agent", dim=128)
-    print("AgentMemory appended...")
-    outid = pomaidb.agent_memory_append(mem, "agent_1", "sess_1", "msg", 1, "hello", [0.1]*128)
-    print("AgentMemory appended with id", outid)
-    # Close and reopen to force memtable flush so iterator can see it
-    pomaidb.agent_memory_close(mem)
-    mem = pomaidb.agent_memory_open(dirpath + "/agent", dim=128)
-    
-    print("AgentMemory get_recent...")
-    recent = pomaidb.agent_memory_get_recent(mem, "agent_1")
-    print("Recent: [", len(recent), "] ->", recent)
-    
-    # search memory
-    res = pomaidb.agent_memory_search(mem, "agent_1", embedding=[0.1]*128)
-    print("Search: [", len(res), "] ->", res)
-
-    pomaidb.agent_memory_close(mem)
-    print("ALL TESTS PASSED (Check prints)")
+    print("ALL TESTS PASSED")
     
 finally:
     shutil.rmtree(dirpath)

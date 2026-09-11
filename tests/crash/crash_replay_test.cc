@@ -14,7 +14,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#include "pomai/pomai.h"
+#include "pomai.h"
 
 namespace fs = std::filesystem;
 

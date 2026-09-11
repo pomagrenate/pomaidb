@@ -6,8 +6,8 @@
 #include <iostream>
 #include <unistd.h>
 
-#include "pomai/pomai.h"
-#include "util/posix_file.h"
+#include "pomai.h"
+#include "posix_file.h"
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   if (size < 100) return 0;

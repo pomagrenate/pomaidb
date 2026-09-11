@@ -2,9 +2,9 @@
 #include <memory>
 #include <string>
 
-#include "pomai/options.h"
-#include "pomai/pomai.h"
-#include "pomai/status.h"
+#include "options.h"
+#include "pomai.h"
+#include "status.h"
 
 namespace pomai::test
 {

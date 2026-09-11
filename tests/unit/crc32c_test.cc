@@ -3,7 +3,7 @@
 #include <cstring>
 #include <string>
 
-#include "util/crc32c.h"
+#include "crc32c.h"
 
 POMAI_TEST(Crc32c_KnownVectors)
 {

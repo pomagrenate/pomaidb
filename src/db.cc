@@ -1,4 +1,4 @@
-#include "pomai/pomai.h"
+#include "pomai.h"
 
 #include <memory>
 #include <string>
@@ -6,8 +6,9 @@
 #include <utility>
 #include <vector>
 
-#include "core/membrane/manager.h"
-#include "util/logging.h"
+#include "membrane_manager.h"
+#include "logging.h"
+#include "palloc_compat.h"
 
 namespace pomai
 {
@@ -52,13 +53,6 @@ namespace pomai
             return mgr_.PutVector(core::MembraneManager::kDefaultMembrane, id, vec, meta);
         }
 
-        Status PutChunk(const RagChunk& chunk) override
-        {
-            return mgr_.PutChunk(core::MembraneManager::kDefaultMembrane, chunk);
-        }
-
-
-
         Status PutBatch(const std::vector<VectorId>& ids,
                         const std::vector<std::span<const float>>& vectors) override
         {
@@ -85,9 +79,44 @@ namespace pomai
             return mgr_.Delete(core::MembraneManager::kDefaultMembrane, id);
         }
 
+        Status Search(std::span<const float> query, uint32_t topk, SearchResult *out) override
+        {
+            return mgr_.Search(core::MembraneManager::kDefaultMembrane, query, topk, out);
+        }
 
+        Status Search(std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult *out) override
+        {
+            return mgr_.Search(core::MembraneManager::kDefaultMembrane, query, topk, opts, out);
+        }
 
-        // ---- Membrane API ----
+        Status SearchVector(std::span<const float> query, uint32_t topk, SearchResult *out) override
+        {
+            return mgr_.SearchVector(core::MembraneManager::kDefaultMembrane, query, topk, out);
+        }
+
+        Status SearchVector(std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult *out) override
+        {
+            return mgr_.SearchVector(core::MembraneManager::kDefaultMembrane, query, topk, opts, out);
+        }
+
+        Status SearchVector(std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchHitSink& sink) override
+        {
+            return mgr_.SearchVector(core::MembraneManager::kDefaultMembrane, query, topk, opts, sink);
+        }
+
+        Status SearchBatch(std::span<const float> queries, uint32_t num_queries,
+                           uint32_t topk, std::vector<SearchResult>* out) override
+        {
+            return mgr_.SearchBatch(core::MembraneManager::kDefaultMembrane, queries, num_queries, topk, out);
+        }
+
+        Status SearchBatch(std::span<const float> queries, uint32_t num_queries,
+                           uint32_t topk, const SearchOptions& opts, std::vector<SearchResult>* out) override
+        {
+            return mgr_.SearchBatch(core::MembraneManager::kDefaultMembrane, queries, num_queries, topk, opts, out);
+        }
+
+        // ---- Membrane / Named Collection API ----
         Status CreateMembrane(const MembraneSpec &spec) override
         {
             return mgr_.CreateMembrane(spec);
@@ -112,10 +141,12 @@ namespace pomai
         {
             return mgr_.ListMembranes(out);
         }
+
         Status UpdateMembraneRetention(std::string_view name, uint32_t ttl_sec, uint32_t retention_max_count, uint64_t retention_max_bytes) override
         {
             return mgr_.UpdateMembraneRetention(name, ttl_sec, retention_max_count, retention_max_bytes);
         }
+
         Status GetMembraneRetention(std::string_view name, uint32_t* ttl_sec, uint32_t* retention_max_count, uint64_t* retention_max_bytes) const override
         {
             return mgr_.GetMembraneRetention(name, ttl_sec, retention_max_count, retention_max_bytes);
@@ -142,11 +173,6 @@ namespace pomai
             return mgr_.PutVector(membrane, id, vec, meta);
         }
 
-        Status PutChunk(std::string_view membrane, const RagChunk& chunk) override
-        {
-            return mgr_.PutChunk(membrane, chunk);
-        }
-
         Status Get(std::string_view membrane, VectorId id, std::vector<float> *out) override
         {
             return mgr_.Get(membrane, id, out);
@@ -166,53 +192,6 @@ namespace pomai
         {
             return mgr_.Delete(membrane, id);
         }
-
-        Status Search(std::span<const float> query, uint32_t topk, SearchResult *out) override
-        {
-            return mgr_.Search(core::MembraneManager::kDefaultMembrane, query, topk, out);
-        }
-
-        Status Search(std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult *out) override
-        {
-            return mgr_.Search(core::MembraneManager::kDefaultMembrane, query, topk, opts, out);
-        }
-
-        Status SearchVector(std::span<const float> query, uint32_t topk, SearchResult *out) override
-        {
-            return mgr_.SearchVector(core::MembraneManager::kDefaultMembrane, query, topk, out);
-        }
-
-        Status SearchVector(std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult *out) override
-        {
-            return mgr_.SearchVector(core::MembraneManager::kDefaultMembrane, query, topk, opts, out);
-        }
-        Status SearchVector(std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchHitSink& sink) override
-        {
-            return mgr_.SearchVector(core::MembraneManager::kDefaultMembrane, query, topk, opts, sink);
-        }
-
-        Status SearchRag(const RagQuery& query, const RagSearchOptions& opts, RagSearchResult *out) override
-        {
-            return mgr_.SearchRag(core::MembraneManager::kDefaultMembrane, query, opts, out);
-        }
-
-        Status SearchMultiModal(const MultiModalQuery& query, SearchResult* out) override {
-            return mgr_.SearchMultiModal(core::MembraneManager::kDefaultMembrane, query, out);
-        }
-
-        Status SearchBatch(std::span<const float> queries, uint32_t num_queries,
-                           uint32_t topk, std::vector<SearchResult>* out) override
-        {
-            return mgr_.SearchBatch(core::MembraneManager::kDefaultMembrane, queries, num_queries, topk, out);
-        }
-
-        Status SearchBatch(std::span<const float> queries, uint32_t num_queries,
-                           uint32_t topk, const SearchOptions& opts, std::vector<SearchResult>* out) override
-        {
-            return mgr_.SearchBatch(core::MembraneManager::kDefaultMembrane, queries, num_queries, topk, opts, out);
-        }
-
-        // ...
 
         Status Search(std::string_view membrane, std::span<const float> query,
                       uint32_t topk, SearchResult *out) override
@@ -237,165 +216,11 @@ namespace pomai
         {
             return mgr_.SearchVector(membrane, query, topk, opts, out);
         }
+
         Status SearchVector(std::string_view membrane, std::span<const float> query,
                             uint32_t topk, const SearchOptions& opts, SearchHitSink& sink) override
         {
             return mgr_.SearchVector(membrane, query, topk, opts, sink);
-        }
-
-        Status SearchRag(std::string_view membrane, const RagQuery& query,
-                         const RagSearchOptions& opts, RagSearchResult *out) override
-        {
-            return mgr_.SearchRag(membrane, query, opts, out);
-        }
-
-        Status SearchMultiModal(std::string_view membrane, const MultiModalQuery& query, SearchResult* out) override {
-            return mgr_.SearchMultiModal(membrane, query, out);
-        }
-
-        Status TsPut(std::string_view membrane, uint64_t series_id, uint64_t timestamp, double value) override {
-            return mgr_.TsPut(membrane, series_id, timestamp, value);
-        }
-        Status TsRange(std::string_view membrane, uint64_t series_id, uint64_t start_ts, uint64_t end_ts, std::vector<TimeSeriesPoint>* out) override {
-            return mgr_.TsRange(membrane, series_id, start_ts, end_ts, out);
-        }
-        Status KvPut(std::string_view membrane, std::string_view key, std::string_view value) override {
-            return mgr_.KvPut(membrane, key, value);
-        }
-        Status KvGet(std::string_view membrane, std::string_view key, std::string* out) override {
-            return mgr_.KvGet(membrane, key, out);
-        }
-        Status KvDelete(std::string_view membrane, std::string_view key) override {
-            return mgr_.KvDelete(membrane, key);
-        }
-        Status MetaPut(std::string_view membrane, std::string_view gid, std::string_view value) override {
-            return mgr_.MetaPut(membrane, gid, value);
-        }
-        Status MetaGet(std::string_view membrane, std::string_view gid, std::string* out) override {
-            return mgr_.MetaGet(membrane, gid, out);
-        }
-        Status MetaDelete(std::string_view membrane, std::string_view gid) override {
-            return mgr_.MetaDelete(membrane, gid);
-        }
-        Status LinkObjects(std::string_view gid, uint64_t vector_id, uint64_t graph_vertex_id, uint64_t mesh_id) override {
-            return mgr_.LinkObjects(gid, vector_id, graph_vertex_id, mesh_id);
-        }
-        Status UnlinkObjects(std::string_view gid) override {
-            return mgr_.UnlinkObjects(gid);
-        }
-        Status StartEdgeGateway(uint16_t http_port, uint16_t ingest_port) override {
-            return mgr_.StartEdgeGateway(http_port, ingest_port);
-        }
-        Status StartEdgeGatewaySecure(uint16_t http_port, uint16_t ingest_port, std::string_view auth_token) override {
-            return mgr_.StartEdgeGatewaySecure(http_port, ingest_port, auth_token);
-        }
-        Status StopEdgeGateway() override {
-            return mgr_.StopEdgeGateway();
-        }
-        Status SketchAdd(std::string_view membrane, std::string_view key, uint64_t increment) override {
-            return mgr_.SketchAdd(membrane, key, increment);
-        }
-        Status SketchEstimate(std::string_view membrane, std::string_view key, uint64_t* out) override {
-            return mgr_.SketchEstimate(membrane, key, out);
-        }
-        Status SketchSeen(std::string_view membrane, std::string_view key, bool* out) override {
-            return mgr_.SketchSeen(membrane, key, out);
-        }
-        Status SketchUniqueEstimate(std::string_view membrane, uint64_t* out) override {
-            return mgr_.SketchUniqueEstimate(membrane, out);
-        }
-        Status BlobPut(std::string_view membrane, uint64_t blob_id, std::span<const uint8_t> data) override {
-            return mgr_.BlobPut(membrane, blob_id, data);
-        }
-        Status BlobGet(std::string_view membrane, uint64_t blob_id, std::vector<uint8_t>* out) override {
-            return mgr_.BlobGet(membrane, blob_id, out);
-        }
-        Status BlobDelete(std::string_view membrane, uint64_t blob_id) override {
-            return mgr_.BlobDelete(membrane, blob_id);
-        }
-        
-        // ---- Graph API ----
-        Status AddVertex(VertexId id, TagId tag, const Metadata& meta) override {
-            return mgr_.AddVertex(core::MembraneManager::kDefaultMembrane, id, tag, meta);
-        }
-        Status AddEdge(VertexId src, VertexId dst, EdgeType type, uint32_t rank, const Metadata& meta) override {
-            return mgr_.AddEdge(core::MembraneManager::kDefaultMembrane, src, dst, type, rank, meta);
-        }
-        Status DeleteVertex(VertexId id) override {
-            return mgr_.DeleteVertex(core::MembraneManager::kDefaultMembrane, id);
-        }
-        Status DeleteEdge(VertexId src, VertexId dst, EdgeType type) override {
-            return mgr_.DeleteEdge(core::MembraneManager::kDefaultMembrane, src, dst, type);
-        }
-        Status GetNeighbors(VertexId src, std::vector<Neighbor>* out) override {
-            return mgr_.GetNeighbors(core::MembraneManager::kDefaultMembrane, src, out);
-        }
-        Status GetNeighbors(VertexId src, EdgeType type, std::vector<Neighbor>* out) override {
-            return mgr_.GetNeighbors(core::MembraneManager::kDefaultMembrane, src, type, out);
-        }
-
-        Status SpatialPut(std::string_view membrane, uint64_t entity_id, double latitude, double longitude) override {
-            return mgr_.SpatialPut(membrane, entity_id, latitude, longitude);
-        }
-        Status SpatialRadiusSearch(std::string_view membrane, double latitude, double longitude, double radius_meters, std::vector<SpatialPoint>* out) override {
-            return mgr_.SpatialRadiusSearch(membrane, latitude, longitude, radius_meters, out);
-        }
-        Status SpatialWithinPolygon(std::string_view membrane, const GeoPolygon& polygon, std::vector<SpatialPoint>* out) override {
-            return mgr_.SpatialWithinPolygon(membrane, polygon, out);
-        }
-        Status SpatialNearest(std::string_view membrane, double latitude, double longitude, uint32_t topk, std::vector<SpatialPoint>* out) override {
-            return mgr_.SpatialNearest(membrane, latitude, longitude, topk, out);
-        }
-        Status MeshPut(std::string_view membrane, uint64_t mesh_id, std::span<const float> vertices_xyz) override {
-            return mgr_.MeshPut(membrane, mesh_id, vertices_xyz);
-        }
-        Status MeshRmsd(std::string_view membrane, uint64_t mesh_a, uint64_t mesh_b, double* out) override {
-            return mgr_.MeshRmsd(membrane, mesh_a, mesh_b, out);
-        }
-        Status MeshIntersect(std::string_view membrane, uint64_t mesh_a, uint64_t mesh_b, bool* out) override {
-            return mgr_.MeshIntersect(membrane, mesh_a, mesh_b, out);
-        }
-        Status MeshVolume(std::string_view membrane, uint64_t mesh_id, double* out) override {
-            return mgr_.MeshVolume(membrane, mesh_id, out);
-        }
-        Status MeshRmsd(std::string_view membrane, uint64_t mesh_a, uint64_t mesh_b, const MeshQueryOptions& opts, double* out) override {
-            return mgr_.MeshRmsd(membrane, mesh_a, mesh_b, opts, out);
-        }
-        Status MeshIntersect(std::string_view membrane, uint64_t mesh_a, uint64_t mesh_b, const MeshQueryOptions& opts, bool* out) override {
-            return mgr_.MeshIntersect(membrane, mesh_a, mesh_b, opts, out);
-        }
-        Status MeshVolume(std::string_view membrane, uint64_t mesh_id, const MeshQueryOptions& opts, double* out) override {
-            return mgr_.MeshVolume(membrane, mesh_id, opts, out);
-        }
-        Status SparsePut(std::string_view membrane, uint64_t id, const SparseEntry& entry) override {
-            return mgr_.SparsePut(membrane, id, entry);
-        }
-        Status SparseDot(std::string_view membrane, uint64_t a, uint64_t b, double* out) override {
-            return mgr_.SparseDot(membrane, a, b, out);
-        }
-        Status SparseIntersect(std::string_view membrane, uint64_t a, uint64_t b, uint32_t* out) override {
-            return mgr_.SparseIntersect(membrane, a, b, out);
-        }
-        Status SparseJaccard(std::string_view membrane, uint64_t a, uint64_t b, double* out) override {
-            return mgr_.SparseJaccard(membrane, a, b, out);
-        }
-        Status BitsetPut(std::string_view membrane, uint64_t id, std::span<const uint8_t> bits) override {
-            return mgr_.BitsetPut(membrane, id, bits);
-        }
-        Status BitsetAnd(std::string_view membrane, uint64_t a, uint64_t b, std::vector<uint8_t>* out) override {
-            return mgr_.BitsetAnd(membrane, a, b, out);
-        }
-        Status BitsetOr(std::string_view membrane, uint64_t a, uint64_t b, std::vector<uint8_t>* out) override {
-            return mgr_.BitsetOr(membrane, a, b, out);
-        }
-        Status BitsetXor(std::string_view membrane, uint64_t a, uint64_t b, std::vector<uint8_t>* out) override {
-            return mgr_.BitsetXor(membrane, a, b, out);
-        }
-        Status BitsetHamming(std::string_view membrane, uint64_t a, uint64_t b, double* out) override {
-            return mgr_.BitsetHamming(membrane, a, b, out);
-        }
-        Status BitsetJaccard(std::string_view membrane, uint64_t a, uint64_t b, double* out) override {
-            return mgr_.BitsetJaccard(membrane, a, b, out);
         }
 
         Status SearchBatch(std::string_view membrane, std::span<const float> queries, uint32_t num_queries,
@@ -425,14 +250,6 @@ namespace pomai
             return mgr_.NewIterator(membrane, out);
         }
 
-        Status NewMembraneRecordIterator(std::string_view membrane, std::unique_ptr<MembraneRecordIterator>* out) override {
-            return mgr_.NewMembraneRecordIterator(membrane, out);
-        }
-        Status NewMembraneRecordIterator(std::string_view membrane, const MembraneScanOptions& scan_opts,
-                                         std::unique_ptr<MembraneRecordIterator>* out) override {
-            return mgr_.NewMembraneRecordIterator(membrane, scan_opts, out);
-        }
-
         Status GetSnapshot(std::string_view membrane, std::shared_ptr<Snapshot>* out) override
         {
             return mgr_.GetSnapshot(membrane, out);
@@ -449,6 +266,7 @@ namespace pomai
 
     Status DB::Open(const DBOptions &options, std::unique_ptr<DB> *out)
     {
+        pomai::util::EnsurePallocInitialized();
         if (!out)
             return Status::InvalidArgument("out=null");
         if (options.path.empty())

@@ -1,0 +1,92 @@
+#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
+#include <array>
+
+#include "palloc_compat.h"
+#include "env.h"
+#include "metadata.h"
+#include "options.h"
+#include "status.h"
+#include "types.h"
+
+namespace pomai::table
+{
+    class MemTable;
+}
+
+namespace pomai::storage
+{
+
+    class Wal
+    {
+    public:
+        /** \a env VFS for file I/O; nullptr = use Env::Default(). \a heap optional. */
+        Wal(pomai::Env* env,
+            std::string db_path,
+            std::uint32_t shard_id,
+            std::size_t segment_bytes,
+            pomai::FsyncPolicy fsync,
+            bool encryption_enabled = false,
+            std::string encryption_key_hex = "",
+            palloc_heap_t* heap = nullptr);
+        ~Wal();
+
+        Wal(const Wal &) = delete;
+        Wal &operator=(const Wal &) = delete;
+
+        pomai::Status Open();
+
+        pomai::Status AppendPut(pomai::VectorId id, pomai::VectorView vec);
+        pomai::Status AppendPut(pomai::VectorId id, pomai::VectorView vec, const pomai::Metadata& meta); // Added
+        pomai::Status AppendDelete(pomai::VectorId id);
+        
+        // Batch append: Write multiple Put records with single fsync (5-10x faster)
+        pomai::Status AppendBatch(const std::vector<pomai::VectorId>& ids,
+                                  const std::vector<pomai::VectorView>& vectors);
+
+        pomai::Status Flush();
+        pomai::Status ReplayInto(pomai::table::MemTable &mem);
+        
+        // Closes current log, deletes all WAL files, and resets state.
+        // Used after successful MemTable flush to segments.
+        pomai::Status Reset();
+        
+        // Transaction support: group multiple records into one atomic sync unit.
+        pomai::Status BeginBatch();
+        pomai::Status EndBatch();
+
+        std::uint64_t GetLastLSN() const { return seq_; }
+        std::uint64_t GetBytesWritten() const { return bytes_written_total_; }
+
+    private:
+        std::string SegmentPath(std::uint64_t gen) const;
+        pomai::Status RotateIfNeeded(std::size_t add_bytes);
+        pomai::Status AppendBatchMarker(std::uint8_t op);
+
+        pomai::Env* env_ = nullptr;
+        std::string db_path_;
+        std::uint32_t shard_id_;
+        std::size_t segment_bytes_;
+        pomai::FsyncPolicy fsync_;
+
+        std::uint64_t gen_ = 0;
+        std::uint64_t seq_ = 0;
+
+        std::uint64_t file_off_ = 0;
+        std::size_t bytes_in_seg_ = 0;
+        std::uint64_t bytes_written_total_ = 0;
+
+        palloc_heap_t* heap_ = nullptr;
+        class Impl;
+        Impl* impl_ = nullptr;
+        std::vector<std::uint8_t> scratch_;
+        bool encryption_enabled_ = false;
+        std::array<std::uint8_t, 32> encryption_key_{};
+    };
+
+} // namespace pomai::storage

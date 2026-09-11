@@ -5,11 +5,10 @@
 #include <vector>
 
 #include "palloc_compat.h"
-#include "pomai/c_status.h"
-#include "pomai/pomai.h"
-#include "pomai/snapshot.h"
-#include "pomai/iterator.h"
-#include "pomai/membrane_iterator.h"
+#include "c_status.h"
+#include "pomai.h"
+#include "snapshot.h"
+#include "iterator.h"
 
 struct pomai_status_t {
     pomai_status_code_t code;
@@ -26,13 +25,6 @@ struct pomai_snapshot_t {
 
 struct pomai_iter_t {
     std::unique_ptr<pomai::SnapshotIterator> iter;
-};
-
-struct pomai_membrane_iter_t {
-    std::unique_ptr<pomai::MembraneRecordIterator> iter;
-    std::string key_buf;
-    std::string value_buf;
-    std::vector<float> vec_buf;
 };
 
 inline pomai_status_code_t ToCCode(pomai::ErrorCode code) {

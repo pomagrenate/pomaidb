@@ -6,10 +6,10 @@
 #include <span>
 
 #include "tests/common/bruteforce_oracle.h"
-#include "pomai/metadata.h"
-#include "table/memtable.h"
-#include "pomai/status.h"
-#include "pomai/types.h"
+#include "metadata.h"
+#include "memtable.h"
+#include "status.h"
+#include "types.h"
 
 using namespace pomai;
 using namespace pomai::table;

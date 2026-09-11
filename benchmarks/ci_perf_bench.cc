@@ -1,4 +1,4 @@
-#include "pomai/pomai.h"
+#include "pomai.h"
 
 #include <algorithm>
 #include <chrono>

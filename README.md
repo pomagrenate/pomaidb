@@ -566,7 +566,7 @@ PomaiDB is optimized for **predictable latency and constrained hardware**, not m
 The latest benchmark suite was executed through:
 
 ```bash
-./scripts/run_benchmarks_one_by_one.sh
+./tools/run_benchmarks_one_by_one.sh
 ```
 
 with the full suite completing successfully.
@@ -675,7 +675,7 @@ git clone \
 
 cd pomaidb
 
-./scripts/slim_palloc_submodule.sh
+./tools/slim_palloc_submodule.sh
 ```
 
 Then build using the normal CMake workflow.

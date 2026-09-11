@@ -1,13 +1,13 @@
 #include "tests/common/test_main.h"
 #include "tests/common/test_tmpdir.h"
-#include "pomai/database.h"
-#include "pomai/graph.h"
-#include "pomai/hooks.h"
-#include "pomai/options.h"
-#include "pomai/pomai.h"
-#include "core/membrane/manager.h"
-#include "core/storage/sync_provider.h"
-#include "core/concurrency/scheduler.h"
+#include "database.h"
+#include "hooks.h"
+#include "options.h"
+#include "pomai.h"
+#include "membrane_manager.h"
+#include "sync_provider.h"
+#include "scheduler.h"
+#include "env.h"
 #include <filesystem>
 #include <vector>
 #include <thread>
@@ -43,7 +43,7 @@ POMAI_TEST(Edge_TaskScheduler) {
     auto task = std::make_unique<CounterTask>();
     auto* task_ptr = task.get();
     
-    scheduler.RegisterPeriodic(std::move(task), std::chrono::milliseconds(10));
+    scheduler.RegisterPeriodic(std::move(task), std::chrono::milliseconds(100));
     
     // Ensure now > next_run for the first Poll()
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -52,13 +52,13 @@ POMAI_TEST(Edge_TaskScheduler) {
     scheduler.Poll();
     POMAI_EXPECT_EQ(task_ptr->count, 1);
     
-    // Wait LESS than interval and poll - should NOT run
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    // Wait LESS than interval (e.g. 20ms < 100ms) and poll - should NOT run
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     scheduler.Poll();
     POMAI_EXPECT_EQ(task_ptr->count, 1);
     
-    // Wait total > interval and poll - should run
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Wait total > interval (e.g. 120ms) and poll - should run
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
     scheduler.Poll();
     POMAI_EXPECT_EQ(task_ptr->count, 2);
 }
@@ -126,44 +126,56 @@ POMAI_TEST(Edge_PushSync) {
     std::filesystem::remove_all(dir);
 }
 
-POMAI_TEST(Edge_GatewaySyncReplay) {
-    DBOptions opt;
-    opt.path = pomai::test::TempDir("edge_sync_replay");
-    opt.dim = 4;
-    opt.shard_count = 1;
-    opt.fsync = FsyncPolicy::kNever;
-    core::MembraneManager mgr(opt);
-    POMAI_EXPECT_OK(mgr.Open());
+POMAI_TEST(Edge_CallbackSyncReceiver) {
+    int call_count = 0;
+    uint64_t last_lsn = 0;
+    core::CallbackSyncReceiver receiver([&](const core::WalEntry& entry) {
+        call_count++;
+        last_lsn = entry.lsn;
+        return Status::Ok();
+    });
 
-    MembraneSpec gspec;
-    gspec.name = "gx";
-    gspec.kind = MembraneKind::kGraph;
-    gspec.dim = 4;
-    gspec.shard_count = 1;
-    POMAI_EXPECT_OK(mgr.CreateMembrane(gspec));
-    POMAI_EXPECT_OK(mgr.OpenMembrane("gx"));
-    POMAI_EXPECT_OK(mgr.ReplayGatewaySyncEvent(1, "graph_vertex_put", "gx", 42, 0, 7, 0, "", ""));
-    POMAI_EXPECT_OK(mgr.ReplayGatewaySyncEvent(2, "graph_vertex_put", "gx", 43, 0, 7, 0, "", ""));
-    POMAI_EXPECT_OK(mgr.ReplayGatewaySyncEvent(3, "graph_edge_put", "gx", 42, 43, 0, 0, "", ""));
-    std::vector<Neighbor> nbr;
-    POMAI_EXPECT_OK(mgr.GetNeighbors("gx", 42, &nbr));
-    POMAI_EXPECT_TRUE(!nbr.empty());
+    core::WalEntry e1{};
+    e1.lsn = 100;
+    e1.op = 1;
+    e1.id = 1;
+    e1.dim = 2;
+    std::vector<float> v = {1.0f, 2.0f};
+    e1.vec = v;
+    POMAI_EXPECT_OK(receiver.Receive(e1));
+    POMAI_EXPECT_EQ(call_count, 1);
+    POMAI_EXPECT_EQ(last_lsn, 100);
+}
 
-    MembraneSpec tspec;
-    tspec.name = "tsm";
-    tspec.kind = MembraneKind::kTimeSeries;
-    tspec.dim = 4;
-    tspec.shard_count = 1;
-    POMAI_EXPECT_OK(mgr.CreateMembrane(tspec));
-    POMAI_EXPECT_OK(mgr.OpenMembrane("tsm"));
-    const uint64_t ts_ms = 1700000000000ULL;
-    POMAI_EXPECT_OK(mgr.ReplayGatewaySyncEvent(4, "timeseries_put", "tsm", 99, ts_ms, 0, 0, "", "12.5"));
-    std::vector<TimeSeriesPoint> pts;
-    POMAI_EXPECT_OK(mgr.TsRange("tsm", 99, 0, 2000000000000ULL, &pts));
-    POMAI_EXPECT_TRUE(!pts.empty());
-    POMAI_EXPECT_EQ(pts[0].value, 12.5);
+POMAI_TEST(Edge_FileWalSyncReceiver) {
+    std::string dir = pomai::test::TempDir("edge_file_wal_sync");
+    std::string path = dir + "/replica.wal";
 
-    std::filesystem::remove_all(opt.path);
+    {
+        core::FileWalSyncReceiver receiver(path);
+        core::WalEntry e1{};
+        e1.lsn = 42;
+        e1.op = 1;
+        e1.id = 10;
+        e1.dim = 2;
+        std::vector<float> v = {1.5f, 2.5f};
+        e1.vec = v;
+        e1.raw_data = "hello";
+        e1.meta.tenant = "tenant_a";
+
+        POMAI_EXPECT_OK(receiver.Receive(e1));
+        POMAI_EXPECT_EQ(receiver.entries_received(), 1);
+        POMAI_EXPECT_EQ(receiver.last_lsn(), 42);
+        POMAI_EXPECT_OK(receiver.Flush());
+    }
+
+    // Verify file was written and non-empty
+    uint64_t sz = 0;
+    POMAI_EXPECT_OK(Env::Default()->GetFileSize(path, &sz));
+    POMAI_EXPECT_TRUE(sz > 0);
+
+    std::filesystem::remove_all(dir);
 }
 
 } // namespace pomai
+

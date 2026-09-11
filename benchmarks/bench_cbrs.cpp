@@ -1,7 +1,7 @@
-#include "pomai/pomai.h"
-#include "core/distance.h"
-#include "core/routing/kmeans_lite.h"
-#include "core/routing/routing_persist.h"
+#include "pomai.h"
+#include "distance.h"
+#include "kmeans_lite.h"
+#include "routing_persist.h"
 
 #include <algorithm>
 #include <chrono>
@@ -18,7 +18,6 @@
 #include <set>
 #include <sstream>
 #include <string>
-#include <sys/resource.h>
 #include <tuple>
 #include <unordered_set>
 #include <vector>
@@ -103,9 +102,40 @@ ResourceSample ReadResources() {
     return r;
 }
 
-double ToSec(const timeval& tv) {
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+struct CpuTimeSample {
+    double user_sec = 0.0;
+    double sys_sec = 0.0;
+};
+static CpuTimeSample ReadCpuTimes() {
+    FILETIME creation, exit, kernel, user;
+    if (GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user)) {
+        ULARGE_INTEGER k, u;
+        k.LowPart = kernel.dwLowDateTime;
+        k.HighPart = kernel.dwHighDateTime;
+        u.LowPart = user.dwLowDateTime;
+        u.HighPart = user.dwHighDateTime;
+        return { static_cast<double>(u.QuadPart) * 1e-7, static_cast<double>(k.QuadPart) * 1e-7 };
+    }
+    return {0.0, 0.0};
+}
+#else
+#include <sys/resource.h>
+#include <sys/time.h>
+struct CpuTimeSample {
+    double user_sec = 0.0;
+    double sys_sec = 0.0;
+};
+static double ToSec(const timeval& tv) {
     return static_cast<double>(tv.tv_sec) + static_cast<double>(tv.tv_usec) / 1e6;
 }
+static CpuTimeSample ReadCpuTimes() {
+    struct rusage ru{};
+    getrusage(RUSAGE_SELF, &ru);
+    return { ToSec(ru.ru_utime), ToSec(ru.ru_stime) };
+}
+#endif
 
 double Percentile(const std::vector<double>& vals, double p) {
     if (vals.empty()) return 0.0;
@@ -361,8 +391,7 @@ Row RunScenario(const ScenarioConfig& sc) {
     opt.routing_warmup_mult = 1;
     opt.routing_keep_prev = cfg.routing == "cbrs_no_dual" ? 0u : 1u;
 
-    struct rusage ru0{};
-    getrusage(RUSAGE_SELF, &ru0);
+    auto ru0 = ReadCpuTimes();
 
     if (sc.epoch_drift && cfg.dataset == "epoch_drift_hard" && cfg.routing != "fanout") {
         std::vector<float> base_flat;
@@ -568,10 +597,9 @@ Row RunScenario(const ScenarioConfig& sc) {
     row.rss_query_kb = rquery.rss_kb;
     row.peak_rss_kb = std::max(row.peak_rss_kb, rquery.peak_rss_kb);
 
-    struct rusage ru1{};
-    getrusage(RUSAGE_SELF, &ru1);
-    row.user_cpu_sec = ToSec(ru1.ru_utime) - ToSec(ru0.ru_utime);
-    row.sys_cpu_sec = ToSec(ru1.ru_stime) - ToSec(ru0.ru_stime);
+    auto ru1 = ReadCpuTimes();
+    row.user_cpu_sec = ru1.user_sec - ru0.user_sec;
+    row.sys_cpu_sec = ru1.sys_sec - ru0.sys_sec;
 
     db->Close();
     return row;

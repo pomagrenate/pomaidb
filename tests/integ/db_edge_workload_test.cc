@@ -7,11 +7,11 @@
 #include <cstdint>
 #include <vector>
 
-#include "pomai/database.h"
-#include "pomai/options.h"
-#include "pomai/search.h"
-#include "pomai/status.h"
-#include "pomai/types.h"
+#include "database.h"
+#include "options.h"
+#include "search.h"
+#include "status.h"
+#include "types.h"
 
 namespace {
 

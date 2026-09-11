@@ -4,8 +4,8 @@
 #include <memory>
 #include <vector>
 
-#include "pomai/iterator.h"
-#include "pomai/pomai.h"
+#include "iterator.h"
+#include "pomai.h"
 
 namespace {
 using namespace pomai;

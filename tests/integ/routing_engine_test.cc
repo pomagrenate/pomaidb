@@ -4,8 +4,8 @@
 #include <memory>
 #include <vector>
 
-#include "pomai/options.h"
-#include "pomai/pomai.h"
+#include "options.h"
+#include "pomai.h"
 
 namespace {
 

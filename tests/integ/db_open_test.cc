@@ -5,7 +5,7 @@
 #include <ctime>
 
 // Include necessary headers for DB
-#include "pomai/pomai.h"
+#include "pomai.h"
 
 namespace pomai::tests {
 

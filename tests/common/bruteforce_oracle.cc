@@ -4,9 +4,9 @@
 #include <cmath>
 #include <limits>
 
-#include "core/distance.h"
-#include "table/memtable.h"
-#include "table/segment.h"
+#include "distance.h"
+#include "memtable.h"
+#include "segment.h"
 
 namespace pomai::test {
 
@@ -29,7 +29,7 @@ std::vector<pomai::SearchHit> BruteForceSearch(
         if (query.size() != vec.size()) return; // Should not happen if DB consistent
         
         float score = pomai::core::Dot(query, vec);
-        all_hits.push_back({id, score, {}});
+        all_hits.push_back({id, score});
     };
 
     // 1. Scan MemTable

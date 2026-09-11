@@ -1,4 +1,4 @@
-#include "pomai/c_api.h"
+#include "c_api.h"
 
 #include <chrono>
 #include <cstddef>

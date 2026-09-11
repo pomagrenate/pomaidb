@@ -7,9 +7,9 @@
 #include <cstdint>
 #include <vector>
 
-#include "pomai/database.h"
-#include "pomai/status.h"
-#include "pomai/types.h"
+#include "database.h"
+#include "status.h"
+#include "types.h"
 
 namespace {
 

@@ -4,7 +4,7 @@
 #include <iostream>
 #include <memory>
 
-#include "core/kernel/micro_kernel.h"
+#include "micro_kernel.h"
 
 namespace {
 class BenchPod final : public pomai::core::Pod {

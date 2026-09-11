@@ -6,7 +6,7 @@
 //   --threads <N>                   Concurrent search threads (default: 1)
 //   --output <path>                 JSON output path (default: stdout)
 
-#include "pomai/pomai.h"
+#include "pomai.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>

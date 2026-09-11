@@ -5,8 +5,8 @@
 #include <thread>
 #include <vector>
 
-#include "core/kernel/micro_kernel.h"
-#include "core/concurrency/scheduler.h"
+#include "micro_kernel.h"
+#include "scheduler.h"
 
 namespace pomai {
 namespace {

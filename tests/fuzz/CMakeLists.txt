@@ -9,8 +9,9 @@ if(ENABLE_FUZZING)
         target_link_options(${target} PRIVATE ${FUZZER_FLAGS})
         target_link_libraries(${target} PRIVATE pomai)
         target_include_directories(${target} PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/../../include
             ${CMAKE_CURRENT_SOURCE_DIR}/../../src
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../src/capi
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../src/utils
         )
     endmacro()
 

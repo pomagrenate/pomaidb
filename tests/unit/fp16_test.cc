@@ -4,10 +4,10 @@
 #include <vector>
 #include <cmath>
 
-#include "pomai/status.h"
-#include "table/segment.h"
+#include "status.h"
+#include "segment.h"
 #include "tests/common/test_tmpdir.h"
-#include "pomai/options.h"
+#include "options.h"
 
 namespace
 {

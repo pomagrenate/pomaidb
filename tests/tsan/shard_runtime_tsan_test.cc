@@ -5,11 +5,11 @@
 #include <memory>
 #include <vector>
 
-#include "core/shard/runtime.h"
-#include "pomai/options.h"
-#include "pomai/search.h"
-#include "storage/wal/wal.h"
-#include "table/memtable.h"
+#include "vector_engine.h"
+#include "options.h"
+#include "search.h"
+#include "wal.h"
+#include "memtable.h"
 
 namespace
 {
@@ -25,24 +25,17 @@ namespace
   POMAI_TEST(VectorRuntime_TSAN_ActorSerializesCommands)
   {
     const std::uint32_t dim = 32;
-    const std::uint32_t runtime_id = 0;
 
     const std::string path = pomai::test::TempDir("pomai-vector_runtime_tsan_test");
 
-    auto wal = std::make_unique<pomai::storage::Wal>(
-        pomai::Env::Default(), path, runtime_id,
-        /*wal_segment_bytes*/ (1u << 20),
-        /*fsync*/ pomai::FsyncPolicy::kNever);
+    pomai::DBOptions opt;
+    opt.path = path;
+    opt.dim = dim;
+    opt.metric = pomai::MetricType::kL2;
+    opt.fsync = pomai::FsyncPolicy::kNever;
 
-    POMAI_EXPECT_OK(wal->Open());
-
-    auto mem = std::make_unique<pomai::table::MemTable>(dim, /*arena_block_bytes*/ (1u << 20));
-
-    POMAI_EXPECT_OK(wal->ReplayInto(*mem));
-
-    pomai::core::VectorRuntime rt(runtime_id, path, dim, pomai::MembraneKind::kVector, pomai::MetricType::kL2, std::move(wal),
-                                  std::move(mem), pomai::IndexParams{});
-    POMAI_EXPECT_OK(rt.Start());
+    pomai::core::VectorEngine rt(opt, pomai::MembraneKind::kVector, pomai::MetricType::kL2);
+    POMAI_EXPECT_OK(rt.Open());
 
     // Single-threaded: sequential puts (no worker thread, no Enqueue).
     constexpr int kThreads = 4;

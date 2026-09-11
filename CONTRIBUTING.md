@@ -34,7 +34,7 @@ We maintain this prioritized list so contributors know where help is most needed
 - Recall vs speed vs memory trade-off tables
 
 ### Bindings & Usability
-- **Python**: `pip install pomaidb` is supported (see [python/](python/) and [docs/PYTHON_API.md](docs/PYTHON_API.md)); pybind11 bindings for a richer API are welcome
+- **Python**: `pip install pomaidb` is supported (see [sdk/python/](sdk/python/)); pybind11 bindings for a richer API are welcome
 - Go / Rust / Swift / Kotlin bindings
 - Simple CLI tool (`pomai put`, `pomai search`, `pomai freeze`)
 - Example apps: offline RAG notebook, on-device agent memory

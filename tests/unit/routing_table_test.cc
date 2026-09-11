@@ -3,7 +3,7 @@
 
 #include <fstream>
 
-#include "core/routing/routing_persist.h"
+#include "routing_persist.h"
 
 namespace {
 

@@ -8,8 +8,8 @@
 //
 // Usage: ./benchmark_a [--list]
 
-#include "pomai/pomai.h"
-#include "pomai/iterator.h"
+#include "pomai.h"
+#include "iterator.h"
 
 #include <chrono>
 #include <cstddef>

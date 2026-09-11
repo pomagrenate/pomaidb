@@ -1,5 +1,5 @@
 #include "tests/common/test_main.h"
-#include "pomai/pomai.h"
+#include "pomai.h"
 #include <random>
 #include <vector>
 #include <iostream>
@@ -73,7 +73,10 @@ void TestAccuracy(pomai::QuantizationType qtype, const std::string& name) {
     std::cout << "[Accuracy Test] " << name << ": " << (accuracy * 100.0) << "%" << std::endl;
     POMAI_EXPECT_TRUE(accuracy > 0.95);
 
-    std::filesystem::remove_all(path);
+    (void)db->Close();
+    db.reset();
+    std::error_code ec;
+    std::filesystem::remove_all(path, ec);
 }
 
 POMAI_TEST(QuantizationAccuracy_None) {

@@ -6,13 +6,13 @@
 #include <fstream>
 #include <span>
 
-#include "pomai/pomai.h"
-#include "pomai/options.h"
-#include "pomai/search.h"
-#include "pomai/types.h"
-#include "table/segment.h"
-#include "storage/manifest/manifest.h"
-#include "core/shard/manifest.h"
+#include "pomai.h"
+#include "options.h"
+#include "search.h"
+#include "types.h"
+#include "segment.h"
+#include "manifest.h"
+#include "segment_manifest.h"
 
 namespace {
 
@@ -175,6 +175,9 @@ POMAI_TEST(DB_FreezeAndCompact) {
         }
     }
     POMAI_EXPECT_EQ(seg_count, 1);
+    (void)db->Close();
+    db.reset();
+    fs::remove_all(root);
 }
 
 } // namespace

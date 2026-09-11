@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "core/shard/mailbox.h"
+#include "mailbox.h"
 
 // Single-threaded: push then close then pop (no producer/consumer threads).
 POMAI_TEST(Mailbox_BasicMpsc)

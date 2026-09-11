@@ -41,6 +41,10 @@ if (POMAI_EDGE_BUILD)
   add_compile_options(-Os -g0)
 endif()
 
+if (MINGW)
+  add_link_options(-static-libgcc -static-libstdc++)
+endif()
+
 
 # =========================
 # Native HNSW (Replaces FAISS HNSW)
@@ -58,13 +62,17 @@ if(NOT EXISTS "${POMAI_VULKAN_HEADERS_DIR}/vulkan/vulkan.h")
 endif()
 message(STATUS "[pomai] Vulkan headers: ${POMAI_VULKAN_HEADERS_DIR}")
 
-# Vendored palloc (AutoCookies fork): use explicit pa_* API only — do not export
-# malloc/free aliases from libpalloc (avoids clashes with libc and other deps).
-set(PA_OVERRIDE OFF CACHE BOOL "palloc: interpose libc malloc/free" FORCE)
-set(PA_BUILD_SHARED OFF CACHE BOOL "palloc: build shared library" FORCE)
-set(PA_BUILD_STATIC ON CACHE BOOL "palloc: build static library" FORCE)
-set(PA_BUILD_TESTS OFF CACHE BOOL "palloc: build palloc unit tests" FORCE)
-set(PA_BUILD_OBJECT OFF CACHE BOOL "palloc: build palloc-obj target" FORCE)
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/CMakeLists.txt")
+  message(FATAL_ERROR "palloc is a mandatory core dependency of PomaiDB. Run git submodule update --init --recursive")
+endif()
+
+# Hardcoded First-Class Native Allocator: palloc
+set(PA_VECTOR ON)
+set(PA_BUILD_STATIC ON)
+set(PA_BUILD_SHARED OFF)
+set(PA_BUILD_TESTS OFF)
+set(PA_BUILD_OBJECT OFF)
+set(PA_OVERRIDE OFF)
 add_subdirectory(third_party/palloc)
 
 find_package(Threads REQUIRED)
@@ -75,96 +83,74 @@ find_package(Threads REQUIRED)
 add_library(pomai STATIC
   src/db.cc
   src/database.cc
-  src/core/rag/agent_memory.cc
-  src/palloc_page_pool.cc
-  src/core/vector_engine/vector_engine.cc
-  src/core/shard/runtime.cc
-  src/core/query/query_planner.cc
-  src/core/query/query_orchestrator.cc
-  src/core/query/heuristic_engine.cc
-  src/core/text/text_membrane.cc
-  src/core/timeseries/timeseries_engine.cc
-  src/core/keyvalue/keyvalue_engine.cc
-  src/core/sketch/sketch_engine.cc
-  src/core/blob/blob_engine.cc
-  src/core/simd/simd_dispatch.cc
-  src/core/spatial/spatial_engine.cc
-  src/core/mesh/mesh_engine.cc
-  src/core/mesh/mesh_lod_manager.cc
-  src/core/mesh/simplifier.cc
-  src/core/linker/object_linker.cc
-  src/core/connectivity/edge_gateway.cc
-  src/core/sparse/sparse_engine.cc
-  src/core/bitset/bitset_engine.cc
-  src/core/audio/audio_engine.cc
-  src/core/bloom/bloom_engine.cc
-  src/core/document/document_engine.cc
-  src/core/lifecycle/semantic_lifecycle.cc
-  src/core/security/aes_gcm.cc
-  src/core/shard/layer_lookup.cc
-  src/core/shard/iterator.cc
-  src/core/shard/manifest.cc
-  src/core/membrane/manager.cc
-  src/core/membrane/membrane_record_iterator.cc
-  src/table/memtable.cc
-  src/storage/wal/wal.cc
-  src/core/kernel/pods/vector_pod.cc
-  src/core/kernel/pods/graph_pod.cc
-  src/core/kernel/pods/query_pod.cc
-  src/storage/manifest/manifest.cc
-  src/storage/storage_engine.cc
-  src/table/segment.cc
-  src/core/storage/compaction_manager.cc
-  src/core/storage/sync_provider.cc
-  src/core/concurrency/scheduler.cc
-  src/compute/vulkan/loader/volk.c
-  src/compute/vulkan/vulkan_init.cc
-  src/compute/vulkan/vulkan_device_context.cc
-  src/compute/vulkan/vulkan_memory_bridge.cc
-  src/compute/vulkan/vulkan_staging_pool.cc
+  src/utils/palloc_override.cc
+  src/utils/palloc_page_pool.cc
+  src/vector_engine.cc
+  src/simd_dispatch.cc
+  src/semantic_lifecycle.cc
+  src/aes_gcm.cc
+  src/segment_manifest.cc
+  src/membrane_manager.cc
+  src/memtable.cc
+  src/wal.cc
+  src/vector_pod.cc
+  src/manifest.cc
+  src/storage_engine.cc
+  src/segment.cc
+  src/sync_provider.cc
+  src/scheduler.cc
+  src/volk.c
+  src/vulkan_init.cc
+  src/vulkan_device_context.cc
+  src/vulkan_memory_bridge.cc
+  src/vulkan_staging_pool.cc
 
-  src/core/quantization/scalar_quantizer.cc
-  src/core/quantization/half_float_quantizer.cc
-  src/core/quantization/bit_quantizer.cc
-  src/core/index/ivf_coarse.cc
-  src/core/index/ivf_flat.cc
-  src/core/distance.cc
-  src/core/query/lexical_index.cc
+  src/scalar_quantizer.cc
+  src/half_float_quantizer.cc
+  src/bit_quantizer.cc
+  src/ivf_coarse.cc
+  src/ivf_flat.cc
+  src/distance.cc
 
-  src/core/routing/routing_table.cc
-  src/core/routing/kmeans_lite.cc
-  src/core/routing/routing_persist.cc
-  src/core/rag/rag_engine.cc
-  src/core/rag/chunking/recursive_splitter.cc
-  src/core/rag/chunking/sliding_window.cc
-  src/core/rag/mock_embedding_provider.cc
-  src/core/rag/rag_pipeline.cc
+  src/routing_table.cc
+  src/kmeans_lite.cc
+  src/routing_persist.cc
 
   # Phase 2: Product Quantizer
-  src/core/quantization/pomai_pq.cc
+  src/pomai_pq.cc
 
   # Phase 3 (Milvus-Lite inspired): BitsetMask pre-computed filter bitset
-  src/core/bitset_mask.cc
+  src/bitset_mask.cc
 
-  src/core/index/hnsw_index.cc
+  src/hnsw_index.cc
   third_party/pomaidb_hnsw/hnsw.cc
 
-  # Gate #1/#2 utilities (linked into libpomai)
-  src/util/posix_file.cc
-  src/util/posix_env.cc
-  src/util/memory_env.cc
-  src/util/env.cc
-  src/util/crc32c.cc
-  src/util/logging.cc
+  # Pomegranate Engine Architecture
+  src/pulp.cc
+  src/aril.cc
+  src/locule.cc
+  src/compass.cc
+  src/fruit_map.cc
+  src/rind.cc
+  src/press.cc
+  src/pomegranate_query.cc
+  src/pomegranate_engine.cc
 
+  # Utilities (linked into libpomai)
+  src/utils/posix_file.cc
+  src/utils/posix_env.cc
+  src/utils/memory_env.cc
+  src/utils/env.cc
+  src/utils/crc32c.cc
+  src/utils/logging.cc
 )
 
 target_include_directories(pomai
   PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
     ${POMAI_VULKAN_HEADERS_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/compute/vulkan/loader
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
   SYSTEM PRIVATE
@@ -188,10 +174,14 @@ if (OpenMP_CXX_FOUND)
   target_link_libraries(pomai PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
-find_package(OpenSSL REQUIRED)
+find_package(OpenSSL QUIET)
 # PUBLIC: static lib pomai leaves unresolved pa_* until consumers link palloc-static too.
 target_link_libraries(pomai PUBLIC palloc-static Threads::Threads)
-target_link_libraries(pomai PRIVATE OpenSSL::Crypto)
+target_compile_definitions(pomai PUBLIC PA_VECTOR=1)
+if (OPENSSL_FOUND)
+  target_link_libraries(pomai PRIVATE OpenSSL::Crypto)
+  target_compile_definitions(pomai PRIVATE POMAI_HAS_OPENSSL=1)
+endif()
 if (UNIX AND NOT APPLE)
   target_link_libraries(pomai PRIVATE ${CMAKE_DL_LIBS})
 endif()
@@ -232,9 +222,6 @@ set(POMAI_C_API_SOURCES
   src/capi/capi_status.cc
   src/capi/capi_db.cc
   src/capi/capi_scan.cc
-  src/capi/capi_membrane_scan.cc
-  src/capi/capi_membrane_capabilities.cc
-  src/capi/capi_agent_memory.cc
 )
 
 add_library(pomai_c SHARED ${POMAI_C_API_SOURCES})
@@ -252,15 +239,19 @@ target_compile_definitions(pomai_c PRIVATE POMAI_C_BUILD_DLL)
 
 target_include_directories(pomai_c
   PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_include_directories(pomai_c_static
   PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 if (MSVC)
@@ -300,7 +291,7 @@ if (POMAI_BUILD_TESTS)
   endif()
 
   option(POMAI_ENABLE_CRASH_TESTS "Enable crash-style tests (may be incompatible with TSAN)" ON)
-  if (POMAI_IS_TSAN)
+  if (POMAI_IS_TSAN OR WIN32)
     set(POMAI_ENABLE_CRASH_TESTS OFF)
   endif()
 
@@ -318,11 +309,12 @@ if (POMAI_BUILD_TESTS)
       target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
     endif()
 
-    # Allow tests to include both public and internal headers.
+    # Allow tests to include all engine, capi, and utils headers.
     target_include_directories(${target} PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}              # "tests/common/..."
-      ${CMAKE_CURRENT_SOURCE_DIR}/include      # public API
-      ${CMAKE_CURRENT_SOURCE_DIR}/src          # internal headers: util/, core/, table/, storage/
+      ${CMAKE_CURRENT_SOURCE_DIR}/src          # all engine headers
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/capi     # C API headers
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/utils    # utils headers
     )
 
     # Make TSAN builds more stable on some distros (PIE can trigger weird mmap layouts).
@@ -354,18 +346,17 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(palloc_page_pool_test)
   pomai_add_labeled_test(palloc_page_pool_test "unit")
 
+  add_executable(storage_engine_test tests/unit/storage_engine_test.cc)
+  pomai_setup_test(storage_engine_test)
+  pomai_add_labeled_test(storage_engine_test "unit")
+
+  add_executable(palloc_global_test tests/unit/palloc_global_test.cc)
+  pomai_setup_test(palloc_global_test)
+  pomai_add_labeled_test(palloc_global_test "unit")
+
   add_executable(env_test tests/unit/env_test.cc)
   pomai_setup_test(env_test)
   pomai_add_labeled_test(env_test "unit")
-
-  add_executable(agent_memory_core_test tests/unit/agent_memory_core_test.cc)
-  pomai_setup_test(agent_memory_core_test)
-  # Temporarily exclude from default CTest runs until AgentMemory semantics are finalized.
-  # pomai_add_labeled_test(agent_memory_core_test "unit")
-
-  add_executable(agent_memory_concurrency_test tests/unit/agent_memory_concurrency_test.cc)
-  pomai_setup_test(agent_memory_concurrency_test)
-  pomai_add_labeled_test(agent_memory_concurrency_test "unit")
 
   add_executable(mailbox_test tests/unit/mailbox_test.cc)
   pomai_setup_test(mailbox_test)
@@ -411,34 +402,6 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(kernel_hardening_test)
   pomai_add_labeled_test(kernel_hardening_test "unit")
 
-  add_executable(graph_rag_test tests/unit/graph_rag_test.cc)
-  pomai_setup_test(graph_rag_test)
-  pomai_add_labeled_test(graph_rag_test "unit")
-
-  add_executable(graph_persistence_test tests/unit/graph_persistence_test.cc)
-  pomai_setup_test(graph_persistence_test)
-  pomai_add_labeled_test(graph_persistence_test "unit")
-
-  add_executable(graph_memory_accounting_test tests/unit/graph_memory_accounting_test.cc)
-  pomai_setup_test(graph_memory_accounting_test)
-  pomai_add_labeled_test(graph_memory_accounting_test "unit")
-
-  add_executable(rag_chunking_test tests/unit/rag_chunking_test.cc)
-  pomai_setup_test(rag_chunking_test)
-  pomai_add_labeled_test(rag_chunking_test "unit")
-
-  add_executable(rag_embedding_test tests/unit/rag_embedding_test.cc)
-  pomai_setup_test(rag_embedding_test)
-  pomai_add_labeled_test(rag_embedding_test "unit")
-
-  add_executable(query_orchestrator_test tests/unit/query_orchestrator_test.cc)
-  pomai_setup_test(query_orchestrator_test)
-  pomai_add_labeled_test(query_orchestrator_test "unit")
-
-  add_executable(text_membrane_test tests/unit/text_membrane_test.cc)
-  pomai_setup_test(text_membrane_test)
-  pomai_add_labeled_test(text_membrane_test "unit")
-
   add_executable(low_ram_limits_test tests/unit/low_ram_limits_test.cc)
   pomai_setup_test(low_ram_limits_test)
   pomai_add_labeled_test(low_ram_limits_test "unit")
@@ -446,22 +409,6 @@ if (POMAI_BUILD_TESTS)
   add_executable(edge_profile_options_test tests/unit/edge_profile_options_test.cc)
   pomai_setup_test(edge_profile_options_test)
   pomai_add_labeled_test(edge_profile_options_test "unit")
-
-  add_executable(new_membrane_typed_api_test tests/unit/new_membrane_typed_api_test.cc)
-  pomai_setup_test(new_membrane_typed_api_test)
-  pomai_add_labeled_test(new_membrane_typed_api_test "unit")
-
-  add_executable(membrane_capabilities_test tests/unit/membrane_capabilities_test.cc)
-  pomai_setup_test(membrane_capabilities_test)
-  pomai_add_labeled_test(membrane_capabilities_test "unit")
-
-  add_executable(simd_new_membranes_test tests/unit/simd_new_membranes_test.cc)
-  pomai_setup_test(simd_new_membranes_test)
-  pomai_add_labeled_test(simd_new_membranes_test "unit")
-
-  add_executable(mesh_lod_manager_test tests/unit/mesh_lod_manager_test.cc)
-  pomai_setup_test(mesh_lod_manager_test)
-  pomai_add_labeled_test(mesh_lod_manager_test "unit")
 
   add_executable(vulkan_memory_bridge_test tests/unit/vulkan_memory_bridge_test.cc)
   pomai_setup_test(vulkan_memory_bridge_test)
@@ -517,16 +464,6 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(db_error_paths_test)
   pomai_add_labeled_test(db_error_paths_test "integ")
 
-  add_executable(agent_memory_basic_test tests/integ/agent_memory_basic_test.cc)
-  pomai_setup_test(agent_memory_basic_test)
-  # Temporarily exclude from default CTest runs until AgentMemory persistence behavior is finalized.
-  # pomai_add_labeled_test(agent_memory_basic_test "integ")
-
-  add_executable(agent_memory_capi_test tests/integ/agent_memory_capi_test.cc)
-  pomai_setup_test(agent_memory_capi_test)
-  # Temporarily exclude from default CTest runs until AgentMemory C API is fully stabilized.
-  # pomai_add_labeled_test(agent_memory_capi_test "integ")
-
   add_executable(routing_engine_test tests/integ/routing_engine_test.cc)
   pomai_setup_test(routing_engine_test)
   pomai_add_labeled_test(routing_engine_test "integ")
@@ -535,10 +472,6 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(manifest_test)
   pomai_add_labeled_test(manifest_test "unit")
 
-  add_executable(multi_modal_test tests/unit/multi_modal_test.cc)
-  pomai_setup_test(multi_modal_test)
-  pomai_add_labeled_test(multi_modal_test "unit")
-
   add_executable(membrane_test tests/integ/membrane_test.cc)
   pomai_setup_test(membrane_test)
   pomai_add_labeled_test(membrane_test "integ")
@@ -546,14 +479,6 @@ if (POMAI_BUILD_TESTS)
   add_executable(membrane_persistence_test tests/integ/membrane_persistence_test.cc)
   pomai_setup_test(membrane_persistence_test)
   pomai_add_labeled_test(membrane_persistence_test "integ")
-
-  add_executable(new_membrane_persistence_test tests/integ/new_membrane_persistence_test.cc)
-  pomai_setup_test(new_membrane_persistence_test)
-  pomai_add_labeled_test(new_membrane_persistence_test "integ")
-
-  add_executable(simd_new_membranes_persistence_test tests/integ/simd_new_membranes_persistence_test.cc)
-  pomai_setup_test(simd_new_membranes_persistence_test)
-  pomai_add_labeled_test(simd_new_membranes_persistence_test "integ")
 
   add_executable(shard_concurrency_test tests/integ/shard_concurrency_test.cc)
   pomai_setup_test(shard_concurrency_test)
@@ -571,18 +496,6 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(search_filter_test)
   pomai_add_labeled_test(search_filter_test "integ")
 
-  add_executable(rag_contract_test tests/integ/rag_contract_test.cc)
-  pomai_setup_test(rag_contract_test)
-  pomai_add_labeled_test(rag_contract_test "integ")
-
-  add_executable(rag_search_test tests/integ/rag_search_test.cc)
-  pomai_setup_test(rag_search_test)
-  pomai_add_labeled_test(rag_search_test "integ")
-
-  add_executable(rag_pipeline_test tests/integ/rag_pipeline_test.cc)
-  pomai_setup_test(rag_pipeline_test)
-  pomai_add_labeled_test(rag_pipeline_test "integ")
-
   add_executable(search_newest_wins_test tests/integ/search_newest_wins_test.cc)
   pomai_setup_test(search_newest_wins_test)
   pomai_add_labeled_test(search_newest_wins_test "integ")
@@ -594,14 +507,6 @@ if (POMAI_BUILD_TESTS)
   add_executable(sd_fault_injection_test tests/crash/sd_fault_injection_test.cc)
   pomai_setup_test(sd_fault_injection_test)
   pomai_add_labeled_test(sd_fault_injection_test "crash")
-
-  add_executable(new_membrane_fault_test tests/crash/new_membrane_fault_test.cc)
-  pomai_setup_test(new_membrane_fault_test)
-  pomai_add_labeled_test(new_membrane_fault_test "crash")
-
-  add_executable(simd_new_membranes_fault_test tests/crash/simd_new_membranes_fault_test.cc)
-  pomai_setup_test(simd_new_membranes_fault_test)
-  pomai_add_labeled_test(simd_new_membranes_fault_test "crash")
 
   add_executable(recovery_test tests/crash/recovery_test.cc)
   pomai_setup_test(recovery_test)
@@ -621,8 +526,9 @@ if (POMAI_BUILD_TESTS)
     endif()
     target_include_directories(pomai_crash_test PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}
-      ${CMAKE_CURRENT_SOURCE_DIR}/include
       ${CMAKE_CURRENT_SOURCE_DIR}/src
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
     )
     if (POMAI_IS_TSAN)
       target_compile_options(pomai_crash_test PRIVATE -fno-pie)
@@ -641,8 +547,9 @@ if (POMAI_BUILD_TESTS)
     endif()
     target_include_directories(power_loss_stress_test PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}
-      ${CMAKE_CURRENT_SOURCE_DIR}/include
       ${CMAKE_CURRENT_SOURCE_DIR}/src
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
     )
     if (POMAI_IS_TSAN)
       target_compile_options(power_loss_stress_test PRIVATE -fno-pie)
@@ -677,7 +584,7 @@ if (POMAI_BUILD_TESTS)
   if (UNIX)
     add_test(
       NAME allocator_policy_test
-      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_no_malloc_new.sh" "${CMAKE_CURRENT_SOURCE_DIR}"
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_malloc_new.sh" "${CMAKE_CURRENT_SOURCE_DIR}"
     )
     set_tests_properties(allocator_policy_test PROPERTIES LABELS "unit;policy")
   endif()
@@ -699,77 +606,50 @@ set(POMAI_EXE_DEPS pomai)
 # Comprehensive Benchmark (Industry-standard metrics)
 add_executable(comprehensive_bench benchmarks/comprehensive_bench.cc)
 target_link_libraries(comprehensive_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(comprehensive_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(comprehensive_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
 # Ingestion Throughput Benchmark
 add_executable(ingestion_bench benchmarks/ingestion_bench.cc)
 target_link_libraries(ingestion_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(ingestion_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-# RAG Benchmark
-add_executable(rag_bench benchmarks/rag_bench.cc)
-target_link_libraries(rag_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(rag_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
+target_include_directories(ingestion_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
 # CBR-S benchmark suite
 add_executable(bench_cbrs benchmarks/bench_cbrs.cpp)
 target_link_libraries(bench_cbrs PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(bench_cbrs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(bench_cbrs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 set_target_properties(bench_cbrs PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # Deterministic CI benchmark for perf gate
 add_executable(ci_perf_bench benchmarks/ci_perf_bench.cc)
 target_link_libraries(ci_perf_bench PRIVATE ${POMAI_EXE_DEPS})
-
-# GraphRAG Benchmark
-add_executable(graph_bench benchmarks/graph_bench.cc)
-target_link_libraries(graph_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(graph_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_include_directories(ci_perf_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(ci_perf_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
 # Quantization Comparison Benchmark
 add_executable(quantization_bench benchmarks/quantization_comp_bench.cc)
 target_link_libraries(quantization_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(quantization_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(quantization_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
 # benchmark_a: Multi-Environment Stress Test (IoT / Edge / Cloud validation)
 add_executable(benchmark_a benchmarks/palloc_env_stress.cc)
 target_link_libraries(benchmark_a PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(benchmark_a PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(benchmark_a PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
 # Encryption overhead benchmark harness
 add_executable(encryption_perf_bench benchmarks/encryption_perf_bench.cc)
 target_link_libraries(encryption_perf_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(encryption_perf_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-add_executable(hybrid_orchestrator_bench benchmarks/hybrid_orchestrator_bench.cc)
-target_link_libraries(hybrid_orchestrator_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(hybrid_orchestrator_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(encryption_perf_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
 add_executable(low_ram_profile_bench benchmarks/low_ram_profile_bench.cc)
 target_link_libraries(low_ram_profile_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(low_ram_profile_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-add_executable(new_membrane_bench benchmarks/new_membrane_bench.cc)
-target_link_libraries(new_membrane_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(new_membrane_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-add_executable(simd_new_membranes_bench benchmarks/simd_new_membranes_bench.cc)
-  target_link_libraries(simd_new_membranes_bench PRIVATE ${POMAI_EXE_DEPS})
-  target_include_directories(simd_new_membranes_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-  add_executable(mesh_lod_bench benchmarks/mesh_lod_bench.cc)
-target_link_libraries(mesh_lod_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(mesh_lod_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(low_ram_profile_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
 add_executable(vulkan_transfer_bench benchmarks/vulkan_transfer_bench.cc)
 target_link_libraries(vulkan_transfer_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(vulkan_transfer_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(vulkan_transfer_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
 add_executable(kernel_dispatch_bench benchmarks/kernel_dispatch_bench.cc)
 target_link_libraries(kernel_dispatch_bench PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(kernel_dispatch_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(kernel_dispatch_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
 # Bounded benchmark smoke tests (avoid ctest default 1500s timeout on heavy workloads).
 if (POMAI_REGISTER_BENCH_CTEST)
@@ -783,14 +663,8 @@ if (POMAI_REGISTER_BENCH_CTEST)
   add_test(NAME bench_ingestion COMMAND $<TARGET_FILE:ingestion_bench> 10000 128)
   set_tests_properties(bench_ingestion PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_MED})
 
-  add_test(NAME bench_rag COMMAND $<TARGET_FILE:rag_bench> 100 64 32)
-  set_tests_properties(bench_rag PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_MED})
-
   add_test(NAME bench_ci_perf COMMAND $<TARGET_FILE:ci_perf_bench>)
   set_tests_properties(bench_ci_perf PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_SHORT})
-
-  add_test(NAME bench_graph COMMAND $<TARGET_FILE:graph_bench> 2000 1000 4000)
-  set_tests_properties(bench_graph PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_MED})
 
   add_test(NAME bench_quantization COMMAND $<TARGET_FILE:quantization_bench>)
   set_tests_properties(bench_quantization PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_SHORT})
@@ -801,23 +675,13 @@ if (POMAI_REGISTER_BENCH_CTEST)
   add_test(NAME bench_benchmark_a COMMAND ${CMAKE_COMMAND} -E env POMAI_BENCH_LOW_MEMORY=1 $<TARGET_FILE:benchmark_a>)
   set_tests_properties(bench_benchmark_a PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_LONG})
 
-  add_test(NAME bench_encryption_perf COMMAND $<TARGET_FILE:encryption_perf_bench>)
-  set_tests_properties(bench_encryption_perf PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_SHORT})
-
-  add_test(NAME bench_hybrid_orchestrator COMMAND $<TARGET_FILE:hybrid_orchestrator_bench>)
-  set_tests_properties(bench_hybrid_orchestrator PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_SHORT})
+  if (OPENSSL_FOUND)
+    add_test(NAME bench_encryption_perf COMMAND $<TARGET_FILE:encryption_perf_bench>)
+    set_tests_properties(bench_encryption_perf PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_SHORT})
+  endif()
 
   add_test(NAME bench_low_ram_profile COMMAND $<TARGET_FILE:low_ram_profile_bench>)
   set_tests_properties(bench_low_ram_profile PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_SHORT})
-
-  add_test(NAME bench_new_membrane COMMAND $<TARGET_FILE:new_membrane_bench>)
-  set_tests_properties(bench_new_membrane PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_SHORT})
-
-  add_test(NAME bench_simd_new_membranes COMMAND $<TARGET_FILE:simd_new_membranes_bench>)
-  set_tests_properties(bench_simd_new_membranes PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_SHORT})
-
-  add_test(NAME bench_mesh_lod COMMAND $<TARGET_FILE:mesh_lod_bench>)
-  set_tests_properties(bench_mesh_lod PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_SHORT})
 
   add_test(NAME bench_vulkan_transfer COMMAND $<TARGET_FILE:vulkan_transfer_bench>)
   set_tests_properties(bench_vulkan_transfer PROPERTIES LABELS "bench" TIMEOUT ${POMAI_BENCH_TIMEOUT_SHORT})
@@ -829,62 +693,49 @@ endif()
 # =========================
 # Tools
 # =========================
-add_executable(pomai_inspect src/core/inspect.cc)
+add_executable(pomai_inspect src/inspect.cc)
 target_link_libraries(pomai_inspect PRIVATE ${POMAI_EXE_DEPS})
 target_include_directories(pomai_inspect PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
 )
 
-# Long-running gateway for Docker / VM (HTTP + ingest TCP); library use stays embedded.
-add_executable(pomaidb_server tools/pomaidb_server.cc)
-target_link_libraries(pomaidb_server PRIVATE ${POMAI_EXE_DEPS})
-target_include_directories(pomaidb_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-if (MSVC)
-  target_compile_options(pomaidb_server PRIVATE /W4 /permissive-)
-else()
-  target_compile_options(pomaidb_server PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 # =========================
-# C API Tests & Examples
+# C API Tests
 # =========================
 if (POMAI_BUILD_TESTS)
   add_executable(c_api_test tests/test_c_api_basic.cpp)
   target_link_libraries(c_api_test PRIVATE pomai_c_static)
   target_sources(c_api_test PRIVATE tests/common/test_runner.cc)
-  target_include_directories(c_api_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_include_directories(c_api_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
+  )
   add_test(NAME c_api_test COMMAND c_api_test)
 
   add_executable(accuracy_test tests/accuracy_test.cc)
-  target_link_libraries(accuracy_test PRIVATE pomai_c_static)
+  target_link_libraries(accuracy_test PRIVATE pomai)
   target_sources(accuracy_test PRIVATE tests/common/test_runner.cc)
-  target_include_directories(accuracy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_include_directories(accuracy_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
+  )
   add_test(NAME accuracy_test COMMAND accuracy_test)
 endif()
-
-add_executable(c_basic_example examples/c_basic.c)
-target_link_libraries(c_basic_example PRIVATE pomai_c)
-target_include_directories(c_basic_example PRIVATE include)
-
-add_executable(c_scan_export_example examples/c_scan_export.c)
-target_link_libraries(c_scan_export_example PRIVATE pomai_c)
-target_include_directories(c_scan_export_example PRIVATE include)
-
-add_executable(pomai_multimodal_demo examples/pomai_multimodal_demo.cpp)
-target_link_libraries(pomai_multimodal_demo PRIVATE pomai)
-target_include_directories(pomai_multimodal_demo PRIVATE include)
 
 install(TARGETS pomai pomai_c pomai_c_static
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
 install(FILES
-  include/pomai/c_api.h
-  include/pomai/c_status.h
-  include/pomai/c_types.h
-  include/pomai/c_version.h
-  include/pomai/database.h
-  include/pomai/membrane_capabilities.h
-  include/pomai/membrane_iterator.h
+  src/capi/c_api.h
+  src/capi/c_status.h
+  src/capi/c_types.h
+  src/capi/c_version.h
+  src/database.h
   DESTINATION include/pomai)

@@ -10,12 +10,11 @@
 #include <set>
 #include <algorithm>
 
-#include "core/shard/runtime.h"
-#include "pomai/env.h"
-#include "storage/wal/wal.h"
-#include "table/memtable.h"
-#include "table/segment.h"
-#include "pomai/status.h"
+#include "vector_engine.h"
+#include "env.h"
+#include "wal.h"
+#include "memtable.h"
+#include "status.h"
 
 using namespace pomai;
 using namespace pomai::table;
@@ -43,8 +42,10 @@ double ComputeRecall(const std::vector<SearchHit>& result,
     }
     
     size_t hits = 0;
-    for (const auto& h : result) {
-        if (gt_ids.count(h.id)) hits++;
+    for (size_t i = 0; i < std::min((size_t)k, result.size()); ++i) {
+        if (gt_ids.count(result[i].id)) {
+            hits++;
+        }
     }
     
     return (double)hits / (double)gt_ids.size();
@@ -64,17 +65,17 @@ POMAI_TEST(Recall_Clustered_Basic) {
     
     // 2. Setup runtime
     std::string path = pomai::test::TempDir("recall_test_harness");
-    uint32_t shard_id = 0;
     
-    auto wal = std::make_unique<storage::Wal>(pomai::Env::Default(), path, shard_id, 1u << 20, FsyncPolicy::kNever);
-    POMAI_EXPECT_OK(wal->Open());
-    
-    auto mem = std::make_unique<MemTable>(dopt.dim, 1u << 20);
-
     pomai::IndexParams index_opts;
-    VectorRuntime rt(shard_id, path, dopt.dim, pomai::MembraneKind::kVector, pomai::MetricType::kInnerProduct, std::move(wal),
-                    std::move(mem), index_opts);
-    POMAI_EXPECT_OK(rt.Start());
+    pomai::DBOptions opt;
+    opt.path = path;
+    opt.dim = dopt.dim;
+    opt.metric = pomai::MetricType::kInnerProduct;
+    opt.fsync = FsyncPolicy::kNever;
+    opt.index_params = index_opts;
+
+    VectorEngine rt(opt, pomai::MembraneKind::kVector, pomai::MetricType::kInnerProduct);
+    POMAI_EXPECT_OK(rt.Open());
     
     // Keep a separate MemTable for Oracle that is NOT managed by VectorRuntime
     auto oracle_mem = std::make_unique<MemTable>(dopt.dim, 1u << 20);
@@ -162,16 +163,15 @@ POMAI_TEST(Recall_Uniform_Hard) {
     
     // 2. Setup runtime
     std::string path = pomai::test::TempDir("recall_test_uniform");
-    uint32_t shard_id = 0;
-    
-    auto wal = std::make_unique<storage::Wal>(pomai::Env::Default(), path, shard_id, 1u << 20, FsyncPolicy::kNever);
-    POMAI_EXPECT_OK(wal->Open());
-    
-    auto mem = std::make_unique<MemTable>(dopt.dim, 1u << 20);
-    
-    VectorRuntime rt(shard_id, path, dopt.dim, pomai::MembraneKind::kVector, pomai::MetricType::kInnerProduct, std::move(wal),
-                    std::move(mem), pomai::IndexParams{});
-    POMAI_EXPECT_OK(rt.Start());
+
+    pomai::DBOptions opt;
+    opt.path = path;
+    opt.dim = dopt.dim;
+    opt.metric = pomai::MetricType::kInnerProduct;
+    opt.fsync = FsyncPolicy::kNever;
+
+    VectorEngine rt(opt, pomai::MembraneKind::kVector, pomai::MetricType::kInnerProduct);
+    POMAI_EXPECT_OK(rt.Open());
     
     auto oracle_mem = std::make_unique<MemTable>(dopt.dim, 1u << 20);
 

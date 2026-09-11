@@ -1,7 +1,7 @@
 #include "tests/common/test_main.h"
 #include "tests/common/test_tmpdir.h"
 #include <vector>
-#include "pomai/pomai.h"
+#include "pomai.h"
 #include <filesystem>
 
 namespace

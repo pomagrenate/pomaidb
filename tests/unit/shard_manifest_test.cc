@@ -1,5 +1,5 @@
 #include "tests/common/test_main.h"
-#include "core/shard/manifest.h"
+#include "segment_manifest.h"
 #include "tests/common/test_tmpdir.h"
 #include <filesystem>
 #include <vector>

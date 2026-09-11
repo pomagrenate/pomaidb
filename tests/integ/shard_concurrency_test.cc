@@ -1,6 +1,6 @@
 #include "tests/common/test_main.h"
 #include "tests/common/test_tmpdir.h"
-#include "pomai/pomai.h"
+#include "pomai.h"
 #include <memory>
 #include <vector>
 

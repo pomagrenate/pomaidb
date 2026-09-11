@@ -1,8 +1,8 @@
 #include "tests/common/test_main.h"
 #include "tests/common/test_tmpdir.h"
-#include "pomai/env.h"
-#include "storage/wal/wal.h"
-#include "table/memtable.h"
+#include "env.h"
+#include "wal.h"
+#include "memtable.h"
 #include <filesystem>
 #include <vector>
 #include <fstream>
@@ -156,6 +156,9 @@ namespace pomai
 
     POMAI_TEST(Wal_Encrypted_RoundTrip)
     {
+#if !defined(POMAI_HAS_OPENSSL) || !POMAI_HAS_OPENSSL
+        return;
+#else
         std::string dir = pomai::test::TempDir("wal_enc_roundtrip");
         const std::string key_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
         {
@@ -174,6 +177,7 @@ namespace pomai
         POMAI_EXPECT_EQ(out.size(), static_cast<size_t>(2));
         POMAI_EXPECT_EQ(out[0], 5.0f);
         fs::remove_all(dir);
+#endif
     }
 
 }

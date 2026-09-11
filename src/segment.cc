@@ -1,0 +1,842 @@
+#include "segment.h"
+#include "crc32c.h"
+#include "ivf_flat.h"
+#include "hnsw_index.h"
+#include "palloc_compat.h"
+
+#include "bit_quantizer.h"
+#include "scalar_quantizer.h"
+#include "half_float_quantizer.h"
+#include "pomai_pq.h"
+
+#include <algorithm>
+#include <cstring>
+#include <fcntl.h>
+#include <filesystem>
+#include <unistd.h>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+namespace pomai::table
+{
+
+    namespace
+    {
+        static const char *kMagic = "pomai.seg.v1";
+    }
+
+    // Builder Implementation
+
+    // -------------------------
+    // SegmentBuilder: Streaming Implementation (DB-Grade)
+    // -------------------------
+    // Memory: O(1) per entry, not O(N) for all entries
+    // Writes: Incremental, not buffered in RAM
+    // CRC: Computed on the fly (incremental)
+    
+    SegmentBuilder::SegmentBuilder(std::string path, uint32_t dim, pomai::IndexParams index_params, pomai::MetricType metric)
+        : path_(std::move(path)), dim_(dim), index_params_(std::move(index_params)), metric_(metric), zero_buffer_(dim, 0.0f)
+    {
+    }
+
+    pomai::Status SegmentBuilder::Add(pomai::VectorId id, pomai::VectorView vec, bool is_deleted, const pomai::Metadata& meta)
+    {
+        Entry e;
+        e.id = id;
+        e.is_deleted = is_deleted;
+        e.meta = meta;
+
+        if (is_deleted)
+        {
+            e.vec = pomai::VectorView{nullptr, dim_};
+        }
+        else
+        {
+            if (vec.dim != dim_)
+                return pomai::Status::InvalidArgument("dimension mismatch");
+            e.vec = vec;
+        }
+        
+        // Buffer locally for sorting (unavoidable for binary search)
+        entries_.push_back(std::move(e));
+        return pomai::Status::Ok();
+    }
+
+    pomai::Status SegmentBuilder::Add(pomai::VectorId id, pomai::VectorView vec, bool is_deleted)
+    {
+        return Add(id, vec, is_deleted, pomai::Metadata());
+    }
+
+    pomai::Status SegmentBuilder::Finish()
+    {
+        // Sort by ID (required for binary search in reader)
+        std::sort(entries_.begin(), entries_.end(),
+                  [](const Entry &a, const Entry &b) { return a.id < b.id; });
+
+        // Open tmp file for streaming writes
+        std::string tmp_path = path_ + ".tmp";
+        std::unique_ptr<storage::WritableFile> file;
+        auto st = storage::PosixIOProvider::NewWritableFile(tmp_path, &file);
+        if (!st.ok()) return st;
+
+        // Prepare header
+        SegmentHeader h{};
+        std::memset(&h, 0, sizeof(h));
+        std::memcpy(h.magic, kMagic, sizeof(h.magic));
+        h.version = 6; // V6: 64-byte alignment + IVF positional indices
+        h.count = static_cast<uint32_t>(entries_.size());
+        h.dim = dim_;
+        // Use quantization if requested in IndexParams
+        const pomai::QuantizationType quant_type = index_params_.quant_type;
+        h.quant_type = static_cast<uint8_t>(quant_type);
+        
+        // Train Quantizer
+        std::unique_ptr<core::VectorQuantizer<float>> quantizer;
+        if (quant_type == pomai::QuantizationType::kSq8) {
+            quantizer = std::make_unique<pomai::core::ScalarQuantizer8Bit>(dim_);
+        } else if (quant_type == pomai::QuantizationType::kFp16) {
+            quantizer = std::make_unique<pomai::core::HalfFloatQuantizer>(dim_);
+        } else if (quant_type == pomai::QuantizationType::kBit) {
+            quantizer = std::make_unique<pomai::core::BitQuantizer>(dim_);
+        }
+
+        if (quantizer) {
+            std::vector<float> training_data;
+            training_data.reserve(entries_.size() * dim_);
+
+            for (const auto& e : entries_) {
+                if (!e.is_deleted) {
+                    training_data.insert(training_data.end(), e.vec.data, e.vec.data + dim_);
+                }
+            }
+
+            if (!training_data.empty()) {
+                auto train_st = quantizer->Train(training_data, training_data.size() / dim_);
+                if (!train_st.ok()) return train_st;
+
+                if (quant_type == pomai::QuantizationType::kSq8) {
+                    auto* sq8 = static_cast<core::ScalarQuantizer8Bit*>(quantizer.get());
+                    h.quant_min = sq8->GetGlobalMin();
+                    h.quant_inv_scale = sq8->GetGlobalInvScale();
+                }
+            }
+        }
+
+        // PQ8: train ProductQuantizer, store sub-quantizer count in reserved1[0]
+        std::unique_ptr<core::ProductQuantizer> pq_quantizer;
+        if (quant_type == pomai::QuantizationType::kPq8) {
+            const uint32_t M = index_params_.pq_m > 0 ? index_params_.pq_m : 8u;
+            if (dim_ == 0 || M == 0 || dim_ % M != 0)
+                return pomai::Status::InvalidArgument("pq_m must be > 0 and divide dim");
+            pq_quantizer = std::make_unique<core::ProductQuantizer>(dim_, M, 8);
+            std::vector<float> pq_train;
+            pq_train.reserve(entries_.size() * dim_);
+            for (const auto& e : entries_) {
+                if (!e.is_deleted)
+                    pq_train.insert(pq_train.end(), e.vec.data, e.vec.data + dim_);
+            }
+            if (!pq_train.empty()) {
+                auto st = pq_quantizer->Train(pq_train.data(), pq_train.size() / dim_);
+                if (!st.ok()) return st;
+            }
+            h.reserved1[0] = static_cast<uint8_t>(pq_quantizer->M()); // store M for reader
+        }
+
+
+        // V5 variables
+        size_t entry_size = 0;
+        uint32_t entries_start_offset = 0;
+        
+        const pomai::QuantizationType h_quant_type = static_cast<pomai::QuantizationType>(h.quant_type);
+        const bool is_quantized = (h_quant_type != pomai::QuantizationType::kNone);
+        
+        size_t vec_bytes = dim_ * sizeof(float);
+        if (h_quant_type == pomai::QuantizationType::kSq8) vec_bytes = dim_;
+        else if (h_quant_type == pomai::QuantizationType::kFp16) vec_bytes = dim_ * 2;
+        else if (h_quant_type == pomai::QuantizationType::kBit) vec_bytes = (dim_ + 7) / 8;
+        else if (h_quant_type == pomai::QuantizationType::kPq8) {
+            const uint32_t pq_m = index_params_.pq_m > 0 ? index_params_.pq_m : 8u;
+            vec_bytes = pq_m; // M codes, 1 byte each
+        }
+
+        if (h.version >= 6) {
+            size_t unpadded_size = sizeof(uint64_t) + 4 + vec_bytes;
+            entry_size = (unpadded_size + 63) & ~63; // 64-byte alignment
+            entries_start_offset = 128; // Small header + alignment
+            h.entry_size = static_cast<uint32_t>(entry_size);
+            h.entries_start_offset = entries_start_offset;
+            h.metadata_offset = static_cast<uint32_t>(entries_start_offset + entries_.size() * entry_size);
+        } else if (h.version >= 5) {
+            size_t unpadded_size = sizeof(uint64_t) + 4 + vec_bytes;
+            entry_size = (unpadded_size + 4095) & ~4095;
+            entries_start_offset = 4096;
+            h.entry_size = static_cast<uint32_t>(entry_size);
+            h.entries_start_offset = entries_start_offset;
+            h.metadata_offset = static_cast<uint32_t>(entries_start_offset + entries_.size() * entry_size);
+        } else {
+            entry_size = sizeof(uint64_t) + 4 + vec_bytes;
+            entries_start_offset = sizeof(SegmentHeader);
+            h.metadata_offset = static_cast<uint32_t>(entries_start_offset + entries_.size() * entry_size);
+        }
+
+        // Write header
+        st = file->Append(Slice(reinterpret_cast<const uint8_t*>(&h), sizeof(h)));
+        if (!st.ok()) return st;
+        
+        // Incremental CRC computation
+        uint32_t crc = 0;
+        const uint8_t* header_bytes = reinterpret_cast<const uint8_t*>(&h);
+        crc = pomai::util::Crc32c(header_bytes, sizeof(h), crc);
+
+        if (h.version >= 5) {
+            std::size_t pad_size = entries_start_offset - sizeof(SegmentHeader);
+            std::vector<uint8_t> pad(pad_size, 0);
+            st = file->Append(Slice(pad.data(), pad.size()));
+            if (!st.ok()) return st;
+            crc = pomai::util::Crc32c(pad.data(), pad.size(), crc);
+        }
+
+        // Stream entries to disk
+        std::vector<uint8_t> entry_buffer(entry_size, 0);
+
+        for (const auto& e : entries_) {
+            std::memset(entry_buffer.data(), 0, entry_size);
+            size_t cursor = 0;
+            
+            // ID (8 bytes)
+            std::memcpy(entry_buffer.data() + cursor, &e.id, sizeof(e.id));
+            cursor += sizeof(e.id);
+            
+            // Flags + Padding (4 bytes)
+            uint8_t flags = e.is_deleted ? kFlagTombstone : kFlagNone;
+            entry_buffer[cursor++] = flags;
+            cursor += 3; // padding
+
+            // Vector
+            if (is_quantized) {
+                std::vector<uint8_t> encoded;
+                if (e.is_deleted) {
+                    encoded.assign(vec_bytes, 0);
+                } else if (h_quant_type == pomai::QuantizationType::kPq8 && pq_quantizer) {
+                    encoded.resize(vec_bytes);
+                    pq_quantizer->Encode(e.vec.data, encoded.data());
+                } else if (quantizer) {
+                    encoded = quantizer->Encode(e.vec.span());
+                } else {
+                    encoded.assign(vec_bytes, 0);
+                }
+                std::memcpy(entry_buffer.data() + cursor, encoded.data(), encoded.size());
+            } else {
+                if (e.is_deleted) {
+                    std::memcpy(entry_buffer.data() + cursor, zero_buffer_.data(), dim_ * sizeof(float));
+                } else {
+                    std::memcpy(entry_buffer.data() + cursor, e.vec.data, dim_ * sizeof(float));
+                }
+            }
+
+            st = file->Append(Slice(entry_buffer.data(), entry_size));
+            if (!st.ok()) return st;
+            crc = pomai::util::Crc32c(entry_buffer.data(), entry_size, crc);
+        }
+
+        // Prepare Metadata Block (Structured)
+        std::vector<uint64_t> offsets;
+        std::vector<uint8_t> blob;
+        offsets.reserve(entries_.size() + 1);
+
+        struct TimeEntry { uint64_t ts; uint32_t idx; };
+        std::vector<TimeEntry> time_entries;
+        time_entries.reserve(entries_.size());
+
+        for (uint32_t i = 0; i < entries_.size(); ++i) {
+            offsets.push_back(blob.size());
+            const auto& e = entries_[i];
+            
+            uint8_t mbuf[16]; // Fixed part (timestamp, lsn)
+            std::memcpy(mbuf, &e.meta.timestamp, 8);
+            std::memcpy(mbuf + 8, &e.meta.lsn, 8);
+            blob.insert(blob.end(), mbuf, mbuf + 16);
+
+            auto add_str = [&](const std::string& s) {
+                uint32_t len = static_cast<uint32_t>(s.size());
+                uint8_t lbuf[4];
+                std::memcpy(lbuf, &len, 4);
+                blob.insert(blob.end(), lbuf, lbuf + 4);
+                if (len > 0) blob.insert(blob.end(), s.begin(), s.end());
+            };
+
+            add_str(e.meta.device_id);
+            add_str(e.meta.location_id);
+            add_str(e.meta.tenant);
+            add_str(e.meta.payload);
+
+            time_entries.push_back({e.meta.timestamp, i});
+        }
+        offsets.push_back(blob.size());
+
+        std::sort(time_entries.begin(), time_entries.end(), [](const TimeEntry& a, const TimeEntry& b){
+            return a.ts < b.ts;
+        });
+
+        h.temporal_index_offset = static_cast<uint32_t>(h.metadata_offset + offsets.size() * 8 + blob.size());
+
+        // Rewrite Header with correct offsets
+        st = file->Pwrite(0, Slice(reinterpret_cast<const uint8_t*>(&h), sizeof(h)));
+        if (!st.ok()) return st;
+
+        // Write Metadata Block
+        st = file->Append(Slice(reinterpret_cast<const uint8_t*>(offsets.data()), offsets.size() * sizeof(uint64_t)));
+        if (!st.ok()) return st;
+        crc = pomai::util::Crc32c(reinterpret_cast<const uint8_t*>(offsets.data()), offsets.size() * sizeof(uint64_t), crc);
+
+        if (!blob.empty()) {
+            st = file->Append(Slice(blob.data(), blob.size()));
+            if (!st.ok()) return st;
+            crc = pomai::util::Crc32c(blob.data(), blob.size(), crc);
+        }
+
+        // Write Temporal Index
+        st = file->Append(Slice(reinterpret_cast<const uint8_t*>(time_entries.data()), time_entries.size() * sizeof(TimeEntry)));
+        if (!st.ok()) return st;
+        crc = pomai::util::Crc32c(reinterpret_cast<const uint8_t*>(time_entries.data()), time_entries.size() * sizeof(TimeEntry), crc);
+        
+        // Write CRC footer
+        st = file->Append(Slice(reinterpret_cast<const uint8_t*>(&crc), sizeof(crc)));
+        if (!st.ok()) return st;
+
+        st = file->Sync();
+        if (!st.ok()) return st;
+        st = file->Close();
+        if (!st.ok()) return st;
+
+        std::error_code ec;
+        fs::rename(tmp_path, path_, ec);
+        if (ec) return pomai::Status::IOError("rename failed");
+
+        // Save PQ codebook sidecar (.pq) for ADC scoring at query time
+        if (pq_quantizer) {
+            std::string pq_path = path_;
+            if (pq_path.size() > 4 && pq_path.substr(pq_path.size() - 4) == ".dat")
+                pq_path = pq_path.substr(0, pq_path.size() - 4);
+            pq_path += ".pq";
+            (void)pq_quantizer->Save(pq_path); // best-effort; search falls back if missing
+        }
+
+        return pomai::Status::Ok();
+    }
+
+    pomai::Status SegmentBuilder::BuildIndex() {
+         // Gather valid vectors for training/building
+         std::vector<float> training_data;
+         training_data.reserve(entries_.size() * dim_);
+         size_t num_live = 0;
+         
+         for(const auto& e : entries_) {
+             if (!e.is_deleted) {
+                 training_data.insert(training_data.end(), e.vec.data, e.vec.data + dim_);
+                 num_live++;
+             }
+         }
+
+         if (index_params_.type == pomai::IndexType::kHnsw) {
+             pomai::index::HnswOptions opts;
+             opts.M = index_params_.hnsw_m;
+             opts.ef_construction = index_params_.hnsw_ef_construction;
+             opts.ef_search = index_params_.hnsw_ef_search;
+
+             auto idx = std::make_unique<pomai::index::HnswIndex>(dim_, opts, metric_);
+             // Store real user VectorIds so HnswIndex::Search returns them directly.
+             std::vector<pomai::VectorId> ids;
+             std::vector<uint32_t> entry_indices; // HNSW internal_id → segment entry index
+             ids.reserve(num_live);
+             entry_indices.reserve(num_live);
+             for (size_t i = 0; i < entries_.size(); ++i) {
+                 if (!entries_[i].is_deleted) {
+                     ids.push_back(entries_[i].id); // real user VectorId
+                     entry_indices.push_back(static_cast<uint32_t>(i));
+                 }
+             }
+             auto st = idx->AddBatch(ids.data(), training_data.data(), num_live);
+             if (!st.ok()) return st;
+
+             idx->SetEntryIndexMap(std::move(entry_indices));
+
+             std::string hnsw_path = path_ + ".hnsw.tmp";
+             if (index_params_.hnsw_no_vector_pool) {
+                 st = idx->SaveNoPool(hnsw_path);
+             } else {
+                 st = idx->Save(hnsw_path);
+             }
+             if (!st.ok()) return st;
+
+             std::string final_hnsw_path = path_;
+             if (final_hnsw_path.size() > 4 && final_hnsw_path.substr(final_hnsw_path.size()-4) == ".dat") {
+                 final_hnsw_path = final_hnsw_path.substr(0, final_hnsw_path.size()-4);
+             }
+             final_hnsw_path += ".hnsw";
+
+             if (rename(hnsw_path.c_str(), final_hnsw_path.c_str()) != 0) {
+                 return pomai::Status::IOError("rename hnsw failed");
+             }
+         } else {
+             pomai::index::IvfFlatIndex::Options opt;
+             opt.nlist = index_params_.nlist;
+             if (num_live < opt.nlist) opt.nlist = std::max<uint32_t>(1U, static_cast<uint32_t>(num_live));
+
+             auto idx = std::make_unique<pomai::index::IvfFlatIndex>(dim_, opt);
+             auto st = idx->Train(training_data, num_live);
+             if (!st.ok()) return st;
+             
+             for (size_t i = 0; i < entries_.size(); ++i) {
+                 const auto& e = entries_[i];
+                 if (!e.is_deleted) {
+                     st = idx->Add(static_cast<uint32_t>(i), e.vec.span());
+                     if (!st.ok()) return st;
+                 }
+             }
+             
+             std::string idx_path = path_ + ".idx.tmp";
+             st = idx->Save(idx_path);
+             if (!st.ok()) return st;
+             
+             std::string final_idx_path = path_;
+             if (final_idx_path.size() > 4 && final_idx_path.substr(final_idx_path.size()-4) == ".dat") {
+                 final_idx_path = final_idx_path.substr(0, final_idx_path.size()-4);
+             }
+             final_idx_path += ".idx";
+             
+             if (rename(idx_path.c_str(), final_idx_path.c_str()) != 0) {
+                 return pomai::Status::IOError("rename idx failed");
+             }
+         }
+         
+         return pomai::Status::Ok();
+    }
+
+
+    // Reader Implementation
+
+    SegmentReader::SegmentReader() = default;
+    SegmentReader::~SegmentReader() = default;
+
+    void SegmentReader::PallocDeleter(SegmentReader* p) {
+        if (p) { p->~SegmentReader(); palloc_free(p); }
+    }
+
+    pomai::Status SegmentReader::Open(std::string path, SegmentReader::Ptr* out)
+    {
+        void* raw = palloc_malloc_aligned(sizeof(SegmentReader), alignof(SegmentReader));
+        if (!raw) return pomai::Status::ResourceExhausted("SegmentReader allocation failed");
+        SegmentReader* reader = new (raw) SegmentReader();
+        reader->path_ = path;
+
+        auto st = storage::PosixIOProvider::NewMemoryMappedFile(path, &reader->mmap_file_);
+        if (!st.ok()) {
+            PallocDeleter(reader);
+            return st;
+        }
+
+        const uint8_t* data = reader->mmap_file_->Data();
+        size_t size = reader->mmap_file_->Size();
+
+        if (size < sizeof(SegmentHeader)) {
+            PallocDeleter(reader);
+            return pomai::Status::Corruption("file too small");
+        }
+
+        // Read Header from map
+        const SegmentHeader* h = reinterpret_cast<const SegmentHeader*>(data);
+
+        if (strncmp(h->magic, kMagic, 12) != 0) {
+            PallocDeleter(reader);
+            return pomai::Status::Corruption("bad magic");
+        }
+
+        // Support V2 to V6
+        if (h->version < 2 || h->version > 6) {
+            PallocDeleter(reader);
+            return pomai::Status::Corruption("unsupported version");
+        }
+        
+        reader->count_ = h->count;
+        reader->dim_ = h->dim;
+        
+        if (h->version >= 5) {
+            reader->entries_start_offset_ = h->entries_start_offset;
+            reader->entry_size_ = h->entry_size;
+        } else {
+            reader->entries_start_offset_ = sizeof(SegmentHeader);
+        }
+
+        if (h->version >= 6) {
+             reader->temporal_index_offset_ = h->temporal_index_offset;
+        }
+
+        if (h->version >= 4) {
+            reader->quant_type_ = static_cast<pomai::QuantizationType>(h->quant_type);
+        } else {
+            reader->quant_type_ = pomai::QuantizationType::kNone;
+        }
+        
+        if (reader->quant_type_ != pomai::QuantizationType::kNone) {
+            if (h->version < 5) {
+                size_t vec_bytes = h->dim * sizeof(float);
+                if (reader->quant_type_ == pomai::QuantizationType::kSq8) vec_bytes = h->dim;
+                else if (reader->quant_type_ == pomai::QuantizationType::kFp16) vec_bytes = h->dim * 2;
+                else if (reader->quant_type_ == pomai::QuantizationType::kBit) vec_bytes = (h->dim + 7) / 8;
+                reader->entry_size_ = sizeof(uint64_t) + 4 + vec_bytes;
+            }
+            
+            if (reader->quant_type_ == pomai::QuantizationType::kSq8) {
+                auto sq8 = std::make_unique<pomai::core::ScalarQuantizer8Bit>(h->dim);
+                sq8->LoadState(h->quant_min, h->quant_inv_scale);
+                reader->quantizer_ = std::move(sq8);
+            } else if (reader->quant_type_ == pomai::QuantizationType::kFp16) {
+                reader->quantizer_ = std::make_unique<pomai::core::HalfFloatQuantizer>(h->dim);
+            } else if (reader->quant_type_ == pomai::QuantizationType::kBit) {
+                reader->quantizer_ = std::make_unique<pomai::core::BitQuantizer>(h->dim);
+            }
+        } else {
+            if (h->version < 5) {
+                reader->entry_size_ = sizeof(uint64_t) + 4 + h->dim * sizeof(float);
+            }
+        }
+        
+        if (h->version >= 3) {
+            reader->metadata_offset_ = h->metadata_offset;
+        } else {
+            reader->metadata_offset_ = 0;
+        }
+
+        reader->base_addr_ = data;
+        reader->file_size_ = size;
+
+        // Verify size
+        size_t expected_min = reader->entries_start_offset_ + reader->count_ * reader->entry_size_ + 4; // + CRC
+        if (size < expected_min) {
+            PallocDeleter(reader);
+            return pomai::Status::Corruption("segment truncated");
+        }
+
+        // Try load index (best effort)
+        std::string idx_path = path;
+        if (idx_path.size() > 4 && idx_path.substr(idx_path.size()-4) == ".dat") {
+             idx_path = idx_path.substr(0, idx_path.size()-4);
+        }
+        std::string hnsw_path = idx_path + ".hnsw";
+        idx_path += ".idx";
+        
+        // Try HNSW first
+        st = pomai::index::HnswIndex::Load(hnsw_path, &reader->hnsw_index_);
+        if (!st.ok()) {
+            // Ignore error if not found (fallback to scan)
+            (void)pomai::index::IvfFlatIndex::Load(idx_path, &reader->index_);
+        } else if (reader->hnsw_index_ && reader->hnsw_index_->IsNoVectorPool()) {
+            // No-pool mode: inject mmap-based vector resolver.
+            // Layout per entry: [id:8][flags+pad:4][vector data starts at byte 12]
+            const uint8_t* base      = reader->base_addr_;
+            uint32_t       estart    = reader->entries_start_offset_;
+            std::size_t    esize     = reader->entry_size_;
+            reader->hnsw_index_->SetVectorGetter(
+                [base, estart, esize](uint32_t entry_idx) -> const float* {
+                    return reinterpret_cast<const float*>(
+                        base + estart + entry_idx * esize + 12u);
+                });
+        }
+
+        // kPq8: load ProductQuantizer sidecar for ADC scoring (best-effort)
+        if (reader->quant_type_ == pomai::QuantizationType::kPq8) {
+            std::string pq_path = path;
+            if (pq_path.size() > 4 && pq_path.substr(pq_path.size() - 4) == ".dat")
+                pq_path = pq_path.substr(0, pq_path.size() - 4);
+            pq_path += ".pq";
+            std::unique_ptr<core::ProductQuantizer> pq;
+            if (core::ProductQuantizer::Load(pq_path, &pq).ok())
+                reader->pq_ = std::move(pq);
+        }
+
+        *out = Ptr(reader, PallocDeleter);
+        return pomai::Status::Ok();
+    }
+
+    pomai::Status SegmentReader::Search(std::span<const float> query, uint32_t nprobe, 
+                                        std::vector<uint32_t>* out_candidates) const
+    {
+        if (!index_) return pomai::Status::Ok(); // Empty candidates -> Fallback
+        return index_->Search(query, nprobe, out_candidates);
+    }
+
+    pomai::Status SegmentReader::SearchTemporal(uint64_t start_ts, uint64_t end_ts, std::vector<uint32_t>* out_indices) const
+    {
+        if (!out_indices) return pomai::Status::InvalidArgument("null ptr");
+        if (temporal_index_offset_ == 0 || count_ == 0) return pomai::Status::Ok();
+
+        struct TimeEntry { uint64_t ts; uint32_t idx; };
+        const TimeEntry* t_base = reinterpret_cast<const TimeEntry*>(base_addr_ + temporal_index_offset_);
+
+        auto it_start = std::lower_bound(t_base, t_base + count_, start_ts, [](const TimeEntry& e, uint64_t ts){
+            return e.ts < ts;
+        });
+        auto it_end = std::upper_bound(t_base, t_base + count_, end_ts, [](uint64_t ts, const TimeEntry& e){
+            return ts < e.ts;
+        });
+
+        for (auto it = it_start; it != it_end; ++it) {
+            out_indices->push_back(it->idx);
+        }
+        return pomai::Status::Ok();
+    }
+
+
+
+    void SegmentReader::GetMetadata(uint32_t index, pomai::Metadata* out) const
+    {
+        if (metadata_offset_ == 0 || index >= count_) return;
+        
+        const uint8_t* meta_offsets_base = base_addr_ + metadata_offset_;
+        const char* meta_blob = reinterpret_cast<const char*>(meta_offsets_base + (count_ + 1) * sizeof(uint64_t));
+
+        uint64_t start = 0;
+        uint64_t end = 0;
+        std::memcpy(&start, meta_offsets_base + index * sizeof(uint64_t), sizeof(start));
+        std::memcpy(&end, meta_offsets_base + (index + 1) * sizeof(uint64_t), sizeof(end));
+        
+        if (end > start) {
+            const uint8_t* blob_ptr = reinterpret_cast<const uint8_t*>(meta_blob + start);
+            std::memcpy(&out->timestamp, blob_ptr, 8);
+            std::memcpy(&out->lsn, blob_ptr + 8, 8);
+            
+            size_t cursor = 16;
+            auto read_str = [&](std::string* s) {
+                uint32_t len = 0;
+                std::memcpy(&len, blob_ptr + cursor, 4);
+                cursor += 4;
+                if (len > 0) {
+                    *s = std::string(reinterpret_cast<const char*>(blob_ptr + cursor), len);
+                    cursor += len;
+                } else {
+                    *s = "";
+                }
+            };
+            
+            read_str(&out->device_id);
+            read_str(&out->location_id);
+            read_str(&out->tenant);
+            read_str(&out->payload);
+        }
+    }
+
+    pomai::Status SegmentReader::GetQuantized(pomai::VectorId id, std::span<const uint8_t>* out_codes, pomai::Metadata* out_meta) const
+    {
+        if (quant_type_ == pomai::QuantizationType::kNone) return pomai::Status::InvalidArgument("Segment is not quantized");
+        
+        const uint8_t* raw_payload = nullptr;
+        auto res = FindRaw(id, &raw_payload, out_meta);
+        if (res == FindResult::kFound) {
+            size_t bytes = dim_; // SQ8
+            if (quant_type_ == pomai::QuantizationType::kFp16) bytes *= 2;
+            else if (quant_type_ == pomai::QuantizationType::kBit) bytes = (dim_ + 7) / 8;
+            if (out_codes) *out_codes = std::span<const uint8_t>(raw_payload, bytes);
+            return pomai::Status::Ok();
+        }
+        if (res == FindResult::kFoundTombstone) return pomai::Status::NotFound("tombstone");
+        return pomai::Status::NotFound("id not found in segment");
+    }    pomai::Status SegmentReader::ReadAtMetadata(uint32_t index, bool* out_deleted, pomai::Metadata* out_meta) const {
+        if (index >= count_) return pomai::Status::InvalidArgument("index out of range");
+        const uint8_t* p = base_addr_ + entries_start_offset_ + index * entry_size_;
+        if (out_deleted) *out_deleted = (*(p + 8) & 0x01);
+        if (out_meta) GetMetadata(index, out_meta);
+        return pomai::Status::Ok();
+    }
+
+    pomai::Status SegmentReader::Get(pomai::VectorId id, pomai::PinnableSlice* out_vec, pomai::Metadata* out_meta) const
+    {
+         const uint8_t* raw_payload = nullptr;
+         auto res = FindRaw(id, &raw_payload, out_meta);
+         if (res == FindResult::kFound) {
+             if (out_vec) {
+                 size_t bytes = dim_ * sizeof(float);
+                 if (quant_type_ == pomai::QuantizationType::kSq8) bytes = dim_;
+                 else if (quant_type_ == pomai::QuantizationType::kFp16) bytes = dim_ * 2;
+                 else if (quant_type_ == pomai::QuantizationType::kBit) bytes = (dim_ + 7) / 8;
+                 // Zero-copy: point directly to mmap
+                 out_vec->PinSlice(Slice(raw_payload, bytes), nullptr);
+             }
+             return pomai::Status::Ok();
+         }
+         if (res == FindResult::kFoundTombstone) return pomai::Status::NotFound("tombstone");
+         return pomai::Status::NotFound("id not found in segment");
+    }
+
+    // Overload for convenience
+    pomai::Status SegmentReader::Get(pomai::VectorId id, pomai::PinnableSlice* out_vec) const {
+        return Get(id, out_vec, nullptr);
+    }
+    
+    // Backward compat overload
+    SegmentReader::FindResult SegmentReader::Find(pomai::VectorId id, std::span<const float> *out_vec) const {
+        return Find(id, out_vec, nullptr);
+    }
+
+    SegmentReader::FindResult SegmentReader::Find(pomai::VectorId id, std::span<const float> *out_vec, pomai::Metadata* out_meta) const
+    {
+        // For backwards compatibility and instances where we don't need a decoded buffer safely (e.g. tests)
+        // If it's quantized, it will just flatly fail with this signature since span<const float>
+        // implies pointing into mmap memory, which doesn't exist.
+        if (quant_type_ != pomai::QuantizationType::kNone) return FindResult::kNotFound;
+        
+        const uint8_t* raw_payload = nullptr;
+        auto res = FindRaw(id, &raw_payload, out_meta);
+        if (res == FindResult::kFoundTombstone && out_vec) {
+            *out_vec = {};
+        }
+        if (res == FindResult::kFound && out_vec) {
+            const float* vec_ptr = reinterpret_cast<const float*>(raw_payload);
+            *out_vec = std::span<const float>(vec_ptr, dim_);
+        }
+        return res;
+    }
+    
+    SegmentReader::FindResult SegmentReader::FindAndDecode(pomai::VectorId id, std::span<const float>* out_vec_mapped, std::vector<float>* out_vec_decoded, pomai::Metadata* out_meta) const
+    {
+        const uint8_t* raw_payload = nullptr;
+        auto res = FindRaw(id, &raw_payload, out_meta);
+        
+        if (res == FindResult::kFoundTombstone && out_vec_mapped) {
+            *out_vec_mapped = {};
+        }
+        
+        if (res == FindResult::kFound) {
+            if (quant_type_ != pomai::QuantizationType::kNone) {
+                if (out_vec_decoded) {
+                    size_t bytes = dim_;
+                    if (quant_type_ == pomai::QuantizationType::kFp16) bytes *= 2;
+                    *out_vec_decoded = quantizer_->Decode(std::span<const uint8_t>(raw_payload, bytes));
+                    if (out_vec_mapped) *out_vec_mapped = *out_vec_decoded;
+                }
+            } else {
+                if (out_vec_mapped) *out_vec_mapped = std::span<const float>(reinterpret_cast<const float*>(raw_payload), dim_);
+            }
+        }
+        return res;
+    }
+
+    SegmentReader::FindResult SegmentReader::FindRaw(pomai::VectorId id, const uint8_t** raw_payload, pomai::Metadata* out_meta) const
+    {
+        if (count_ == 0) return FindResult::kNotFound;
+
+        int64_t left = 0;
+        int64_t right = count_ - 1;
+        
+        const uint8_t* entries_start = base_addr_ + entries_start_offset_;
+
+        while (left <= right) {
+            int64_t mid = left + (right - left) / 2;
+            
+            const uint8_t* p = entries_start + mid * entry_size_;
+            
+            // Safe unaligned read for ID (memcpy)
+            uint64_t read_id;
+            std::memcpy(&read_id, p, sizeof(uint64_t));
+
+            if (read_id == id) {
+                // Found
+                uint8_t flags = *(p + 8);
+                if (flags & kFlagTombstone) {
+                    if(out_meta) GetMetadata(static_cast<uint32_t>(mid), out_meta);
+                    return FindResult::kFoundTombstone;
+                }
+                
+                // Vector starts at offset 8 (ID) + 4 (Flags+Pad) = 12
+                if (raw_payload) *raw_payload = p + 12;
+                if(out_meta) GetMetadata(static_cast<uint32_t>(mid), out_meta);
+                
+                return FindResult::kFound;
+            }
+
+            if (read_id < id) {
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+        return FindResult::kNotFound;
+    }
+
+    pomai::Status SegmentReader::ReadAtCodes(uint32_t index, pomai::VectorId* out_id, std::span<const uint8_t>* out_codes, bool* out_deleted, pomai::Metadata* out_meta) const
+    {
+        if (index >= count_) return pomai::Status::InvalidArgument("index out of range");
+
+        const uint8_t* p = base_addr_ + entries_start_offset_ + index * entry_size_;
+        
+        if (out_id) {
+             std::memcpy(out_id, p, sizeof(uint64_t));
+        }
+        
+        uint8_t flags = *(p + 8);
+        bool is_deleted = (flags & kFlagTombstone);
+        if (out_deleted) *out_deleted = is_deleted;
+
+        if (out_codes) {
+             if (is_deleted || quant_type_ == pomai::QuantizationType::kNone) {
+                 *out_codes = {};
+             } else {
+                 const uint8_t* code_ptr = p + 12;
+                 size_t bytes = dim_;
+                 if (quant_type_ == pomai::QuantizationType::kFp16) bytes *= 2;
+                 else if (quant_type_ == pomai::QuantizationType::kBit) bytes = (dim_ + 7) / 8;
+                 *out_codes = std::span<const uint8_t>(code_ptr, bytes);
+             }
+        }
+        
+        if (out_meta) {
+            GetMetadata(index, out_meta);
+        }
+        
+        return pomai::Status::Ok();
+    }
+    
+    pomai::Status SegmentReader::ReadAt(uint32_t index, pomai::VectorId* out_id, std::span<const float>* out_vec, bool* out_deleted, pomai::Metadata* out_meta) const
+    {
+        if (index >= count_) return pomai::Status::InvalidArgument("index out of range");
+
+        const uint8_t* p = base_addr_ + entries_start_offset_ + index * entry_size_;
+        
+        if (out_id) {
+             std::memcpy(out_id, p, sizeof(uint64_t));
+        }
+        
+        uint8_t flags = *(p + 8);
+        bool is_deleted = (flags & kFlagTombstone);
+        if (out_deleted) *out_deleted = is_deleted;
+
+        if (out_vec) {
+             if (is_deleted) {
+                 *out_vec = {};
+             } else {
+                 if (quant_type_ != pomai::QuantizationType::kNone) {
+                     // ReadAt returning span<float> is incompatible with quantizer without allocation wrapper.
+                     // The caller must decode using ForEach or GetQuantized. 
+                     // We return an empty span here and rely on higher layers utilizing FindAndDecode across Segments.
+                     *out_vec = {};
+                 } else {
+                     const float* vec_ptr = reinterpret_cast<const float*>(p + 12);
+                     *out_vec = std::span<const float>(vec_ptr, dim_);
+                 }
+             }
+        }
+        
+        if (out_meta) {
+            GetMetadata(index, out_meta);
+        }
+        
+        return pomai::Status::Ok();
+    }
+    
+    // Backward compat overload
+    pomai::Status SegmentReader::ReadAt(uint32_t index, pomai::VectorId* out_id, std::span<const float>* out_vec, bool* out_deleted) const {
+        return ReadAt(index, out_id, out_vec, out_deleted, nullptr);
+    }
+
+} // namespace pomai::table

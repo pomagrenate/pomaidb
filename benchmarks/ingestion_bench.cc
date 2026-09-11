@@ -1,7 +1,7 @@
 // Quick Ingestion Throughput Benchmark
 // Measures raw Put() performance without search overhead
 
-#include "pomai/pomai.h"
+#include "pomai.h"
 #include <chrono>
 #include <cstdio>
 #include <filesystem>

@@ -1,4 +1,4 @@
-#include "pomai/c_status.h"
+#include "c_status.h"
 
 #include "palloc_compat.h"
 #include "capi_utils.h"

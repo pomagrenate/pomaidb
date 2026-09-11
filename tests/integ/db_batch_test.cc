@@ -5,9 +5,9 @@
 #include <vector>
 #include <algorithm>
 
-#include "pomai/options.h"
-#include "pomai/pomai.h"
-#include "pomai/search.h"
+#include "options.h"
+#include "pomai.h"
+#include "search.h"
 #include "tests/common/test_tmpdir.h"
 
 namespace

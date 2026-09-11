@@ -1,5 +1,5 @@
 #include "tests/common/test_main.h"
-#include "util/logging.h"
+#include "logging.h"
 #include <string>
 
 static std::string g_fatal_message;

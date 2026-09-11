@@ -4,9 +4,9 @@
 #include <cstring>
 #include <vector>
 
-#include "compute/vulkan/vulkan_device_context.h"
-#include "compute/vulkan/vulkan_memory_bridge.h"
-#include "compute/vulkan/vulkan_staging_pool.h"
+#include "vulkan_device_context.h"
+#include "vulkan_memory_bridge.h"
+#include "vulkan_staging_pool.h"
 
 namespace {
 

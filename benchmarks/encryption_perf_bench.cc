@@ -1,4 +1,4 @@
-#include "pomai/pomai.h"
+#include "pomai.h"
 
 #include <algorithm>
 #include <chrono>
@@ -112,8 +112,16 @@ int main(int argc, char** argv) {
     if (arg == "--queries" && i + 1 < argc) nquery = static_cast<std::uint32_t>(std::stoul(argv[++i]));
   }
 
-  const Metrics plain = OneRun("/tmp/pomai_enc_plain", dim, nvec, nquery, false);
-  const Metrics enc = OneRun("/tmp/pomai_enc_enc", dim, nvec, nquery, true);
+  const std::string tmp_dir = (fs::temp_directory_path() / "pomai_enc_bench").string();
+  fs::create_directories(tmp_dir);
+  const Metrics plain = OneRun(tmp_dir + "/plain", dim, nvec, nquery, false);
+#if !defined(POMAI_HAS_OPENSSL) || !POMAI_HAS_OPENSSL
+  std::cout << "Skipping encrypted benchmark: OpenSSL support is not compiled in.\n";
+  PrintMetrics("plain", plain);
+  fs::remove_all(tmp_dir);
+  return 0;
+#else
+  const Metrics enc = OneRun(tmp_dir + "/enc", dim, nvec, nquery, true);
 
   PrintMetrics("plain", plain);
   PrintMetrics("encrypted", enc);
@@ -128,5 +136,7 @@ int main(int argc, char** argv) {
   std::cout << "overhead_percent: ingest=" << ingest_overhead
             << " search_p99=" << p99_overhead << "\n";
   std::cout << "NOTE: encrypted mode uses WAL AES-256-GCM path.\n";
+  fs::remove_all(tmp_dir);
   return 0;
+#endif
 }

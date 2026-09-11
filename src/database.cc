@@ -1,23 +1,17 @@
-#include "pomai/database.h"
-#include "pomai/options.h"
-#include "pomai/status.h"
-#include "pomai/hooks.h"
-#include "pomai/env.h"
-#include "core/membrane/manager.h"
-#include "core/concurrency/scheduler.h"
-#include "core/graph/graph_membrane_impl.h"
-#include "core/shard/runtime.h"
-#include "table/memtable.h"
-#include "storage/wal/wal.h"
-#include "core/hooks/auto_edge_hook.h"
-#include "core/graph/bitset_frontier.h"
-#include "core/query/query_planner.h"
-#include "core/storage/internal_engine.h"
-#include "core/kernel/pods/vector_pod.h"
-#include "core/kernel/pods/graph_pod.h"
-#include "core/kernel/pods/query_pod.h"
-#include "pomai/metadata.h"
-#include "pomai/search.h"
+#include "database.h"
+#include "options.h"
+#include "status.h"
+#include "hooks.h"
+#include "env.h"
+#include "scheduler.h"
+#include "vector_engine.h"
+#include "memtable.h"
+#include "wal.h"
+#include "internal_engine.h"
+#include "vector_pod.h"
+#include "metadata.h"
+#include "search.h"
+#include "palloc_compat.h"
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -32,51 +26,22 @@ constexpr uint32_t kKernelHotPathMaxMs = 2;
 Status StorageEngine::Open(const EmbeddedOptions& options) {
     auto env = options.env ? options.env : Env::Default();
     auto v_path = options.path + "/vectors";
-    
-    auto wal = std::make_unique<storage::Wal>(env, v_path, 0, 1024ULL * 1024 * 1024, options.fsync,
-        options.enable_encryption_at_rest, options.encryption_key_hex);
-    auto st = wal->Open();
+
+    DBOptions dopt;
+    dopt.path = v_path;
+    dopt.env = env;
+    dopt.dim = options.dim;
+    dopt.metric = options.metric;
+    dopt.fsync = options.fsync;
+    dopt.index_params = options.index_params;
+    dopt.memtable_flush_threshold_mb = options.memtable_flush_threshold_mb;
+
+    auto v_engine = std::make_unique<core::VectorEngine>(
+        dopt, MembraneKind::kVector, options.metric);
+    Status st = v_engine->Open();
     if (!st.ok()) return st;
 
-    auto mem = std::make_unique<table::MemTable>(options.dim, 128ULL * 1024 * 1024);
-    
-    auto v_runtime = std::make_unique<core::VectorRuntime>(
-        0, v_path, options.dim, 
-        MembraneKind::kVector,
-        options.metric, std::move(wal), std::move(mem), options.index_params);
-        
-    kernel_.RegisterPod(std::make_unique<core::VectorPod>(std::move(v_runtime)));
-
-    auto g_path = options.path + "/graph";
-    auto g_wal = std::make_unique<storage::Wal>(env, g_path, 1, 1024ULL * 1024 * 1024, options.fsync,
-        options.enable_encryption_at_rest, options.encryption_key_hex);
-    st = g_wal->Open();
-    if (!st.ok()) return st;
-
-    auto g_runtime = std::make_unique<core::GraphMembraneImpl>(std::move(g_wal));
-    kernel_.RegisterPod(std::make_unique<core::GraphPod>(std::move(g_runtime)));
-
-    auto planner = std::make_unique<core::QueryPlanner>(this);
-    kernel_.RegisterPod(std::make_unique<core::QueryPod>(std::move(planner)));
-
-    return Status::Ok();
-}
-
-Status StorageEngine::SearchMultiModal(std::string_view membrane, const MultiModalQuery& query, SearchResult* out) {
-    Status st = Status::Ok();
-    struct ResultEnvelope {
-        SearchResult* out;
-        Status* st;
-    } env{out, &st};
-    const MultiModalQuery* q_ptr = &query;
-    core::Message msg = core::Message::Create(core::PodId::kQuery, core::Op::kSearchMultiModal, 
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&q_ptr), sizeof(void*)));
-    msg.membrane_id = membrane;
-    msg.result_ptr = &env;
-    msg.status_ptr = &st;
-    kernel_.Enqueue(std::move(msg));
-    (void)kernel_.ProcessBudget(kKernelHotPathMaxMsgs, kKernelHotPathMaxMs);
-    return st;
+    return kernel_.RegisterPod(std::make_unique<core::VectorPod>(std::move(v_engine)));
 }
 
 void StorageEngine::Close() {
@@ -190,7 +155,7 @@ Status StorageEngine::Delete(VectorId id) {
     return st;
 }
 
-Status StorageEngine::Search(std::string_view membrane, std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult* out) {
+Status StorageEngine::Search(std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult* out) {
     Status st = Status::Ok();
     struct P {
         uint32_t topk;
@@ -205,118 +170,7 @@ Status StorageEngine::Search(std::string_view membrane, std::span<const float> q
 
     core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kSearch, 
         std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&p), sizeof(P)));
-    msg.membrane_id = membrane;
     msg.result_ptr = &env;
-    msg.status_ptr = &st;
-    kernel_.Enqueue(std::move(msg));
-    (void)kernel_.ProcessBudget(kKernelHotPathMaxMsgs, kKernelHotPathMaxMs);
-    return st;
-}
-
-Status StorageEngine::SearchLexical(std::string_view membrane, const std::string& query, uint32_t topk, std::vector<core::LexicalHit>* out) {
-    Status st = Status::Ok();
-    struct P {
-        uint32_t topk;
-        const std::string* query;
-        std::vector<core::LexicalHit>* out;
-        Status* st;
-    } p = {topk, &query, out, &st};
-
-    core::Message msg = core::Message::Create(core::PodId::kIndex, core::Op::kSearchLexical,
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&p), sizeof(P)));
-    msg.membrane_id = membrane;
-    msg.result_ptr = nullptr;
-    msg.status_ptr = &st;
-    kernel_.Enqueue(std::move(msg));
-    (void)kernel_.ProcessBudget(kKernelHotPathMaxMsgs, kKernelHotPathMaxMs);
-    return st;
-}
-
-Status StorageEngine::Search(std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult* out) {
-    return Search("__default__", query, topk, opts, out);
-}
-
-Status StorageEngine::AddVertex(VertexId id, TagId tag, const Metadata& meta) {
-    Status st = Status::Ok();
-    struct { VertexId id; TagId tag; } payload = {id, tag};
-    
-    core::Message msg = core::Message::Create(core::PodId::kGraph, core::Op::kAddVertex, 
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&payload), sizeof(payload)));
-    msg.result_ptr = &st;
-    msg.status_ptr = &st;
-    kernel_.Enqueue(std::move(msg));
-    (void)kernel_.ProcessBudget(kKernelHotPathMaxMsgs, kKernelHotPathMaxMs);
-    return st;
-}
-
-Status StorageEngine::AddEdge(VertexId src, VertexId dst, EdgeType type, uint32_t rank, const Metadata& meta) {
-    Status st = Status::Ok();
-    struct { VertexId src; VertexId dst; EdgeType type; uint32_t rank; } payload = {src, dst, type, rank};
-
-    core::Message msg = core::Message::Create(core::PodId::kGraph, core::Op::kAddEdge, 
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&payload), sizeof(payload)));
-    msg.result_ptr = &st;
-    msg.status_ptr = &st;
-    kernel_.Enqueue(std::move(msg));
-    (void)kernel_.ProcessBudget(kKernelHotPathMaxMsgs, kKernelHotPathMaxMs);
-    return st;
-}
-
-Status StorageEngine::DeleteVertex(VertexId id) {
-    Status st = Status::Ok();
-    core::Message msg = core::Message::Create(core::PodId::kGraph, core::Op::kDeleteVertex,
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&id), sizeof(id)));
-    msg.result_ptr = nullptr;
-    msg.status_ptr = &st;
-    kernel_.Enqueue(std::move(msg));
-    (void)kernel_.ProcessBudget(kKernelHotPathMaxMsgs, kKernelHotPathMaxMs);
-    return st;
-}
-
-Status StorageEngine::DeleteEdge(VertexId src, VertexId dst, EdgeType type) {
-    Status st = Status::Ok();
-    struct { VertexId src; VertexId dst; EdgeType type; } payload = {src, dst, type};
-    core::Message msg = core::Message::Create(core::PodId::kGraph, core::Op::kDeleteEdge,
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&payload), sizeof(payload)));
-    msg.result_ptr = nullptr;
-    msg.status_ptr = &st;
-    kernel_.Enqueue(std::move(msg));
-    (void)kernel_.ProcessBudget(kKernelHotPathMaxMsgs, kKernelHotPathMaxMs);
-    return st;
-}
-
-Status StorageEngine::GetNeighbors(std::string_view /*membrane*/, VertexId src, std::vector<pomai::Neighbor>* out) {
-    return GetNeighbors(src, out);
-}
-
-Status StorageEngine::GetNeighbors(std::string_view /*membrane*/, VertexId src, EdgeType type, std::vector<pomai::Neighbor>* out) {
-    return GetNeighbors(src, type, out);
-}
-
-std::optional<core::LinkedObject> StorageEngine::ResolveLinkedByVectorId(uint64_t /*vector_id*/) const {
-    return std::nullopt;
-}
-
-
-// (Method removed to avoid duplication and signature mismatch)
-
-Status StorageEngine::GetNeighbors(VertexId src, std::vector<pomai::Neighbor>* out) {
-    Status st = Status::Ok();
-    core::Message msg = core::Message::Create(core::PodId::kGraph, core::Op::kGetNeighbors, 
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&src), sizeof(src)));
-    msg.result_ptr = out;
-    msg.status_ptr = &st;
-    kernel_.Enqueue(std::move(msg));
-    (void)kernel_.ProcessBudget(kKernelHotPathMaxMsgs, kKernelHotPathMaxMs);
-    return st;
-}
-
-Status StorageEngine::GetNeighbors(VertexId src, EdgeType type, std::vector<pomai::Neighbor>* out) {
-    Status st = Status::Ok();
-    struct { VertexId src; EdgeType type; } payload = {src, type};
-    core::Message msg = core::Message::Create(core::PodId::kGraph, core::Op::kGetNeighborsWithType, 
-        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&payload), sizeof(payload)));
-    msg.result_ptr = out;
     msg.status_ptr = &st;
     kernel_.Enqueue(std::move(msg));
     (void)kernel_.ProcessBudget(kKernelHotPathMaxMsgs, kKernelHotPathMaxMs);
@@ -394,6 +248,7 @@ Database::Database() : opened_(false), impl_(std::make_unique<Impl>()) {}
 Database::~Database() { (void)Close(); }
 
 Status Database::Open(const EmbeddedOptions& options) {
+    pomai::util::EnsurePallocInitialized();
     if (opened_) return Status::InvalidArgument("already open");
     if (options.dim == 0) return Status::InvalidArgument("dimension must be greater than 0");
     if (options.path.empty()) return Status::InvalidArgument("path cannot be empty");
@@ -418,9 +273,6 @@ Status Database::Open(const EmbeddedOptions& options) {
     }
     impl_->scheduler.RegisterPeriodic(std::make_unique<MaintenanceTask>(this), std::chrono::seconds(5));
     
-    if (options.enable_auto_edge) {
-        AddPostPutHook(std::make_shared<core::AutoEdgeHook>(storage_engine_.get()));
-    }
     return Status::Ok();
 }
 
@@ -538,7 +390,7 @@ Status Database::Search(std::span<const float> query, uint32_t topk, SearchResul
 
 Status Database::Search(std::span<const float> query, uint32_t topk, const SearchOptions& opts, SearchResult* out) {
     if (!out) return Status::InvalidArgument("out cannot be null");
-    return opened_ ? storage_engine_->Search("__default__", query, topk, opts, out) : Status::InvalidArgument("closed");
+    return opened_ ? storage_engine_->Search(query, topk, opts, out) : Status::InvalidArgument("closed");
 }
 
 Status Database::SearchBatch(std::span<const float> queries, uint32_t num_queries, uint32_t topk, const SearchOptions& opts, std::vector<SearchResult>* out) {
@@ -547,75 +399,10 @@ Status Database::SearchBatch(std::span<const float> queries, uint32_t num_querie
     out->resize(num_queries);
     size_t dim = queries.size() / num_queries;
     for (uint32_t i = 0; i < num_queries; ++i) {
-        auto st = storage_engine_->Search("__default__", queries.subspan(i * dim, dim), topk, opts, &(*out)[i]);
+        auto st = storage_engine_->Search(queries.subspan(i * dim, dim), topk, opts, &(*out)[i]);
         if (!st.ok()) return st;
     }
     return Status::Ok();
-}
-
-Status Database::SearchGraphRAG(std::span<const float> query, std::uint32_t topk,
-                              const SearchOptions& opts, uint32_t k_hops,
-                              std::vector<SearchResult>* out) {
-    if (!opened_) return Status::InvalidArgument("closed");
-    
-    // Legacy implementation redirected to the new Planner logic
-    MultiModalQuery mmq;
-    mmq.vector.assign(query.begin(), query.end());
-    mmq.top_k = topk;
-    mmq.graph_hops = k_hops;
-    
-    SearchResult res;
-    auto st = storage_engine_->SearchMultiModal("__default__", mmq, &res);
-    if (st.ok() && out) {
-        out->clear();
-        out->push_back(std::move(res));
-    }
-    return st;
-}
-
-Status Database::SearchMultiModal(const MultiModalQuery& query, SearchResult* out) {
-    return SearchMultiModal("__default__", query, out);
-}
-
-Status Database::SearchMultiModal(std::string_view membrane, const MultiModalQuery& query, SearchResult* out) {
-    if (!opened_) return Status::InvalidArgument("closed");
-    return storage_engine_->SearchMultiModal(membrane, query, out);
-}
-
-Status Database::AddVertex(VertexId id, TagId tag, const Metadata& meta) {
-    if (!opened_) return Status::InvalidArgument("closed");
-    auto st = storage_engine_->AddVertex(id, tag, meta);
-    impl_->scheduler.Poll();
-    return st;
-}
-
-Status Database::AddEdge(VertexId src, VertexId dst, EdgeType type, uint32_t rank, const Metadata& meta) {
-    if (!opened_) return Status::InvalidArgument("closed");
-    auto st = storage_engine_->AddEdge(src, dst, type, rank, meta);
-    impl_->scheduler.Poll();
-    return st;
-}
-
-Status Database::DeleteVertex(VertexId id) {
-    if (!opened_) return Status::InvalidArgument("closed");
-    auto st = storage_engine_->DeleteVertex(id);
-    impl_->scheduler.Poll();
-    return st;
-}
-
-Status Database::DeleteEdge(VertexId src, VertexId dst, EdgeType type) {
-    if (!opened_) return Status::InvalidArgument("closed");
-    auto st = storage_engine_->DeleteEdge(src, dst, type);
-    impl_->scheduler.Poll();
-    return st;
-}
-
-Status Database::GetNeighbors(VertexId src, std::vector<Neighbor>* out) {
-    return opened_ ? storage_engine_->GetNeighbors(src, out) : Status::InvalidArgument("closed");
-}
-
-Status Database::GetNeighbors(VertexId src, EdgeType type, std::vector<Neighbor>* out) {
-    return opened_ ? storage_engine_->GetNeighbors(src, type, out) : Status::InvalidArgument("closed");
 }
 
 Status Database::GetSnapshot(std::shared_ptr<Snapshot>* out) {
@@ -639,3 +426,4 @@ void Database::AddPostPutHook(std::shared_ptr<PostPutHook> hook) {
 }
 
 } // namespace pomai
+

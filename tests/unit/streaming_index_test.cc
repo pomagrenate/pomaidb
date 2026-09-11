@@ -3,8 +3,8 @@
 #include <iostream>
 #include <cmath>
 
-#include "core/index/ivf_coarse.h"
-#include "core/distance.h"
+#include "ivf_coarse.h"
+#include "distance.h"
 
 // Test tracking structural centroid shifting.
 POMAI_TEST(IvfCoarseTest_StreamingIndexCentroidShift) {
@@ -54,3 +54,35 @@ POMAI_TEST(IvfCoarseTest_StreamingIndexCentroidShift) {
     // accuracy, proximity, and hit rate will generally favor the new location heavily over the old initialization.
     std::cout << "Streaming index successfully updated " << post_drift_cands.size() << " candidates!" << std::endl;
 }
+
+POMAI_TEST(IvfCoarseTest_PreTrainingUpdateAndDelete) {
+    pomai::index::IvfCoarse::Options opt;
+    opt.nlist = 16;
+    pomai::index::IvfCoarse index(2, opt);
+    POMAI_EXPECT_TRUE(!index.ready());
+
+    std::vector<float> v1 = {1.0f, 2.0f};
+    std::vector<float> v2 = {3.0f, 4.0f};
+    std::vector<float> v1_updated = {10.0f, 20.0f};
+
+    POMAI_EXPECT_OK(index.Put(1, v1));
+    POMAI_EXPECT_OK(index.Put(2, v2));
+    POMAI_EXPECT_EQ(index.live_count(), 2);
+
+    // Update v1 in-place before training
+    POMAI_EXPECT_OK(index.Put(1, v1_updated));
+    POMAI_EXPECT_EQ(index.live_count(), 2);
+
+    // Delete v2 before training
+    POMAI_EXPECT_OK(index.Delete(2));
+    POMAI_EXPECT_EQ(index.live_count(), 1);
+
+    // Deleting non-existent vector is safe no-op
+    POMAI_EXPECT_OK(index.Delete(999));
+    POMAI_EXPECT_EQ(index.live_count(), 1);
+
+    // Delete v1
+    POMAI_EXPECT_OK(index.Delete(1));
+    POMAI_EXPECT_EQ(index.live_count(), 0);
+}
+

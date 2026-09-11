@@ -5,10 +5,10 @@
 #include <string>
 #include <vector>
 
-#include "pomai/status.h"
-#include "storage/manifest/manifest.h"
+#include "status.h"
+#include "manifest.h"
 #include "tests/common/test_tmpdir.h"
-#include "util/crc32c.h"
+#include "crc32c.h"
 
 namespace
 {
@@ -68,7 +68,7 @@ namespace
         b.metric = pomai::MetricType::kCosine;
         b.index_params.nlist = 99;
         b.index_params.nprobe = 10;
-        b.kind = pomai::MembraneKind::kRag;
+        b.kind = pomai::MembraneKind::kVector;
 
         POMAI_EXPECT_OK(pomai::storage::Manifest::CreateMembrane(root, a));
         POMAI_EXPECT_OK(pomai::storage::Manifest::CreateMembrane(root, b));
@@ -87,7 +87,7 @@ namespace
         POMAI_EXPECT_TRUE(got.metric == pomai::MetricType::kCosine);
         POMAI_EXPECT_EQ(got.index_params.nlist, static_cast<std::uint32_t>(99));
         POMAI_EXPECT_EQ(got.index_params.nprobe, static_cast<std::uint32_t>(10));
-        POMAI_EXPECT_TRUE(got.kind == pomai::MembraneKind::kRag);
+        POMAI_EXPECT_TRUE(got.kind == pomai::MembraneKind::kVector);
 
         // Create again => AlreadyExists.
         auto st = pomai::storage::Manifest::CreateMembrane(root, a);

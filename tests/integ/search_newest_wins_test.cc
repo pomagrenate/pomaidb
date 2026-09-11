@@ -5,13 +5,13 @@
 #include <vector>
 #include <span>
 
-#include "core/shard/manifest.h"  // SegmentManifest
-#include "pomai/options.h"
-#include "pomai/pomai.h"
-#include "pomai/search.h"
-#include "pomai/types.h"
-#include "storage/manifest/manifest.h"
-#include "table/segment.h"
+#include "segment_manifest.h"  // SegmentManifest
+#include "options.h"
+#include "pomai.h"
+#include "search.h"
+#include "types.h"
+#include "manifest.h"
+#include "segment.h"
 
 namespace {
 

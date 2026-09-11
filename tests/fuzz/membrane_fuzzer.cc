@@ -6,7 +6,7 @@
 #include <cstring>
 #include <cmath>
 
-#include "pomai/pomai.h"
+#include "pomai.h"
 
 // Fuzzer random generator helper (inspired by RocksDB)
 class FuzzedDataProvider {

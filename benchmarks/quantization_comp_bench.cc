@@ -1,4 +1,4 @@
-#include "pomai/pomai.h"
+#include "pomai.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -89,8 +89,10 @@ void BenchType(const std::string& name, pomai::QuantizationType qtype,
     double recall10 = static_cast<double>(correct_t10) / (queries.size() * 10);
     
     printf("%-10s | %12.2f | %10.4f | %9.2f%% | %9.2f%%\n", name.c_str(), res->throughput, res->p50_ms, res->accuracy * 100, recall10 * 100);
-    
-    fs::remove_all(path);
+    (void)db->Close();
+    db.reset();
+    std::error_code ec;
+    fs::remove_all(path, ec);
 }
 
 int main() {
