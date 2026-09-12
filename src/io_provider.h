@@ -142,7 +142,7 @@ class PosixWritableFile : public WritableFile {
 
   Status Append(Slice data) override {
     if (fd_ < 0) return Status::InvalidArgument("file closed");
-    const char* src = data.data();
+    const char* src = reinterpret_cast<const char*>(data.data());
     size_t size = data.size();
 
     if (buf_used_ + size <= kBufferSize) {
