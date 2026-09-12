@@ -1,6 +1,7 @@
 #pragma once
 #include <memory>
 #include "types.h"
+#include "metadata.h"
 #include <span>
 
 namespace pomai
@@ -41,6 +42,9 @@ namespace pomai
 
         // Is iterator positioned at valid entry?
         virtual bool Valid() const = 0;
+
+        // Optional metadata associated with current vector (valid only if Valid() == true)
+        virtual const Metadata* metadata() const { return nullptr; }
     };
 
 } // namespace pomai

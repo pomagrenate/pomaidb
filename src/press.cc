@@ -97,7 +97,10 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
 
         if (snapshot) {
             for (const auto& old_loc : snapshot->locules()) {
-                if (old_loc) (void)env_->DeleteFile(old_loc->filepath());
+                if (old_loc) {
+                    old_loc->CloseMapping();
+                    (void)env_->DeleteFile(old_loc->filepath());
+                }
             }
         }
         return Status::Ok();
@@ -199,6 +202,7 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
     if (snapshot) {
         for (const auto& old_loc : snapshot->locules()) {
             if (old_loc) {
+                old_loc->CloseMapping();
                 (void)env_->DeleteFile(old_loc->filepath());
             }
         }

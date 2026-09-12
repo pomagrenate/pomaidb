@@ -13,14 +13,22 @@ import sys
 from pathlib import Path
 
 __all__ = [
-    "open_db", "close", "put", "put_batch", "delete", "exists", "get",
+    "open_db", "close", "flush", "put", "put_batch", "delete", "exists", "get",
     "search", "search_batch", "search_zero_copy", "release_zero_copy_session",
-    "freeze", "compact_membrane", "create_membrane", "list_membranes",
+    "freeze", "compact", "compact_membrane", "create_membrane", "drop_membrane",
+    "open_membrane", "close_membrane", "list_membranes", "get_stats",
     "resolve_effective_options", "PomaiDBError",
     "MEMBRANE_KIND_VECTOR",
+    "QUANT_NONE", "QUANT_SQ8", "QUANT_FP16", "QUANT_BIT", "QUANT_PQ8",
 ]
 
 MEMBRANE_KIND_VECTOR = 0
+
+QUANT_NONE = 0
+QUANT_SQ8 = 1
+QUANT_FP16 = 2
+QUANT_BIT = 3
+QUANT_PQ8 = 4
 
 class PomaiDBError(Exception):
     pass
@@ -89,6 +97,15 @@ def _register_api(lib):
             ("tick_max_ops", ctypes.c_uint32),
             ("tick_max_ms", ctypes.c_uint32),
             ("strict_deterministic", ctypes.c_bool),
+            ("quant_type", ctypes.c_uint8),
+            ("pq_m", ctypes.c_uint32),
+            ("memtable_flush_threshold_mb", ctypes.c_uint32),
+            ("auto_freeze_on_pressure", ctypes.c_bool),
+            ("max_memtable_mb", ctypes.c_uint32),
+            ("write_coalesce_window_us", ctypes.c_uint32),
+            ("write_coalesce_batch_size", ctypes.c_uint32),
+            ("enable_encryption_at_rest", ctypes.c_bool),
+            ("encryption_key_hex", ctypes.c_char_p),
         ]
 
     class PomaiUpsert(ctypes.Structure):
@@ -99,6 +116,10 @@ def _register_api(lib):
             ("dim", ctypes.c_uint32),
             ("metadata", ctypes.POINTER(ctypes.c_uint8)),
             ("metadata_len", ctypes.c_uint32),
+            ("membrane", ctypes.c_char_p),
+            ("timestamp", ctypes.c_uint64),
+            ("payload", ctypes.POINTER(ctypes.c_uint8)),
+            ("payload_len", ctypes.c_uint32),
         ]
 
     class PomaiQuery(ctypes.Structure):
@@ -112,6 +133,9 @@ def _register_api(lib):
             ("partition_location_id", ctypes.c_char_p),
             ("deadline_ms", ctypes.c_uint32),
             ("flags", ctypes.c_uint32),
+            ("membrane", ctypes.c_char_p),
+            ("as_of_ts", ctypes.c_uint64),
+            ("as_of_lsn", ctypes.c_uint64),
         ]
 
     class PomaiSemanticPointer(ctypes.Structure):
@@ -145,6 +169,9 @@ def _register_api(lib):
             ("metadata", ctypes.POINTER(ctypes.c_uint8)),
             ("metadata_len", ctypes.c_uint32),
             ("is_deleted", ctypes.c_bool),
+            ("timestamp", ctypes.c_uint64),
+            ("payload", ctypes.POINTER(ctypes.c_uint8)),
+            ("payload_len", ctypes.c_uint32),
         ]
 
     lib.PomaiOptions = PomaiOptions
@@ -163,8 +190,17 @@ def _register_api(lib):
     lib.pomai_close.argtypes = [ctypes.c_void_p]
     lib.pomai_close.restype = ctypes.c_void_p
 
+    lib.pomai_flush.argtypes = [ctypes.c_void_p]
+    lib.pomai_flush.restype = ctypes.c_void_p
+
+    lib.pomai_compact.argtypes = [ctypes.c_void_p]
+    lib.pomai_compact.restype = ctypes.c_void_p
+
     lib.pomai_freeze.argtypes = [ctypes.c_void_p]
     lib.pomai_freeze.restype = ctypes.c_void_p
+
+    lib.pomai_freeze_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.pomai_freeze_membrane.restype = ctypes.c_void_p
 
     lib.pomai_put.argtypes = [ctypes.c_void_p, ctypes.POINTER(PomaiUpsert)]
     lib.pomai_put.restype = ctypes.c_void_p
@@ -199,14 +235,44 @@ def _register_api(lib):
     lib.pomai_search_batch_free.argtypes = [ctypes.POINTER(PomaiSearchResults), ctypes.c_size_t]
     lib.pomai_search_batch_free.restype = None
 
-    lib.pomai_create_membrane_kind.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32]
+    lib.pomai_create_membrane_kind.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.uint32 if hasattr(ctypes, "uint32") else ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32]
     lib.pomai_create_membrane_kind.restype = ctypes.c_void_p
+
+    lib.pomai_drop_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.pomai_drop_membrane.restype = ctypes.c_void_p
+
+    lib.pomai_open_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.pomai_open_membrane.restype = ctypes.c_void_p
+
+    lib.pomai_close_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.pomai_close_membrane.restype = ctypes.c_void_p
 
     lib.pomai_list_membranes_json.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t)]
     lib.pomai_list_membranes_json.restype = ctypes.c_void_p
 
     lib.pomai_compact_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
     lib.pomai_compact_membrane.restype = ctypes.c_void_p
+
+    lib.pomai_get_stats_json.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t)]
+    lib.pomai_get_stats_json.restype = ctypes.c_void_p
+
+    lib.pomai_put_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(PomaiUpsert)]
+    lib.pomai_put_membrane.restype = ctypes.c_void_p
+
+    lib.pomai_put_batch_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(PomaiUpsert), ctypes.c_size_t]
+    lib.pomai_put_batch_membrane.restype = ctypes.c_void_p
+
+    lib.pomai_get_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint64, ctypes.POINTER(ctypes.POINTER(PomaiRecord))]
+    lib.pomai_get_membrane.restype = ctypes.c_void_p
+
+    lib.pomai_delete_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint64]
+    lib.pomai_delete_membrane.restype = ctypes.c_void_p
+
+    lib.pomai_exists_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint64, ctypes.POINTER(ctypes.c_bool)]
+    lib.pomai_exists_membrane.restype = ctypes.c_void_p
+
+    lib.pomai_search_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(PomaiQuery), ctypes.POINTER(ctypes.POINTER(PomaiSearchResults))]
+    lib.pomai_search_membrane.restype = ctypes.c_void_p
 
     lib.pomai_release_pointer.argtypes = [ctypes.c_uint64]
     lib.pomai_release_pointer.restype = None
@@ -228,15 +294,19 @@ def _check_status(st):
     _lib.pomai_status_free(st)
     raise PomaiDBError(err)
 
-def open_db(path, dim, shards=1, metric="l2", edge_profile=0):
+def open_db(path, dim, shards=1, metric="l2", edge_profile=0, quant_type=0, memory_budget_bytes=0, auto_freeze_on_pressure=True, memtable_flush_threshold_mb=64):
     _ensure_lib()
     opts = _lib.PomaiOptions()
     _lib.pomai_options_init(ctypes.byref(opts))
     opts.path = path.encode("utf-8")
     opts.dim = dim
     opts.shards = shards
-    opts.metric = 1 if metric.lower() in ("ip", "innerproduct", "cosine") else 0
+    opts.metric = 2 if metric.lower() == "cosine" else (1 if metric.lower() in ("ip", "innerproduct") else 0)
     opts.edge_profile = edge_profile
+    opts.quant_type = quant_type
+    opts.memory_budget_bytes = memory_budget_bytes
+    opts.auto_freeze_on_pressure = auto_freeze_on_pressure
+    opts.memtable_flush_threshold_mb = memtable_flush_threshold_mb
     db_ptr = ctypes.c_void_p()
     st = _lib.pomai_open(ctypes.byref(opts), ctypes.byref(db_ptr))
     _check_status(st)
@@ -246,10 +316,24 @@ def close(db):
     if db:
         _check_status(_lib.pomai_close(db))
 
-def freeze(db, membrane=""):
-    _check_status(_lib.pomai_freeze(db))
+def flush(db):
+    if db:
+        _check_status(_lib.pomai_flush(db))
 
-def put(db, id, vector, tenant="", membrane=""):
+def freeze(db, membrane=""):
+    if membrane:
+        _check_status(_lib.pomai_freeze_membrane(db, membrane.encode("utf-8")))
+    else:
+        _check_status(_lib.pomai_freeze(db))
+
+def compact(db):
+    if db:
+        _check_status(_lib.pomai_compact(db))
+
+def compact_membrane(db, name):
+    _check_status(_lib.pomai_compact_membrane(db, name.encode("utf-8")))
+
+def put(db, id, vector, tenant="", membrane="", timestamp=0, payload=b""):
     _ensure_lib()
     up = _lib.PomaiUpsert()
     up.struct_size = ctypes.sizeof(_lib.PomaiUpsert)
@@ -261,9 +345,16 @@ def put(db, id, vector, tenant="", membrane=""):
         t_bytes = tenant.encode("utf-8")
         up.metadata = (ctypes.c_uint8 * len(t_bytes))(*t_bytes)
         up.metadata_len = len(t_bytes)
+    if membrane:
+        up.membrane = membrane.encode("utf-8")
+    up.timestamp = timestamp
+    if payload:
+        p_bytes = payload if isinstance(payload, (bytes, bytearray)) else str(payload).encode("utf-8")
+        up.payload = (ctypes.c_uint8 * len(p_bytes))(*p_bytes)
+        up.payload_len = len(p_bytes)
     _check_status(_lib.pomai_put(db, ctypes.byref(up)))
 
-def put_batch(db, ids, vectors, tenants=None):
+def put_batch(db, ids, vectors, tenants=None, membrane=""):
     _ensure_lib()
     n = len(ids)
     if n == 0:
@@ -271,6 +362,7 @@ def put_batch(db, ids, vectors, tenants=None):
     arr_type = _lib.PomaiUpsert * n
     arr = arr_type()
     keep_alive = []
+    memb_bytes = membrane.encode("utf-8") if membrane else None
     for i in range(n):
         arr[i].struct_size = ctypes.sizeof(_lib.PomaiUpsert)
         arr[i].id = ids[i]
@@ -278,6 +370,8 @@ def put_batch(db, ids, vectors, tenants=None):
         c_v = (ctypes.c_float * len(vectors[i]))(*vectors[i])
         arr[i].vector = c_v
         keep_alive.append(c_v)
+        if memb_bytes:
+            arr[i].membrane = memb_bytes
         if tenants and i < len(tenants) and tenants[i]:
             t_b = tenants[i].encode("utf-8")
             c_m = (ctypes.c_uint8 * len(t_b))(*t_b)
@@ -286,12 +380,18 @@ def put_batch(db, ids, vectors, tenants=None):
             keep_alive.append(c_m)
     _check_status(_lib.pomai_put_batch(db, arr, n))
 
-def delete(db, id):
-    _check_status(_lib.pomai_delete(db, id))
+def delete(db, id, membrane=""):
+    if membrane:
+        _check_status(_lib.pomai_delete_membrane(db, membrane.encode("utf-8"), id))
+    else:
+        _check_status(_lib.pomai_delete(db, id))
 
-def exists(db, id):
+def exists(db, id, membrane=""):
     out = ctypes.c_bool()
-    _check_status(_lib.pomai_exists(db, id, ctypes.byref(out)))
+    if membrane:
+        _check_status(_lib.pomai_exists_membrane(db, membrane.encode("utf-8"), id, ctypes.byref(out)))
+    else:
+        _check_status(_lib.pomai_exists(db, id, ctypes.byref(out)))
     return out.value
 
 class Hit(tuple):
@@ -313,9 +413,12 @@ class Hit(tuple):
     def __repr__(self):
         return f"Hit(id={self[0]}, score={self[1]})"
 
-def get(db, id):
+def get(db, id, membrane=""):
     rec_ptr = ctypes.POINTER(_lib.PomaiRecord)()
-    _check_status(_lib.pomai_get(db, id, ctypes.byref(rec_ptr)))
+    if membrane:
+        _check_status(_lib.pomai_get_membrane(db, membrane.encode("utf-8"), id, ctypes.byref(rec_ptr)))
+    else:
+        _check_status(_lib.pomai_get(db, id, ctypes.byref(rec_ptr)))
     if not rec_ptr:
         return None
     r = rec_ptr.contents
@@ -323,11 +426,15 @@ def get(db, id):
     meta = ""
     if r.metadata and r.metadata_len > 0:
         meta = bytes(r.metadata[:r.metadata_len]).decode("utf-8", errors="replace")
+    payload = b""
+    if r.payload and r.payload_len > 0:
+        payload = bytes(r.payload[:r.payload_len])
     dim = r.dim
+    ts = r.timestamp
     _lib.pomai_record_free(rec_ptr)
-    return {"id": id, "dim": dim, "vector": vec, "tenant": meta}
+    return {"id": id, "dim": dim, "vector": vec, "tenant": meta, "timestamp": ts, "payload": payload}
 
-def search(db, query_vector, topk=10, tenant="", membrane=""):
+def search(db, query_vector, topk=10, tenant="", membrane="", as_of_ts=0, as_of_lsn=0):
     _ensure_lib()
     q = _lib.PomaiQuery()
     q.struct_size = ctypes.sizeof(_lib.PomaiQuery)
@@ -337,6 +444,10 @@ def search(db, query_vector, topk=10, tenant="", membrane=""):
     q.topk = topk
     if tenant:
         q.filter_expression = f"tenant={tenant}".encode("utf-8")
+    if membrane:
+        q.membrane = membrane.encode("utf-8")
+    q.as_of_ts = as_of_ts
+    q.as_of_lsn = as_of_lsn
     res_ptr = ctypes.POINTER(_lib.PomaiSearchResults)()
     _check_status(_lib.pomai_search(db, ctypes.byref(q), ctypes.byref(res_ptr)))
     if not res_ptr:
@@ -346,7 +457,7 @@ def search(db, query_vector, topk=10, tenant="", membrane=""):
     _lib.pomai_search_results_free(res_ptr)
     return hits
 
-def search_batch(db, query_vectors, topk=10):
+def search_batch(db, query_vectors, topk=10, membrane=""):
     _ensure_lib()
     n = len(query_vectors)
     if n == 0:
@@ -355,12 +466,15 @@ def search_batch(db, query_vectors, topk=10):
     arr = arr_type()
     keep_alive = []
     dim = len(query_vectors[0])
+    memb_bytes = membrane.encode("utf-8") if membrane else None
     for i in range(n):
         arr[i].struct_size = ctypes.sizeof(_lib.PomaiQuery)
         c_v = (ctypes.c_float * dim)(*query_vectors[i])
         arr[i].vector = c_v
         arr[i].dim = dim
         arr[i].topk = topk
+        if memb_bytes:
+            arr[i].membrane = memb_bytes
         keep_alive.append(c_v)
     res_ptr = ctypes.POINTER(_lib.PomaiSearchResults)()
     _check_status(_lib.pomai_search_batch(db, arr, n, ctypes.byref(res_ptr)))
@@ -374,7 +488,7 @@ def search_batch(db, query_vectors, topk=10):
     _lib.pomai_search_batch_free(res_ptr, n)
     return out
 
-def search_zero_copy(db, query_vector, topk=10):
+def search_zero_copy(db, query_vector, topk=10, membrane=""):
     _ensure_lib()
     q = _lib.PomaiQuery()
     q.struct_size = ctypes.sizeof(_lib.PomaiQuery)
@@ -383,6 +497,8 @@ def search_zero_copy(db, query_vector, topk=10):
     q.dim = len(query_vector)
     q.topk = topk
     q.flags = 1  # ZERO_COPY
+    if membrane:
+        q.membrane = membrane.encode("utf-8")
     res_ptr = ctypes.POINTER(_lib.PomaiSearchResults)()
     _check_status(_lib.pomai_search(db, ctypes.byref(q), ctypes.byref(res_ptr)))
     if not res_ptr:
@@ -400,8 +516,14 @@ def release_zero_copy_session(session_id):
 def create_membrane(db, name, dim, shard_count=1):
     _check_status(_lib.pomai_create_membrane_kind(db, name.encode("utf-8"), dim, shard_count, 0))
 
-def compact_membrane(db, name):
-    _check_status(_lib.pomai_compact_membrane(db, name.encode("utf-8")))
+def drop_membrane(db, name):
+    _check_status(_lib.pomai_drop_membrane(db, name.encode("utf-8")))
+
+def open_membrane(db, name):
+    _check_status(_lib.pomai_open_membrane(db, name.encode("utf-8")))
+
+def close_membrane(db, name):
+    _check_status(_lib.pomai_close_membrane(db, name.encode("utf-8")))
 
 def list_membranes(db):
     out_json = ctypes.c_char_p()
@@ -409,6 +531,16 @@ def list_membranes(db):
     _check_status(_lib.pomai_list_membranes_json(db, ctypes.byref(out_json), ctypes.byref(out_len)))
     if not out_json.value:
         return []
+    s = out_json.value.decode("utf-8")
+    _lib.pomai_free(ctypes.cast(out_json, ctypes.c_void_p))
+    return json.loads(s)
+
+def get_stats(db):
+    out_json = ctypes.c_char_p()
+    out_len = ctypes.c_size_t()
+    _check_status(_lib.pomai_get_stats_json(db, ctypes.byref(out_json), ctypes.byref(out_len)))
+    if not out_json.value:
+        return {}
     s = out_json.value.decode("utf-8")
     _lib.pomai_free(ctypes.cast(out_json, ctypes.c_void_p))
     return json.loads(s)

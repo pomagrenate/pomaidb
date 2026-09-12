@@ -63,7 +63,7 @@ POMAI_TEST(SdFaultInjection_CorruptedWalAndSegment_NoCrashOnReopen) {
     if (!it.is_regular_file()) continue;
     const auto name = it.path().filename().string();
     if (wal_path.empty() && name.rfind("wal_", 0) == 0) wal_path = it.path().string();
-    if (seg_path.empty() && it.path().extension() == ".dat" &&
+    if (seg_path.empty() && (it.path().extension() == ".pom" || it.path().extension() == ".dat") &&
         name.rfind("manifest.", 0) != 0) {
       seg_path = it.path().string();
     }

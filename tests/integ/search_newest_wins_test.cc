@@ -22,46 +22,6 @@ POMAI_TEST(SearchNewestWins_DeterministicAndTombstone) {
     const std::string membrane = "default";
     const uint32_t dim = 4;
 
-    pomai::MembraneSpec spec;
-    spec.name = membrane;
-    spec.dim = dim;
-    spec.shard_count = 1;
-    spec.metric = pomai::MetricType::kInnerProduct;  // exact match gives score 1.0; L2 would give 0
-
-    POMAI_EXPECT_OK(pomai::storage::Manifest::CreateMembrane(root, spec));
-
-    fs::path data_dir = fs::path(root) / "membranes" / membrane / "data";
-    fs::create_directories(data_dir);
-
-    const pomai::VectorId target_id = 50000;
-    const pomai::VectorId tomb_id = 60000;
-
-    std::vector<float> vec_old = {1.0f, 0.0f, 0.0f, 0.0f};
-    std::vector<float> vec_new = {0.0f, 1.0f, 0.0f, 0.0f};
-    std::vector<float> vec_tomb = {0.0f, 0.0f, 1.0f, 0.0f};
-    std::vector<float> vec_filler = {0.0f, 0.0f, 0.0f, 0.0f};
-
-    std::string old_path = (data_dir / "seg_old.dat").string();
-    pomai::table::SegmentBuilder old_builder(old_path, dim);
-    POMAI_EXPECT_OK(old_builder.Add(target_id, pomai::VectorView(std::span<const float>(vec_old)), false));
-    POMAI_EXPECT_OK(old_builder.Add(tomb_id, pomai::VectorView(std::span<const float>(vec_tomb)), false));
-    POMAI_EXPECT_OK(old_builder.Finish());
-
-    std::string new_path = (data_dir / "seg_new.dat").string();
-    pomai::table::SegmentBuilder new_builder(new_path, dim);
-    for (pomai::VectorId id = 0; id < target_id; ++id) {
-        if (id == tomb_id) {
-            continue;
-        }
-        POMAI_EXPECT_OK(new_builder.Add(id, pomai::VectorView(std::span<const float>(vec_filler)), false));
-    }
-    POMAI_EXPECT_OK(new_builder.Add(target_id, pomai::VectorView(std::span<const float>(vec_new)), false));
-    POMAI_EXPECT_OK(new_builder.Add(tomb_id, pomai::VectorView(std::span<const float>(vec_tomb)), true));
-    POMAI_EXPECT_OK(new_builder.Finish());
-
-    std::vector<std::string> segs = {"seg_new.dat", "seg_old.dat"};
-    POMAI_EXPECT_OK(pomai::core::SegmentManifest::Commit(data_dir.string(), segs));
-
     pomai::DBOptions opt;
     opt.path = root;
     opt.dim = dim;
@@ -70,9 +30,30 @@ POMAI_TEST(SearchNewestWins_DeterministicAndTombstone) {
     std::unique_ptr<pomai::DB> db;
     POMAI_EXPECT_OK(pomai::DB::Open(opt, &db));
 
-    auto create_st = db->CreateMembrane(spec);
-    POMAI_EXPECT_TRUE(create_st.ok() || create_st.code() == pomai::ErrorCode::kAlreadyExists);
+    pomai::MembraneSpec spec;
+    spec.name = membrane;
+    spec.dim = dim;
+    spec.shard_count = 1;
+    spec.metric = pomai::MetricType::kInnerProduct;  // exact match gives score 1.0; L2 would give 0
+    POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane(membrane));
+
+    const pomai::VectorId target_id = 50000;
+    const pomai::VectorId tomb_id = 60000;
+
+    std::vector<float> vec_old = {1.0f, 0.0f, 0.0f, 0.0f};
+    std::vector<float> vec_new = {0.0f, 1.0f, 0.0f, 0.0f};
+    std::vector<float> vec_tomb = {0.0f, 0.0f, 1.0f, 0.0f};
+
+    // 1. Put old version of target_id and tomb_id, then freeze
+    POMAI_EXPECT_OK(db->Put(membrane, target_id, vec_old));
+    POMAI_EXPECT_OK(db->Put(membrane, tomb_id, vec_tomb));
+    POMAI_EXPECT_OK(db->Freeze(membrane));
+
+    // 2. Put newer version of target_id, and delete tomb_id, then freeze
+    POMAI_EXPECT_OK(db->Put(membrane, target_id, vec_new));
+    POMAI_EXPECT_OK(db->Delete(membrane, tomb_id));
+    POMAI_EXPECT_OK(db->Freeze(membrane));
 
     for (int i = 0; i < 50; ++i) {
         pomai::SearchResult res;
@@ -94,6 +75,9 @@ POMAI_TEST(SearchNewestWins_DeterministicAndTombstone) {
         }
         POMAI_EXPECT_TRUE(!found);
     }
+
+    (void)db->Close();
+    std::filesystem::remove_all(root);
 }
 
 } // namespace

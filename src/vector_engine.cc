@@ -167,8 +167,18 @@ Status VectorEngine::Compact() {
     return engine_->Compact();
 }
 
-Status VectorEngine::PushSync(SyncReceiver* /*receiver*/) {
-    return Status::Ok();
+Status VectorEngine::PushSync(SyncReceiver* receiver) {
+    if (!receiver) return Status::InvalidArgument("receiver is null");
+    if (engine_) {
+        (void)engine_->Flush();
+    }
+    WalStreamer streamer(opt_.path, 0);
+    uint64_t next_lsn = sync_lsn_;
+    auto st = streamer.PushSince(sync_lsn_, receiver, &next_lsn);
+    if (st.ok()) {
+        sync_lsn_ = next_lsn;
+    }
+    return st;
 }
 
 uint64_t VectorEngine::GetLastSyncedLSN() const {

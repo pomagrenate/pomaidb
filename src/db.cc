@@ -173,6 +173,13 @@ namespace pomai
             return mgr_.PutVector(membrane, id, vec, meta);
         }
 
+        Status PutBatch(std::string_view membrane,
+                        const std::vector<VectorId>& ids,
+                        const std::vector<std::span<const float>>& vectors) override
+        {
+            return mgr_.PutBatch(membrane, ids, vectors);
+        }
+
         Status Get(std::string_view membrane, VectorId id, std::vector<float> *out) override
         {
             return mgr_.Get(membrane, id, out);

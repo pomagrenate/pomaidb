@@ -72,6 +72,9 @@ namespace pomai
                                  std::span<const float> vec) = 0;
         virtual Status PutVector(std::string_view membrane, VectorId id,
                                  std::span<const float> vec, const Metadata& meta) = 0;
+        virtual Status PutBatch(std::string_view membrane,
+                                const std::vector<VectorId>& ids,
+                                const std::vector<std::span<const float>>& vectors) = 0;
         virtual Status Get(std::string_view membrane, VectorId id,
                            std::vector<float> *out) = 0;
         virtual Status Get(std::string_view membrane, VectorId id,

@@ -13,6 +13,13 @@ namespace pomai::storage {
 
 Locule::~Locule() = default;
 
+void Locule::CloseMapping() {
+    arils_.clear();
+    mapping_.reset();
+    memory_buffer_.reset();
+    base_addr_ = nullptr;
+}
+
 Status Locule::Open(Env* env, const std::string& filepath, std::shared_ptr<Locule>* out) {
     if (!env || !out) {
         return Status::InvalidArgument("null env or output pointer");

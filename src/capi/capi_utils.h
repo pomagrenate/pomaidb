@@ -21,10 +21,13 @@ struct pomai_db_t {
 
 struct pomai_snapshot_t {
     std::shared_ptr<pomai::Snapshot> snap;
+    std::string membrane;
 };
 
 struct pomai_iter_t {
     std::unique_ptr<pomai::SnapshotIterator> iter;
+    mutable std::vector<uint8_t> current_metadata;
+    mutable std::vector<uint8_t> current_payload;
 };
 
 inline pomai_status_code_t ToCCode(pomai::ErrorCode code) {

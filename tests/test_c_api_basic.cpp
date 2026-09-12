@@ -177,6 +177,9 @@ POMAI_TEST(CApiPutBatchSearchAndSnapshotScan) {
 POMAI_TEST(CApiFreezePublishesToSnapshotScan) {
     CApiFixture fx;
 
+    pomai_snapshot_t* before = nullptr;
+    CAPI_EXPECT_OK(pomai_get_snapshot(fx.db(), &before));
+
     auto v = fx.Vec(3.0f);
     pomai_upsert_t up{};
     up.struct_size = sizeof(pomai_upsert_t);
@@ -185,10 +188,6 @@ POMAI_TEST(CApiFreezePublishesToSnapshotScan) {
     up.dim = 8;
 
     CAPI_EXPECT_OK(pomai_put(fx.db(), &up));
-
-    pomai_snapshot_t* before = nullptr;
-    CAPI_EXPECT_OK(pomai_get_snapshot(fx.db(), &before));
-
     CAPI_EXPECT_OK(pomai_freeze(fx.db()));
 
     pomai_snapshot_t* after = nullptr;
@@ -222,7 +221,80 @@ POMAI_TEST(CApiFreezePublishesToSnapshotScan) {
     pomai_snapshot_free(after);
 }
 
+POMAI_TEST(CApiMembraneAndFeatures) {
+    CApiFixture fx;
 
+    // Test membrane creation
+    CAPI_EXPECT_OK(pomai_create_membrane_kind(fx.db(), "custom_memb", 8, 1, 0));
+
+    char* list_json = nullptr;
+    size_t list_len = 0;
+    CAPI_EXPECT_OK(pomai_list_membranes_json(fx.db(), &list_json, &list_len));
+    POMAI_EXPECT_TRUE(list_json != nullptr);
+    POMAI_EXPECT_TRUE(std::string(list_json).find("custom_memb") != std::string::npos);
+    pomai_free(list_json);
+
+    // Put into custom membrane with metadata and payload
+    auto v = fx.Vec(4.5f);
+    std::string payload_str = "{\"key\":\"val\"}";
+    pomai_upsert_t up{};
+    up.struct_size = sizeof(pomai_upsert_t);
+    up.id = 999;
+    up.vector = v.data();
+    up.dim = 8;
+    up.membrane = "custom_memb";
+    up.timestamp = 12345678ULL;
+    up.payload = reinterpret_cast<const uint8_t*>(payload_str.data());
+    up.payload_len = static_cast<uint32_t>(payload_str.size());
+
+    CAPI_EXPECT_OK(pomai_put(fx.db(), &up));
+
+    // Exists & Get from custom membrane
+    bool exists = false;
+    CAPI_EXPECT_OK(pomai_exists_membrane(fx.db(), "custom_memb", 999, &exists));
+    POMAI_EXPECT_TRUE(exists);
+
+    pomai_record_t* rec = nullptr;
+    CAPI_EXPECT_OK(pomai_get_membrane(fx.db(), "custom_memb", 999, &rec));
+    POMAI_EXPECT_TRUE(rec != nullptr);
+    POMAI_EXPECT_EQ(rec->id, 999ULL);
+    POMAI_EXPECT_EQ(rec->dim, 8u);
+    POMAI_EXPECT_EQ(rec->timestamp, 12345678ULL);
+    POMAI_EXPECT_TRUE(rec->payload != nullptr);
+    std::string got_payload(reinterpret_cast<const char*>(rec->payload), rec->payload_len);
+    POMAI_EXPECT_EQ(got_payload, payload_str);
+    pomai_record_free(rec);
+
+    // Search inside custom membrane
+    pomai_query_t query{};
+    query.struct_size = sizeof(pomai_query_t);
+    query.vector = v.data();
+    query.dim = 8;
+    query.topk = 5;
+    query.membrane = "custom_memb";
+
+    pomai_search_results_t* res = nullptr;
+    CAPI_EXPECT_OK(pomai_search(fx.db(), &query, &res));
+    POMAI_EXPECT_TRUE(res != nullptr);
+    POMAI_EXPECT_EQ(res->count, 1u);
+    POMAI_EXPECT_EQ(res->ids[0], 999ULL);
+    pomai_search_results_free(res);
+
+    // Test flush and compact
+    CAPI_EXPECT_OK(pomai_flush(fx.db()));
+    CAPI_EXPECT_OK(pomai_compact_membrane(fx.db(), "custom_memb"));
+
+    // Test stats json
+    char* stats_json = nullptr;
+    size_t stats_len = 0;
+    CAPI_EXPECT_OK(pomai_get_stats_json(fx.db(), &stats_json, &stats_len));
+    POMAI_EXPECT_TRUE(stats_json != nullptr);
+    POMAI_EXPECT_TRUE(std::string(stats_json).find("PomaiDB") != std::string::npos);
+    pomai_free(stats_json);
+
+    // Drop membrane
+    CAPI_EXPECT_OK(pomai_drop_membrane(fx.db(), "custom_memb"));
+}
 
 POMAI_TEST(CApiDeadlines) {
     CApiFixture fx;

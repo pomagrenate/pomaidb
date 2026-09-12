@@ -27,21 +27,26 @@ bool DeadlineExceeded(uint32_t deadline_ms) {
 
 extern "C" {
 
-pomai_status_t* pomai_get_snapshot(pomai_db_t* db, pomai_snapshot_t** out_snap) {
+pomai_status_t* pomai_get_snapshot_membrane(pomai_db_t* db, const char* membrane, pomai_snapshot_t** out_snap) {
     if (db == nullptr || out_snap == nullptr) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db/out_snap must be non-null");
     }
+    const char* memb = (membrane && membrane[0] != '\0') ? membrane : "__default__";
 
     std::shared_ptr<pomai::Snapshot> snap;
-    auto st = db->db->GetSnapshot("__default__", &snap);
+    auto st = db->db->GetSnapshot(memb, &snap);
     if (!st.ok()) {
         return ToCStatus(st);
     }
 
     void* raw = palloc_malloc_aligned(sizeof(pomai_snapshot_t), alignof(pomai_snapshot_t));
     if (!raw) return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "snapshot handle allocation failed");
-    *out_snap = new (raw) pomai_snapshot_t{std::move(snap)};
+    *out_snap = new (raw) pomai_snapshot_t{std::move(snap), memb};
     return nullptr;
+}
+
+pomai_status_t* pomai_get_snapshot(pomai_db_t* db, pomai_snapshot_t** out_snap) {
+    return pomai_get_snapshot_membrane(db, nullptr, out_snap);
 }
 
 void pomai_snapshot_free(pomai_snapshot_t* snap) {
@@ -68,8 +73,14 @@ pomai_status_t* pomai_scan(
         }
     }
 
+    std::string memb = snap->membrane.empty() ? "__default__" : snap->membrane;
+    if (opts != nullptr && opts->struct_size >= offsetof(pomai_scan_options_t, membrane) + sizeof(const char*) &&
+        opts->membrane != nullptr && opts->membrane[0] != '\0') {
+        memb = opts->membrane;
+    }
+
     std::unique_ptr<pomai::SnapshotIterator> iter;
-    auto st = db->db->NewIterator("__default__", snap->snap, &iter);
+    auto st = db->db->NewIterator(memb, snap->snap, &iter);
     if (!st.ok()) {
         return ToCStatus(st);
     }
@@ -86,7 +97,7 @@ pomai_status_t* pomai_scan(
 
     void* raw = palloc_malloc_aligned(sizeof(pomai_iter_t), alignof(pomai_iter_t));
     if (!raw) return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "iterator handle allocation failed");
-    *out_iter = new (raw) pomai_iter_t{std::move(iter)};
+    *out_iter = new (raw) pomai_iter_t{std::move(iter), {}, {}};
     return nullptr;
 }
 
@@ -123,9 +134,31 @@ pomai_status_t* pomai_iter_get_record(const pomai_iter_t* iter, pomai_record_vie
     out_view->id = iter->iter->id();
     out_view->dim = static_cast<uint32_t>(vec.size());
     out_view->vector = vec.data();
-    out_view->metadata = nullptr;
-    out_view->metadata_len = 0;
     out_view->is_deleted = false;
+
+    const auto* meta = iter->iter->metadata();
+    if (meta != nullptr && !meta->tenant.empty()) {
+        iter->current_metadata.assign(meta->tenant.begin(), meta->tenant.end());
+        out_view->metadata = iter->current_metadata.data();
+        out_view->metadata_len = static_cast<uint32_t>(iter->current_metadata.size());
+    } else {
+        out_view->metadata = nullptr;
+        out_view->metadata_len = 0;
+    }
+
+    if (out_view->struct_size >= offsetof(pomai_record_view_t, timestamp) + sizeof(uint64_t)) {
+        out_view->timestamp = meta ? meta->timestamp : 0;
+    }
+    if (out_view->struct_size >= offsetof(pomai_record_view_t, payload_len) + sizeof(uint32_t)) {
+        if (meta != nullptr && !meta->payload.empty()) {
+            iter->current_payload.assign(meta->payload.begin(), meta->payload.end());
+            out_view->payload = iter->current_payload.data();
+            out_view->payload_len = static_cast<uint32_t>(iter->current_payload.size());
+        } else {
+            out_view->payload = nullptr;
+            out_view->payload_len = 0;
+        }
+    }
     return nullptr;
 }
 

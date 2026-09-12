@@ -1,0 +1,34 @@
+{
+  "name": "pomaidb",
+  "version": "0.1.0",
+  "description": "Embedded vector database for Edge AI - official Node.js bindings",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "type": "module",
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "keywords": [
+    "vector",
+    "embeddings",
+    "database",
+    "hnsw",
+    "embedded",
+    "edge-ai"
+  ],
+  "author": "PomaiDB Team <info@pomaidb.org>",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pomagrenate/pomaidb.git"
+  },
+  "dependencies": {
+    "koffi": "^2.9.0"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md",
+    "lib/"
+  ]
+}

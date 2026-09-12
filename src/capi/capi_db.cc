@@ -26,6 +26,7 @@ struct RecordWrapper {
     pomai_record_t pub{};
     std::vector<float> vec_data;
     std::vector<uint8_t> meta_data;
+    std::vector<uint8_t> payload_data;
 };
 
 struct SearchResultsWrapper {
@@ -110,13 +111,30 @@ std::string JsonEscape(std::string_view s) {
 }
 
 pomai::Metadata ToMetadata(const pomai_upsert_t& item) {
-    if (item.metadata == nullptr || item.metadata_len == 0) {
-        return pomai::Metadata();
+    pomai::Metadata m;
+    if (item.metadata != nullptr && item.metadata_len > 0) {
+        m.tenant.assign(reinterpret_cast<const char*>(item.metadata), item.metadata_len);
+        m.device_id = m.tenant;
+        m.location_id = m.tenant;
     }
-    pomai::Metadata m(std::string(reinterpret_cast<const char*>(item.metadata), item.metadata_len));
-    m.device_id = m.tenant;
-    m.location_id = m.tenant;
+    if (item.struct_size >= offsetof(pomai_upsert_t, timestamp) + sizeof(uint64_t)) {
+        m.timestamp = item.timestamp;
+    }
+    if (item.struct_size >= offsetof(pomai_upsert_t, payload_len) + sizeof(uint32_t) &&
+        item.payload != nullptr && item.payload_len > 0) {
+        m.payload.assign(reinterpret_cast<const char*>(item.payload), item.payload_len);
+    }
     return m;
+}
+
+inline const char* ResolveMembrane(const char* explicit_membrane, const char* struct_membrane) {
+    if (explicit_membrane != nullptr && explicit_membrane[0] != '\0') {
+        return explicit_membrane;
+    }
+    if (struct_membrane != nullptr && struct_membrane[0] != '\0') {
+        return struct_membrane;
+    }
+    return kDefaultMembrane;
 }
 
 /**
@@ -174,6 +192,16 @@ void pomai_options_init(pomai_options_t* opts) {
     opts->tick_max_ops = 64;
     opts->tick_max_ms = 10;
     opts->strict_deterministic = false;
+
+    opts->quant_type = POMAI_QUANT_NONE;
+    opts->pq_m = 8;
+    opts->memtable_flush_threshold_mb = 64;
+    opts->auto_freeze_on_pressure = true;
+    opts->max_memtable_mb = 0;
+    opts->write_coalesce_window_us = 0;
+    opts->write_coalesce_batch_size = 256;
+    opts->enable_encryption_at_rest = false;
+    opts->encryption_key_hex = nullptr;
 }
 
 void pomai_scan_options_init(pomai_scan_options_t* opts) {
@@ -185,6 +213,7 @@ void pomai_scan_options_init(pomai_scan_options_t* opts) {
     opts->start_id = 0;
     opts->has_start_id = false;
     opts->deadline_ms = 0;
+    opts->membrane = nullptr;
 }
 
 void pomai_options_apply_preset(pomai_options_t* opts, pomai_embedded_preset_t preset) {
@@ -308,7 +337,51 @@ pomai_status_t* pomai_open(const pomai_options_t* opts, pomai_db_t** out_db) {
         db_opts.index_params.type = pomai::IndexType::kIvfFlat;
     }
 
-    db_opts.metric = (opts->metric == 1) ? pomai::MetricType::kInnerProduct : pomai::MetricType::kL2;
+    if (opts->metric == 1) {
+        db_opts.metric = pomai::MetricType::kInnerProduct;
+    } else if (opts->metric == 2) {
+        db_opts.metric = pomai::MetricType::kCosine;
+    } else {
+        db_opts.metric = pomai::MetricType::kL2;
+    }
+
+    if (opts->memory_budget_bytes > 0) {
+        uint32_t budget_mb = static_cast<uint32_t>(opts->memory_budget_bytes / (1024ULL * 1024ULL));
+        if (budget_mb > 0) {
+            db_opts.max_memtable_mb = budget_mb;
+            db_opts.memtable_flush_threshold_mb = std::max(1u, budget_mb / 4);
+        }
+    }
+
+    if (opts->struct_size >= offsetof(pomai_options_t, quant_type) + sizeof(uint8_t)) {
+        db_opts.index_params.quant_type = static_cast<pomai::QuantizationType>(opts->quant_type);
+        db_opts.enable_quantization = (opts->quant_type != POMAI_QUANT_NONE);
+    }
+    if (opts->struct_size >= offsetof(pomai_options_t, pq_m) + sizeof(uint32_t) && opts->pq_m > 0) {
+        db_opts.index_params.pq_m = opts->pq_m;
+    }
+    if (opts->struct_size >= offsetof(pomai_options_t, memtable_flush_threshold_mb) + sizeof(uint32_t) && opts->memtable_flush_threshold_mb > 0) {
+        db_opts.memtable_flush_threshold_mb = opts->memtable_flush_threshold_mb;
+    }
+    if (opts->struct_size >= offsetof(pomai_options_t, auto_freeze_on_pressure) + sizeof(bool)) {
+        db_opts.auto_freeze_on_pressure = opts->auto_freeze_on_pressure;
+    }
+    if (opts->struct_size >= offsetof(pomai_options_t, max_memtable_mb) + sizeof(uint32_t) && opts->max_memtable_mb > 0) {
+        db_opts.max_memtable_mb = opts->max_memtable_mb;
+    }
+    if (opts->struct_size >= offsetof(pomai_options_t, write_coalesce_window_us) + sizeof(uint32_t)) {
+        db_opts.write_coalesce_window_us = opts->write_coalesce_window_us;
+    }
+    if (opts->struct_size >= offsetof(pomai_options_t, write_coalesce_batch_size) + sizeof(uint32_t) && opts->write_coalesce_batch_size > 0) {
+        db_opts.write_coalesce_batch_size = opts->write_coalesce_batch_size;
+    }
+    if (opts->struct_size >= offsetof(pomai_options_t, enable_encryption_at_rest) + sizeof(bool)) {
+        db_opts.enable_encryption_at_rest = opts->enable_encryption_at_rest;
+    }
+    if (opts->struct_size >= offsetof(pomai_options_t, encryption_key_hex) + sizeof(const char*) && opts->encryption_key_hex != nullptr) {
+        db_opts.encryption_key_hex = opts->encryption_key_hex;
+    }
+
     db_opts.edge_profile = static_cast<pomai::EdgeProfile>(opts->edge_profile);
     db_opts.ApplyEdgeProfile();
 
@@ -334,25 +407,51 @@ pomai_status_t* pomai_close(pomai_db_t* db) {
     return ToCStatus(st);
 }
 
-pomai_status_t* pomai_freeze(pomai_db_t* db) {
+pomai_status_t* pomai_freeze_membrane(pomai_db_t* db, const char* membrane) {
     if (db == nullptr) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null");
     }
-    return ToCStatus(db->db->Freeze(kDefaultMembrane));
+    const char* memb = (membrane && membrane[0] != '\0') ? membrane : kDefaultMembrane;
+    return ToCStatus(db->db->Freeze(memb));
 }
 
-pomai_status_t* pomai_put(pomai_db_t* db, const pomai_upsert_t* item) {
+pomai_status_t* pomai_freeze(pomai_db_t* db) {
+    return pomai_freeze_membrane(db, nullptr);
+}
+
+pomai_status_t* pomai_flush(pomai_db_t* db) {
+    if (db == nullptr) {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null");
+    }
+    return ToCStatus(db->db->Flush());
+}
+
+pomai_status_t* pomai_compact(pomai_db_t* db) {
+    if (db == nullptr) {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null");
+    }
+    return ToCStatus(db->db->Compact(kDefaultMembrane));
+}
+
+pomai_status_t* pomai_put_membrane(pomai_db_t* db, const char* membrane, const pomai_upsert_t* item) {
     if (db == nullptr || item == nullptr || item->vector == nullptr || item->dim == 0) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid put arguments");
     }
     if (item->struct_size < MinUpsertStructSize()) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "upsert.struct_size is too small");
     }
+    const char* struct_memb = (item->struct_size >= offsetof(pomai_upsert_t, membrane) + sizeof(const char*))
+                                ? item->membrane : nullptr;
+    const char* memb = ResolveMembrane(membrane, struct_memb);
     std::span<const float> vec(item->vector, item->dim);
-    return ToCStatus(db->db->PutVector(item->id, vec, ToMetadata(*item)));
+    return ToCStatus(db->db->PutVector(memb, item->id, vec, ToMetadata(*item)));
 }
 
-pomai_status_t* pomai_put_batch(pomai_db_t* db, const pomai_upsert_t* items, size_t n) {
+pomai_status_t* pomai_put(pomai_db_t* db, const pomai_upsert_t* item) {
+    return pomai_put_membrane(db, nullptr, item);
+}
+
+pomai_status_t* pomai_put_batch_membrane(pomai_db_t* db, const char* membrane, const pomai_upsert_t* items, size_t n) {
     if (db == nullptr) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null");
     }
@@ -362,6 +461,10 @@ pomai_status_t* pomai_put_batch(pomai_db_t* db, const pomai_upsert_t* items, siz
     if (items == nullptr) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "items must be non-null");
     }
+
+    const char* struct_memb = (items[0].struct_size >= offsetof(pomai_upsert_t, membrane) + sizeof(const char*))
+                                ? items[0].membrane : nullptr;
+    const char* memb = ResolveMembrane(membrane, struct_memb);
 
     std::vector<pomai::VectorId> ids;
     std::vector<std::span<const float>> vecs;
@@ -378,34 +481,49 @@ pomai_status_t* pomai_put_batch(pomai_db_t* db, const pomai_upsert_t* items, siz
         ids.push_back(items[i].id);
         vecs.emplace_back(items[i].vector, items[i].dim);
     }
-    return ToCStatus(db->db->PutBatch(ids, vecs));
+    return ToCStatus(db->db->PutBatch(memb, ids, vecs));
 }
 
-pomai_status_t* pomai_delete(pomai_db_t* db, uint64_t id) {
+pomai_status_t* pomai_put_batch(pomai_db_t* db, const pomai_upsert_t* items, size_t n) {
+    return pomai_put_batch_membrane(db, nullptr, items, n);
+}
+
+pomai_status_t* pomai_delete_membrane(pomai_db_t* db, const char* membrane, uint64_t id) {
     if (db == nullptr) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null");
     }
-    return ToCStatus(db->db->Delete(id));
+    const char* memb = (membrane && membrane[0] != '\0') ? membrane : kDefaultMembrane;
+    return ToCStatus(db->db->Delete(memb, id));
 }
 
-pomai_status_t* pomai_exists(pomai_db_t* db, uint64_t id, bool* out_exists) {
+pomai_status_t* pomai_delete(pomai_db_t* db, uint64_t id) {
+    return pomai_delete_membrane(db, nullptr, id);
+}
+
+pomai_status_t* pomai_exists_membrane(pomai_db_t* db, const char* membrane, uint64_t id, bool* out_exists) {
     if (db == nullptr || out_exists == nullptr) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid exists arguments");
     }
-    return ToCStatus(db->db->Exists(id, out_exists));
+    const char* memb = (membrane && membrane[0] != '\0') ? membrane : kDefaultMembrane;
+    return ToCStatus(db->db->Exists(memb, id, out_exists));
 }
 
-pomai_status_t* pomai_get(pomai_db_t* db, uint64_t id, pomai_record_t** out_record) {
+pomai_status_t* pomai_exists(pomai_db_t* db, uint64_t id, bool* out_exists) {
+    return pomai_exists_membrane(db, nullptr, id, out_exists);
+}
+
+pomai_status_t* pomai_get_membrane(pomai_db_t* db, const char* membrane, uint64_t id, pomai_record_t** out_record) {
     if (db == nullptr || out_record == nullptr) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid get arguments");
     }
+    const char* memb = (membrane && membrane[0] != '\0') ? membrane : kDefaultMembrane;
 
     void* raw = palloc_malloc_aligned(sizeof(RecordWrapper), alignof(RecordWrapper));
     if (!raw) return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "record allocation failed");
     auto* wrapper = new (raw) RecordWrapper();
 
     pomai::Metadata meta;
-    auto st = db->db->Get(id, &wrapper->vec_data, &meta);
+    auto st = db->db->Get(memb, id, &wrapper->vec_data, &meta);
     if (!st.ok()) {
         wrapper->~RecordWrapper();
         palloc_free(wrapper);
@@ -427,8 +545,22 @@ pomai_status_t* pomai_get(pomai_db_t* db, uint64_t id, pomai_record_t** out_reco
         wrapper->pub.metadata_len = 0;
     }
 
+    wrapper->pub.timestamp = meta.timestamp;
+    if (!meta.payload.empty()) {
+        wrapper->payload_data.assign(meta.payload.begin(), meta.payload.end());
+        wrapper->pub.payload = wrapper->payload_data.data();
+        wrapper->pub.payload_len = static_cast<uint32_t>(wrapper->payload_data.size());
+    } else {
+        wrapper->pub.payload = nullptr;
+        wrapper->pub.payload_len = 0;
+    }
+
     *out_record = &wrapper->pub;
     return nullptr;
+}
+
+pomai_status_t* pomai_get(pomai_db_t* db, uint64_t id, pomai_record_t** out_record) {
+    return pomai_get_membrane(db, nullptr, id, out_record);
 }
 
 void pomai_record_free(pomai_record_t* record) {
@@ -440,7 +572,7 @@ void pomai_record_free(pomai_record_t* record) {
     palloc_free(wrapper);
 }
 
-pomai_status_t* pomai_search(pomai_db_t* db, const pomai_query_t* query, pomai_search_results_t** out) {
+pomai_status_t* pomai_search_membrane(pomai_db_t* db, const char* membrane, const pomai_query_t* query, pomai_search_results_t** out) {
     if (db == nullptr || query == nullptr || out == nullptr) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid search arguments");
     }
@@ -454,6 +586,10 @@ pomai_status_t* pomai_search(pomai_db_t* db, const pomai_query_t* query, pomai_s
         return MakeStatus(POMAI_STATUS_DEADLINE_EXCEEDED, "deadline exceeded before search execution");
     }
 
+    const char* struct_memb = (query->struct_size >= offsetof(pomai_query_t, membrane) + sizeof(const char*))
+                                ? query->membrane : nullptr;
+    const char* memb = ResolveMembrane(membrane, struct_memb);
+
     pomai::SearchOptions opts;
     opts.zero_copy = ((query->flags & POMAI_QUERY_FLAG_ZERO_COPY) != 0);
     if (query->partition_device_id != nullptr && *query->partition_device_id != '\0') {
@@ -461,6 +597,12 @@ pomai_status_t* pomai_search(pomai_db_t* db, const pomai_query_t* query, pomai_s
     }
     if (query->partition_location_id != nullptr && *query->partition_location_id != '\0') {
         opts.partition_location_id = query->partition_location_id;
+    }
+    if (query->struct_size >= offsetof(pomai_query_t, as_of_ts) + sizeof(uint64_t)) {
+        opts.as_of_ts = query->as_of_ts;
+    }
+    if (query->struct_size >= offsetof(pomai_query_t, as_of_lsn) + sizeof(uint64_t)) {
+        opts.as_of_lsn = query->as_of_lsn;
     }
     if (!ParseTenantFilter(query->filter_expression, &opts)) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "unsupported filter expression (supported: tenant/device_id/location_id=<val>)");
@@ -470,7 +612,7 @@ pomai_status_t* pomai_search(pomai_db_t* db, const pomai_query_t* query, pomai_s
 
     if (!opts.zero_copy) {
         CApiHitSink sink(query->topk);
-        auto st = db->db->SearchVector(q, query->topk, opts, sink);
+        auto st = db->db->SearchVector(memb, q, query->topk, opts, sink);
         if (!st.ok()) {
             return ToCStatus(st);
         }
@@ -495,7 +637,7 @@ pomai_status_t* pomai_search(pomai_db_t* db, const pomai_query_t* query, pomai_s
     }
 
     pomai::SearchResult res;
-    auto st = db->db->SearchVector(q, query->topk, opts, &res);
+    auto st = db->db->SearchVector(memb, q, query->topk, opts, &res);
     if (!st.ok()) {
         return ToCStatus(st);
     }
@@ -533,6 +675,10 @@ pomai_status_t* pomai_search(pomai_db_t* db, const pomai_query_t* query, pomai_s
 
     *out = &wrapper->pub;
     return nullptr;
+}
+
+pomai_status_t* pomai_search(pomai_db_t* db, const pomai_query_t* query, pomai_search_results_t** out) {
+    return pomai_search_membrane(db, nullptr, query, out);
 }
 
 void pomai_search_results_free(pomai_search_results_t* results) {
@@ -575,11 +721,15 @@ pomai_status_t* pomai_search_batch(
         flat_queries.insert(flat_queries.end(), queries[i].vector, queries[i].vector + dim);
     }
 
+    const char* struct_memb = (queries[0].struct_size >= offsetof(pomai_query_t, membrane) + sizeof(const char*))
+                                ? queries[0].membrane : nullptr;
+    const char* memb = ResolveMembrane(nullptr, struct_memb);
+
     pomai::SearchOptions opts;
     opts.zero_copy = ((queries[0].flags & POMAI_QUERY_FLAG_ZERO_COPY) != 0);
 
     std::vector<pomai::SearchResult> batch_res;
-    auto st = db->db->SearchBatch(flat_queries, static_cast<uint32_t>(num_queries), queries[0].topk, opts, &batch_res);
+    auto st = db->db->SearchBatch(memb, flat_queries, static_cast<uint32_t>(num_queries), queries[0].topk, opts, &batch_res);
     if (!st.ok()) return ToCStatus(st);
 
     pomai_search_results_t* arr = static_cast<pomai_search_results_t*>(
@@ -664,6 +814,72 @@ pomai_status_t* pomai_compact_membrane(pomai_db_t* db, const char* membrane_name
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid args");
     }
     return ToCStatus(db->db->Compact(membrane_name));
+}
+
+pomai_status_t* pomai_drop_membrane(pomai_db_t* db, const char* membrane_name) {
+    if (db == nullptr || membrane_name == nullptr || membrane_name[0] == '\0') {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db and membrane_name must be non-null");
+    }
+    return ToCStatus(db->db->DropMembrane(membrane_name));
+}
+
+pomai_status_t* pomai_open_membrane(pomai_db_t* db, const char* membrane_name) {
+    if (db == nullptr || membrane_name == nullptr || membrane_name[0] == '\0') {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db and membrane_name must be non-null");
+    }
+    return ToCStatus(db->db->OpenMembrane(membrane_name));
+}
+
+pomai_status_t* pomai_close_membrane(pomai_db_t* db, const char* membrane_name) {
+    if (db == nullptr || membrane_name == nullptr || membrane_name[0] == '\0') {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db and membrane_name must be non-null");
+    }
+    return ToCStatus(db->db->CloseMembrane(membrane_name));
+}
+
+pomai_status_t* pomai_update_membrane_retention(
+    pomai_db_t* db, const char* membrane_name,
+    uint32_t ttl_sec, uint32_t retention_max_count, uint64_t retention_max_bytes) {
+    if (db == nullptr || membrane_name == nullptr || membrane_name[0] == '\0') {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db and membrane_name must be non-null");
+    }
+    return ToCStatus(db->db->UpdateMembraneRetention(membrane_name, ttl_sec, retention_max_count, retention_max_bytes));
+}
+
+pomai_status_t* pomai_get_membrane_retention(
+    pomai_db_t* db, const char* membrane_name,
+    uint32_t* ttl_sec, uint32_t* retention_max_count, uint64_t* retention_max_bytes) {
+    if (db == nullptr || membrane_name == nullptr || membrane_name[0] == '\0') {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db and membrane_name must be non-null");
+    }
+    return ToCStatus(db->db->GetMembraneRetention(membrane_name, ttl_sec, retention_max_count, retention_max_bytes));
+}
+
+pomai_status_t* pomai_get_stats_json(pomai_db_t* db, char** out_json, size_t* out_len) {
+    if (db == nullptr || out_json == nullptr || out_len == nullptr) {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid get_stats arguments");
+    }
+    std::vector<std::string> membranes;
+    auto st = db->db->ListMembranes(&membranes);
+    if (!st.ok()) return ToCStatus(st);
+
+    std::string json = "{";
+    json += "\"version\":\"" + std::string(pomai_version_string()) + "\",";
+    json += "\"abi_version\":" + std::to_string(pomai_abi_version()) + ",";
+    json += "\"membranes\":[";
+    for (size_t i = 0; i < membranes.size(); ++i) {
+        if (i > 0) json += ",";
+        json += "\"" + JsonEscape(membranes[i]) + "\"";
+    }
+    json += "]}";
+
+    char* p = static_cast<char*>(palloc_malloc_aligned(json.size() + 1, alignof(char)));
+    if (!p) return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "allocation failed");
+    std::memcpy(p, json.data(), json.size());
+    p[json.size()] = '\0';
+    *out_json = p;
+    *out_len = json.size();
+    return nullptr;
 }
 
 void pomai_release_pointer(uint64_t session_id) {

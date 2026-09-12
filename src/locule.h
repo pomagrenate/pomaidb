@@ -39,6 +39,8 @@ public:
 
     ~Locule();
 
+    void CloseMapping();
+
     [[nodiscard]] uint32_t locule_id() const noexcept { return locule_id_; }
     [[nodiscard]] uint64_t generation() const noexcept { return generation_; }
     [[nodiscard]] uint32_t dimension() const noexcept { return dimension_; }

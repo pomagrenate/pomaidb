@@ -16,6 +16,7 @@ public:
     struct Item {
         VectorId id{0};
         std::vector<float> vec;
+        Metadata meta;
     };
 
     explicit PomegranateSnapshotImpl(std::vector<Item> items)
@@ -49,6 +50,11 @@ public:
         if (!Valid()) return {};
         const auto& v = snap_->items()[idx_].vec;
         return {v.data(), v.size()};
+    }
+
+    [[nodiscard]] const Metadata* metadata() const override {
+        if (!Valid()) return nullptr;
+        return &snap_->items()[idx_].meta;
     }
 
     [[nodiscard]] bool Valid() const override {
@@ -206,7 +212,7 @@ Status PomegranateEngine::Freeze() {
     if (!s.ok()) return s;
 
     if (rind_->HasFrozen()) {
-        s = press_->PressFrozenRindOnly(rind_.get(), fruit_map_.get());
+        s = press_->Compact(rind_.get(), fruit_map_.get());
         if (!s.ok()) return s;
     }
     return Status::Ok();
@@ -267,7 +273,11 @@ Status PomegranateEngine::GetSnapshot(std::shared_ptr<Snapshot>* out) {
     if (!opened_) return Status::Corruption("engine not open");
     if (!out) return Status::InvalidArgument("null snapshot pointer");
 
-    std::map<VectorId, std::vector<float>> live_items;
+    struct LiveItem {
+        std::vector<float> vec;
+        Metadata meta;
+    };
+    std::map<VectorId, LiveItem> live_items;
 
     auto snap = fruit_map_->CurrentSnapshot();
     if (snap) {
@@ -279,7 +289,9 @@ Status PomegranateEngine::GetSnapshot(std::shared_ptr<Snapshot>* out) {
                     if (aril->scar().IsDeleted(entry.slot)) continue;
                     auto span = aril->GetVectorSpan(entry.slot);
                     if (span.empty()) continue;
-                    live_items[entry.id].assign(span.begin(), span.end());
+                    Metadata m;
+                    (void)aril->GetMetadata(entry.slot, &m);
+                    live_items[entry.id] = LiveItem{std::vector<float>(span.begin(), span.end()), std::move(m)};
                 }
             }
         }
@@ -287,11 +299,11 @@ Status PomegranateEngine::GetSnapshot(std::shared_ptr<Snapshot>* out) {
 
     // Overlay live unpressed vectors from Rind
     if (rind_) {
-        rind_->ForEachEntry([&](VectorId id, std::span<const float> vec, bool is_deleted, const Metadata*) {
+        rind_->ForEachEntry([&](VectorId id, std::span<const float> vec, bool is_deleted, const Metadata* meta) {
             if (is_deleted) {
                 live_items.erase(id);
             } else if (vec.size() == opt_.dim) {
-                live_items[id].assign(vec.begin(), vec.end());
+                live_items[id] = LiveItem{std::vector<float>(vec.begin(), vec.end()), meta ? *meta : Metadata()};
             }
         });
     }
@@ -299,7 +311,7 @@ Status PomegranateEngine::GetSnapshot(std::shared_ptr<Snapshot>* out) {
     std::vector<PomegranateSnapshotImpl::Item> items;
     items.reserve(live_items.size());
     for (auto& kv : live_items) {
-        items.push_back({kv.first, std::move(kv.second)});
+        items.push_back({kv.first, std::move(kv.second.vec), std::move(kv.second.meta)});
     }
 
     *out = std::make_shared<PomegranateSnapshotImpl>(std::move(items));
