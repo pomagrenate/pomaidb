@@ -1,0 +1,13 @@
+{
+  "name": "pomaidb-javascript-example",
+  "version": "0.1.0",
+  "description": "Comprehensive pipeline example for PomaiDB in JavaScript / Node.js",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "pomaidb": "file:../../bindings/javascript"
+  }
+}

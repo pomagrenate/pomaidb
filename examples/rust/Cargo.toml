@@ -1,0 +1,8 @@
+[package]
+name = "pomaidb-rust-example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pomaidb = { path = "../../bindings/rust" }
+serde_json = "1.0"

@@ -326,9 +326,12 @@ def freeze(db, membrane=""):
     else:
         _check_status(_lib.pomai_freeze(db))
 
-def compact(db):
+def compact(db, membrane=""):
     if db:
-        _check_status(_lib.pomai_compact(db))
+        if membrane:
+            _check_status(_lib.pomai_compact_membrane(db, membrane.encode("utf-8")))
+        else:
+            _check_status(_lib.pomai_compact(db))
 
 def compact_membrane(db, name):
     _check_status(_lib.pomai_compact_membrane(db, name.encode("utf-8")))
@@ -457,7 +460,7 @@ def search(db, query_vector, topk=10, tenant="", membrane="", as_of_ts=0, as_of_
     _lib.pomai_search_results_free(res_ptr)
     return hits
 
-def search_batch(db, query_vectors, topk=10, membrane=""):
+def search_batch(db, query_vectors, topk=10, membrane="", as_of_ts=0, as_of_lsn=0):
     _ensure_lib()
     n = len(query_vectors)
     if n == 0:
@@ -473,6 +476,8 @@ def search_batch(db, query_vectors, topk=10, membrane=""):
         arr[i].vector = c_v
         arr[i].dim = dim
         arr[i].topk = topk
+        arr[i].as_of_ts = as_of_ts
+        arr[i].as_of_lsn = as_of_lsn
         if memb_bytes:
             arr[i].membrane = memb_bytes
         keep_alive.append(c_v)

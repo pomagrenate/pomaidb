@@ -43,3 +43,6 @@ __pycache__/
 dist/
 build/
 out/
+node_modules/
+target/
+*_example_store/
