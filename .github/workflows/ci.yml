@@ -21,6 +21,9 @@ jobs:
             sed -i 's/static inline pa_decl_nodiscard/pa_decl_nodiscard static inline/g' third_party/palloc/include/palloc_vector.h
           fi
 
+      - name: Install system tools
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Setup CMake & Ninja
         uses: lukka/get-cmake@latest
 

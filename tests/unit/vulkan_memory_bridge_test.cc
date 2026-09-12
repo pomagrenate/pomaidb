@@ -55,6 +55,10 @@ POMAI_TEST(Vulkan_MemoryBridge_CopyMapped) {
 }
 
 POMAI_TEST(Vulkan_StagingPool_Bounded) {
+    if (SkipVulkanGpuTests()) {
+        POMAI_EXPECT_TRUE(true);
+        return;
+    }
     pomai::compute::vulkan::BridgeOptions bopt;
     pomai::compute::vulkan::VulkanComputeContext ctx;
     auto st = pomai::compute::vulkan::VulkanComputeContext::Create(bopt, &ctx);
