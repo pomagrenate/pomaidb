@@ -1,0 +1,278 @@
+name: 🤝 Contribution Proposal
+description: Propose an implementation, improvement, refactor, optimization, or technical contribution to PomaiDB.
+title: "[Contribution]: "
+labels:
+  - contribution
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🤝 PomaiDB Contribution Proposal
+
+        Thank you for wanting to contribute to PomaiDB.
+
+        PomaiDB is designed as a high-performance, embedded vector database
+        with a strong focus on:
+
+        - ⚡ Performance
+        - 🧠 Memory efficiency
+        - 💾 Persistent storage
+        - 🔍 Fast vector search
+        - 🧩 Embeddability
+        - 🖥️ Edge and resource-constrained environments
+        - 🔧 Minimal dependencies
+        - 🛡️ Correctness and reliability
+
+        Before implementing a significant architectural change, please discuss
+        the proposal first.
+
+  - type: dropdown
+    id: contribution_type
+    attributes:
+      label: Contribution Type
+      options:
+        - Bug Fix
+        - Performance Optimization
+        - New Feature
+        - Vector Search Improvement
+        - HNSW Improvement
+        - Storage / Persistence
+        - Memory Optimization
+        - API Improvement
+        - C API
+        - C++ API
+        - Python Binding
+        - SIMD / CPU Optimization
+        - Edge Optimization
+        - Build System
+        - Testing
+        - Documentation
+        - Refactoring
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem does this contribution solve?
+      placeholder: |
+        Currently, PomaiDB ...
+
+        This causes ...
+
+        The problem is important because ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Change
+      description: Describe what you want to change or implement.
+      placeholder: |
+        I propose to ...
+
+        The implementation would ...
+
+        The expected behavior would be ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Explain why this change should be part of PomaiDB.
+      placeholder: |
+        This change would improve ...
+
+        It is useful because ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Target Component
+      options:
+        - Core Database
+        - Vector Index
+        - HNSW
+        - Search / Query Engine
+        - Insert / Upsert
+        - Delete
+        - Persistence / Storage
+        - WAL
+        - Memory Management
+        - Allocator
+        - Metadata
+        - C API
+        - C++ API
+        - Python Binding
+        - SIMD / CPU Optimization
+        - Edge Build
+        - Build System / CMake
+        - Tests
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: architecture
+    attributes:
+      label: Technical Approach
+      description: Explain how the change could fit into the current architecture.
+      placeholder: |
+        Proposed architecture:
+
+        1. ...
+        2. ...
+        3. ...
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe alternative implementations and why you prefer this approach.
+      placeholder: |
+        Alternative 1:
+        ...
+
+        Alternative 2:
+        ...
+
+        I prefer the proposed approach because ...
+
+  - type: textarea
+    id: performance
+    attributes:
+      label: Performance Impact
+      description: Explain the expected performance or memory impact. Include benchmarks if available.
+      placeholder: |
+        Expected impact:
+
+        Search latency:
+        Insert throughput:
+        Memory usage:
+        Storage:
+        Startup time:
+
+        Benchmark results:
+        ...
+
+  - type: textarea
+    id: correctness
+    attributes:
+      label: Correctness & Data Integrity
+      description: Explain how the change preserves database correctness and data integrity.
+      placeholder: |
+        The change preserves ...
+
+        Potential edge cases:
+
+        1. ...
+        2. ...
+
+  - type: textarea
+    id: testing
+    attributes:
+      label: Testing Plan
+      description: Describe the tests you plan to add or run.
+      placeholder: |
+        Unit tests:
+        ...
+
+        Integration tests:
+        ...
+
+        Benchmarks:
+        ...
+
+        Edge cases:
+        ...
+
+  - type: textarea
+    id: api_changes
+    attributes:
+      label: API / Compatibility Impact
+      description: Describe any public API, ABI, storage format, or compatibility changes.
+      placeholder: |
+        API changes:
+        None / ...
+
+        ABI changes:
+        None / ...
+
+        Storage compatibility:
+        None / ...
+
+        Breaking changes:
+        None / ...
+
+  - type: checkboxes
+    id: dependencies
+    attributes:
+      label: Dependencies
+      options:
+        - label: This change does not introduce a new external dependency.
+        - label: This change requires a new dependency and I have explained why below.
+
+  - type: textarea
+    id: dependency_details
+    attributes:
+      label: Dependency Details
+      description: If a new dependency is required, explain why it is necessary.
+      placeholder: |
+        Dependency:
+        Reason:
+        Alternatives considered:
+
+  - type: dropdown
+    id: difficulty
+    attributes:
+      label: Estimated Complexity
+      options:
+        - Small
+        - Medium
+        - Large
+        - Architectural
+
+  - type: checkboxes
+    id: implementation
+    attributes:
+      label: Implementation
+      options:
+        - label: I am willing to implement this contribution.
+        - label: I would like feedback before implementing it.
+        - label: I am only proposing the idea.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add benchmarks, diagrams, prototypes, references, or other relevant information.
+      placeholder: |
+        Additional context...
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and pull requests for related work.
+          required: true
+        - label: I have explained the problem this contribution solves.
+          required: true
+        - label: I have considered performance and memory impact.
+          required: true
+        - label: I have considered data integrity and correctness.
+          required: true
+        - label: I have considered API and compatibility impact.
+          required: true
+        - label: I have considered the project's minimal-dependency philosophy.
+          required: true
+        - label: I am willing to discuss and revise the proposal based on maintainer feedback.
+          required: true

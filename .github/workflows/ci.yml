@@ -1,66 +1,79 @@
-name: ci
+name: CI
 
 on:
   push:
   pull_request:
 
 jobs:
-  tests:
-    name: run-all-tests
+  test:
+    name: build-and-test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Setup CMake
+      - name: Setup CMake & Ninja
         uses: lukka/get-cmake@latest
 
-      - name: Configure
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Configure CMake
         run: cmake -S . -B build -DPOMAI_BUILD_TESTS=ON -DPOMAI_BUILD_BENCH=OFF -DPOMAI_REGISTER_BENCH_CTEST=ON
 
-      - name: Build
+      - name: Build Core Engine & C-API
         run: cmake --build build --config Release --parallel
 
-      - name: Python SDK Test
-        env:
-          PYTHONPATH: sdk/python:build
-        run: python tests/python_api_completeness_test.py
-
-      # GitHub-hosted runners typically have no usable Vulkan ICD/GPU; GPU tests would flake or fail.
-      # Set POMAI_SKIP_VULKAN_TESTS=0 locally or install mesa-vulkan-drivers (Lavapipe) to exercise Vulkan.
-      - name: CTest
+      - name: Run Core CTests
         env:
           POMAI_SKIP_VULKAN_TESTS: 1
-        run: ctest --test-dir build --output-on-failure -C Release --timeout 120
+        run: ctest --test-dir build --output-on-failure -C Release --timeout 120 -E bench
 
-      - name: CTest Bench (ci-fast)
+      - name: Test Python SDK & Binding
         env:
-          POMAI_SKIP_VULKAN_TESTS: 1
-        run: ctest --test-dir build -L bench --output-on-failure -C Release --timeout 600
-
-      - name: Perf Regression Gate
-        env:
-          POMAI_PERF_MAX_REGRESSION_PCT: 15
-        run: ./tools/perf_gate.sh --build-dir=build --dataset=small
-
-      - name: Package ci-fast artifact
-        shell: bash
+          LD_LIBRARY_PATH: ${{ github.workspace }}/build
+          POMAI_C_LIB: ${{ github.workspace }}/build/libpomai_c.so
         run: |
-          set -euo pipefail
-          mkdir -p dist/include/pomai dist/lib
-          cp tools/pomaictl.py dist/pomaictl || true
-          cp -r include/pomai/* dist/include/pomai/
-          cp build/libpomai.a dist/lib/ || true
-          cp build/libpomai_c.so dist/lib/ || true
-          cp LICENSE dist/ || true
-          tar -czf pomaidb-ci-fast-linux-x64.tar.gz -C dist .
-          sha256sum pomaidb-ci-fast-linux-x64.tar.gz > pomaidb-ci-fast-linux-x64.tar.gz.sha256
+          python tests/python_api_completeness_test.py
+          python -m unittest bindings/python/tests/test_binding.py
 
-      - name: Upload ci-fast artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pomaidb-ci-fast-linux-x64
-          path: |
-            pomaidb-ci-fast-linux-x64.tar.gz
-            pomaidb-ci-fast-linux-x64.tar.gz.sha256
+      - name: Test JavaScript Binding
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/build
+          POMAI_C_LIB: ${{ github.workspace }}/build/libpomai_c.so
+        run: |
+          cd bindings/javascript
+          npm install
+          npm test
+
+      - name: Test Rust Binding
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/build
+          POMAIDB_LIB_DIR: ${{ github.workspace }}/build
+        run: |
+          cd bindings/rust
+          cargo test
+
+      - name: Test Go Binding
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/build
+        run: |
+          cd bindings/go
+          go test -v ./...

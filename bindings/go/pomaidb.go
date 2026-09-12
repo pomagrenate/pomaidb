@@ -3,6 +3,7 @@ package pomaidb
 /*
 #cgo CFLAGS: -I${SRCDIR}/include/pomai -I${SRCDIR}/../../include/pomai
 #cgo LDFLAGS: -L${SRCDIR}/lib -L${SRCDIR}/../../build -lpomai_c
+#cgo linux LDFLAGS: -Wl,-rpath,${SRCDIR}/../../build -Wl,-rpath,${SRCDIR}/lib
 #include "c_api.h"
 #include <stdlib.h>
 */

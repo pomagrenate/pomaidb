@@ -1,0 +1,108 @@
+name: Release and Publish
+
+on:
+  release:
+    types: [published, created]
+  workflow_dispatch:
+
+jobs:
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup CMake & Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Build Linux C library
+        run: |
+          cmake -S . -B build -DPOMAI_BUILD_TESTS=OFF -DPOMAI_BUILD_BENCH=OFF
+          cmake --build build --target pomai_c --config Release --parallel
+          mkdir -p bindings/python/pomaidb/lib
+          cp build/libpomai_c.so bindings/python/pomaidb/lib/ || true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: pip install --upgrade build twine
+
+      - name: Build Python package
+        run: |
+          cd bindings/python
+          python -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_SECRET }}
+        run: |
+          cd bindings/python
+          twine upload dist/* --skip-existing
+
+  publish-npm:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup CMake & Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Build Linux C library
+        run: |
+          cmake -S . -B build -DPOMAI_BUILD_TESTS=OFF -DPOMAI_BUILD_BENCH=OFF
+          cmake --build build --target pomai_c --config Release --parallel
+          mkdir -p bindings/javascript/lib
+          cp build/libpomai_c.so bindings/javascript/lib/ || true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_SECRET }}
+        run: |
+          cd bindings/javascript
+          npm publish --access public
+
+  publish-crates:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup CMake & Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Build Linux C library
+        run: |
+          cmake -S . -B build -DPOMAI_BUILD_TESTS=OFF -DPOMAI_BUILD_BENCH=OFF
+          cmake --build build --target pomai_c --config Release --parallel
+          mkdir -p bindings/rust/lib
+          cp build/libpomai_c.so bindings/rust/lib/ || true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_SECRET }}
+        run: |
+          cd bindings/rust
+          cargo publish --allow-dirty

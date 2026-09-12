@@ -1,0 +1,245 @@
+name: 🐛 Bug Report
+description: Report a reproducible bug, crash, data corruption, or unexpected behavior in PomaiDB.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🐛 PomaiDB Bug Report
+
+        Thank you for helping improve PomaiDB.
+
+        PomaiDB is a high-performance embedded vector database written in C++20.
+        Good bug reports help us reproduce the problem quickly and protect database
+        correctness, performance, and stability.
+
+        > **Please do not include confidential data, credentials, API keys, or private documents.**
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Clearly describe the unexpected behavior and what you expected instead.
+      placeholder: |
+        What happened?
+
+        Expected:
+        ...
+
+        Actual:
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Provide the smallest reproducible example possible.
+      placeholder: |
+        1. Create a database with ...
+        2. Create an index with ...
+        3. Insert ...
+        4. Run ...
+        5. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: minimal_example
+    attributes:
+      label: Minimal Reproduction
+      description: Provide a minimal C++ example, test case, query, or command that reproduces the issue.
+      render: cpp
+      placeholder: |
+        // Minimal reproducible example
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      description: Which PomaiDB component is affected?
+      options:
+        - Core Database
+        - Vector Index
+        - HNSW
+        - Search / Query Engine
+        - Insert / Upsert
+        - Delete
+        - Persistence / Storage
+        - WAL
+        - Memory Management
+        - Allocator
+        - Metadata
+        - C API
+        - C++ API
+        - Python Binding
+        - SIMD / CPU Optimization
+        - Edge Build
+        - Build System / CMake
+        - Tests
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: PomaiDB Version
+      description: Provide the release version, branch, or commit SHA.
+      placeholder: "e.g. v0.1.0 or main @ abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Ubuntu / Debian
+        - Other Linux
+        - macOS
+        - Windows
+        - WSL2
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: CPU Architecture
+      options:
+        - x86_64
+        - ARM64 / AArch64
+        - ARM32
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware
+      description: Provide relevant CPU, RAM, storage, and other hardware information.
+      placeholder: |
+        CPU:
+        RAM:
+        Storage:
+        Other:
+
+  - type: input
+    id: compiler
+    attributes:
+      label: Compiler
+      description: Provide compiler name and version.
+      placeholder: "e.g. GCC 13.3, Clang 18.1, MSVC 19.x"
+
+  - type: input
+    id: cmake
+    attributes:
+      label: CMake Version
+      placeholder: "e.g. 3.28.3"
+
+  - type: dropdown
+    id: build_type
+    attributes:
+      label: Build Type
+      options:
+        - Debug
+        - Release
+        - RelWithDebInfo
+        - MinSizeRel
+        - Custom
+    validations:
+      required: true
+
+  - type: textarea
+    id: build_config
+    attributes:
+      label: Build Configuration
+      description: Include relevant CMake flags or build options.
+      render: cmake
+      placeholder: |
+        cmake -S . -B build \
+          -DCMAKE_BUILD_TYPE=Release
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Stack Trace
+      description: Include relevant logs, assertions, crash output, or stack traces.
+      render: shell
+      placeholder: |
+        Paste logs here...
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Critical - Crash, corruption, or data loss
+        - High - Major functionality is unusable
+        - Medium - Functionality is partially affected
+        - Low - Minor or cosmetic issue
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: data_integrity
+    attributes:
+      label: Data Integrity
+      description: Select all that apply.
+      options:
+        - label: No data was lost or corrupted.
+        - label: Data may have been corrupted.
+        - label: Data was lost.
+        - label: I am not sure whether data integrity was affected.
+
+  - type: textarea
+    id: performance
+    attributes:
+      label: Performance Impact
+      description: If this is a performance issue, provide before/after measurements.
+      placeholder: |
+        Operation:
+        Dataset size:
+        Dimensions:
+        Before:
+        After:
+        Expected:
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add benchmarks, screenshots, test output, or anything else useful.
+      placeholder: |
+        Additional context...
+
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security & Privacy
+      options:
+        - label: I have removed credentials, API keys, private data, and confidential information.
+          required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and could not find a duplicate.
+          required: true
+        - label: I can reproduce this issue consistently.
+          required: true
+        - label: I have provided the PomaiDB version or commit.
+          required: true
+        - label: I have provided relevant environment information.
+          required: true
+        - label: I have included a minimal reproduction where possible.
+          required: false
