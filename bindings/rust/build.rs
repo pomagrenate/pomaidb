@@ -50,6 +50,7 @@ fn main() {
                     }
                 }
             }
+        }
         if !cfg!(windows) {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
         }
