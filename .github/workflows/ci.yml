@@ -58,11 +58,13 @@ jobs:
 
       - name: Test Python SDK & Binding
         env:
+          PYTHONPATH: ${{ github.workspace }}/bindings/python:${{ github.workspace }}/sdk/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/build
           POMAI_C_LIB: ${{ github.workspace }}/build/libpomai_c.so
         run: |
           python tests/python_api_completeness_test.py
-          python -m unittest bindings/python/tests/test_binding.py
+          cd bindings/python
+          python -m unittest tests/test_binding.py
 
       - name: Test JavaScript Binding
         env:
