@@ -88,6 +88,11 @@ class PomaiDistanceSpace : public hnswlib::SpaceInterface<float> {
 public:
     PomaiDistanceSpace(size_t dim, pomai::MetricType metric)
         : dim_(dim), metric_(metric), data_size_(dim * sizeof(float)) {
+        SetMetric(metric_);
+    }
+
+    void SetMetric(pomai::MetricType metric) {
+        metric_ = metric;
         switch (metric_) {
             case pomai::MetricType::kL2:
                 dist_func_ = L2SqDist;
@@ -296,6 +301,7 @@ public:
         }
 
         metric_ = static_cast<pomai::MetricType>(hdr.metric);
+        space_.SetMetric(metric_);
         opts_.M = hdr.M;
         opts_.ef_construction = hdr.ef_construction;
         opts_.ef_search = hdr.ef_search;

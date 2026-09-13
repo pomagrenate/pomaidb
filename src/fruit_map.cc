@@ -122,6 +122,21 @@ Status FruitMap::Open() {
         uint32_t dim = dimension_;
         std::vector<std::string> locule_files;
 
+        size_t crc_pos = content.rfind("crc32=");
+        if (crc_pos != std::string::npos) {
+            std::string payload = content.substr(0, crc_pos);
+            uint32_t expected_crc = 0;
+            try {
+                expected_crc = static_cast<uint32_t>(std::stoul(content.substr(crc_pos + 6)));
+            } catch (...) {
+                return Status::Corruption("invalid manifest crc32 format");
+            }
+            uint32_t actual_crc = pomai::util::Crc32c(payload.data(), payload.size());
+            if (actual_crc != expected_crc) {
+                return Status::Corruption("manifest checksum mismatch");
+            }
+        }
+
         while (std::getline(stream, line)) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
             if (line.empty()) continue;
@@ -135,7 +150,7 @@ Status FruitMap::Open() {
             } else if (line.rfind("locule_count=", 0) == 0) {
                 // Locule count header
             } else if (line.rfind("crc32=", 0) == 0) {
-                // Checksum verified at end
+                // Already verified above
             } else {
                 locule_files.push_back(line);
             }

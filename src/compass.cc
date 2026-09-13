@@ -24,6 +24,15 @@ std::vector<OrientedLocule> Compass::Orient(std::span<const float> query, uint32
     std::vector<OrientedLocule> results;
     results.reserve(locules_.size());
 
+    float q_norm = 1.0f;
+    if (metric_ != MetricType::kL2) {
+        float q_norm_sq = 0.0f;
+        for (float v : query) {
+            q_norm_sq += v * v;
+        }
+        q_norm = std::sqrt(std::max(0.0f, q_norm_sq));
+    }
+
     for (const auto& loc : locules_) {
         if (!loc) continue;
 
@@ -51,7 +60,7 @@ std::vector<OrientedLocule> Compass::Orient(std::span<const float> query, uint32
             float dot = core::Dot(query, centroid);
             ol.distance_to_centroid = dot;
             // Upper bound on dot score: <q, c> + ||q|| * radius
-            ol.min_possible_distance = dot + radius;
+            ol.min_possible_distance = dot + q_norm * radius;
         }
 
         results.push_back(std::move(ol));

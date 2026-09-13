@@ -55,35 +55,53 @@ Status Locule::Open(Env* env, const std::string& filepath, std::shared_ptr<Locul
     locule->generation_ = hdr.generation;
     locule->dimension_ = hdr.dimension;
 
-    // Read footer if present
-    if (hdr.footer_offset != 0 && hdr.footer_offset + sizeof(format::LoculeFooter) <= locule->file_size_) {
+    // Read footer if present with overflow-safe bounds checks
+    if (hdr.footer_offset != 0) {
+        if (hdr.footer_offset >= locule->file_size_ ||
+            sizeof(format::LoculeFooter) > locule->file_size_ - hdr.footer_offset) {
+            return Status::Corruption("locule footer truncated in " + filepath);
+        }
         format::LoculeFooter footer{};
         std::memcpy(&footer, locule->base_addr_ + hdr.footer_offset, sizeof(footer));
-        if (footer.magic == format::kLoculeFooterMagic) {
-            locule->locule_id_ = footer.locule_id;
-            locule->anchor_.id = footer.locule_id;
-            locule->anchor_.radius = footer.radius;
-            if (footer.centroid_dim > 0 &&
-                hdr.footer_offset + sizeof(format::LoculeFooter) + footer.centroid_dim * sizeof(float) <= locule->file_size_) {
-                locule->anchor_.centroid.resize(footer.centroid_dim);
-                std::memcpy(locule->anchor_.centroid.data(),
-                            locule->base_addr_ + hdr.footer_offset + sizeof(format::LoculeFooter),
-                            footer.centroid_dim * sizeof(float));
-            }
+        if (footer.magic != format::kLoculeFooterMagic) {
+            return Status::Corruption("invalid locule footer magic in " + filepath);
+        }
+        locule->locule_id_ = footer.locule_id;
+        locule->anchor_.id = footer.locule_id;
+        locule->anchor_.radius = footer.radius;
+        uint64_t centroid_bytes = static_cast<uint64_t>(footer.centroid_dim) * sizeof(float);
+        uint64_t avail_after_footer = locule->file_size_ - (hdr.footer_offset + sizeof(format::LoculeFooter));
+        if (centroid_bytes > avail_after_footer) {
+            return Status::Corruption("locule footer centroid truncated in " + filepath);
+        }
+        if (footer.centroid_dim > 0) {
+            locule->anchor_.centroid.resize(footer.centroid_dim);
+            std::memcpy(locule->anchor_.centroid.data(),
+                        locule->base_addr_ + hdr.footer_offset + sizeof(format::LoculeFooter),
+                        centroid_bytes);
         }
     }
 
     // Read Aril directory
     if (hdr.aril_count > 0) {
         size_t required_dir_size = hdr.aril_count * sizeof(format::ArilDirectoryEntry);
-        if (hdr.directory_offset + required_dir_size > locule->file_size_) {
+        if (hdr.directory_offset >= locule->file_size_ ||
+            required_dir_size > locule->file_size_ ||
+            hdr.directory_offset + required_dir_size > locule->file_size_ ||
+            hdr.directory_offset + required_dir_size < hdr.directory_offset) {
             return Status::Corruption("aril directory truncated in " + filepath);
         }
 
         const auto* entries = reinterpret_cast<const format::ArilDirectoryEntry*>(
             locule->base_addr_ + hdr.directory_offset);
 
-        if (hdr.checksum != 0 && hdr.directory_size > 0) {
+        if (hdr.checksum != 0) {
+            if (hdr.directory_size < required_dir_size ||
+                hdr.directory_size > locule->file_size_ ||
+                hdr.directory_offset + hdr.directory_size > locule->file_size_ ||
+                hdr.directory_offset + hdr.directory_size < hdr.directory_offset) {
+                return Status::Corruption("header directory size invalid in " + filepath);
+            }
             uint32_t dir_crc = pomai::util::Crc32c(locule->base_addr_ + hdr.directory_offset, hdr.directory_size);
             if (dir_crc != hdr.checksum) {
                 return Status::Corruption("header directory checksum mismatch in " + filepath);
@@ -93,7 +111,10 @@ Status Locule::Open(Env* env, const std::string& filepath, std::shared_ptr<Locul
         locule->arils_.reserve(hdr.aril_count);
         for (uint32_t i = 0; i < hdr.aril_count; ++i) {
             const auto& entry = entries[i];
-            if (entry.aril_offset + entry.aril_size > locule->file_size_) {
+            if (entry.aril_offset >= locule->file_size_ ||
+                entry.aril_size > locule->file_size_ ||
+                entry.aril_offset + entry.aril_size > locule->file_size_ ||
+                entry.aril_offset + entry.aril_size < entry.aril_offset) {
                 return Status::Corruption("aril block extends beyond locule file size: " + filepath);
             }
 
@@ -137,31 +158,59 @@ Status Locule::OpenFromMemory(std::unique_ptr<uint8_t[]> data, size_t size, std:
     if (hdr.magic != format::kPomaiMagic) {
         return Status::Corruption("invalid pomai magic in memory buffer");
     }
+    if (hdr.version != format::kPomaiFormatVersion) {
+        return Status::Corruption("unsupported pomai version in memory buffer");
+    }
 
     locule->generation_ = hdr.generation;
     locule->dimension_ = hdr.dimension;
 
-    if (hdr.footer_offset != 0 && hdr.footer_offset + sizeof(format::LoculeFooter) <= locule->file_size_) {
+    if (hdr.footer_offset != 0) {
+        if (hdr.footer_offset >= locule->file_size_ ||
+            sizeof(format::LoculeFooter) > locule->file_size_ - hdr.footer_offset) {
+            return Status::Corruption("locule footer truncated in memory buffer");
+        }
         format::LoculeFooter footer{};
         std::memcpy(&footer, locule->base_addr_ + hdr.footer_offset, sizeof(footer));
-        if (footer.magic == format::kLoculeFooterMagic) {
-            locule->locule_id_ = footer.locule_id;
-            locule->anchor_.id = footer.locule_id;
-            locule->anchor_.radius = footer.radius;
-            if (footer.centroid_dim > 0 &&
-                hdr.footer_offset + sizeof(format::LoculeFooter) + footer.centroid_dim * sizeof(float) <= locule->file_size_) {
-                locule->anchor_.centroid.resize(footer.centroid_dim);
-                std::memcpy(locule->anchor_.centroid.data(),
-                            locule->base_addr_ + hdr.footer_offset + sizeof(format::LoculeFooter),
-                            footer.centroid_dim * sizeof(float));
-            }
+        if (footer.magic != format::kLoculeFooterMagic) {
+            return Status::Corruption("invalid locule footer magic in memory buffer");
+        }
+        locule->locule_id_ = footer.locule_id;
+        locule->anchor_.id = footer.locule_id;
+        locule->anchor_.radius = footer.radius;
+        uint64_t centroid_bytes = static_cast<uint64_t>(footer.centroid_dim) * sizeof(float);
+        uint64_t avail_after_footer = locule->file_size_ - (hdr.footer_offset + sizeof(format::LoculeFooter));
+        if (centroid_bytes > avail_after_footer) {
+            return Status::Corruption("locule footer centroid truncated in memory buffer");
+        }
+        if (footer.centroid_dim > 0) {
+            locule->anchor_.centroid.resize(footer.centroid_dim);
+            std::memcpy(locule->anchor_.centroid.data(),
+                        locule->base_addr_ + hdr.footer_offset + sizeof(format::LoculeFooter),
+                        centroid_bytes);
         }
     }
 
     if (hdr.aril_count > 0) {
         size_t required_dir_size = hdr.aril_count * sizeof(format::ArilDirectoryEntry);
-        if (hdr.directory_offset + required_dir_size > locule->file_size_) {
+        if (hdr.directory_offset >= locule->file_size_ ||
+            required_dir_size > locule->file_size_ ||
+            hdr.directory_offset + required_dir_size > locule->file_size_ ||
+            hdr.directory_offset + required_dir_size < hdr.directory_offset) {
             return Status::Corruption("aril directory truncated in memory buffer");
+        }
+
+        if (hdr.checksum != 0) {
+            if (hdr.directory_size < required_dir_size ||
+                hdr.directory_size > locule->file_size_ ||
+                hdr.directory_offset + hdr.directory_size > locule->file_size_ ||
+                hdr.directory_offset + hdr.directory_size < hdr.directory_offset) {
+                return Status::Corruption("header directory size invalid in memory buffer");
+            }
+            uint32_t dir_crc = pomai::util::Crc32c(locule->base_addr_ + hdr.directory_offset, hdr.directory_size);
+            if (dir_crc != hdr.checksum) {
+                return Status::Corruption("header directory checksum mismatch in memory buffer");
+            }
         }
 
         const auto* entries = reinterpret_cast<const format::ArilDirectoryEntry*>(
@@ -170,8 +219,18 @@ Status Locule::OpenFromMemory(std::unique_ptr<uint8_t[]> data, size_t size, std:
         locule->arils_.reserve(hdr.aril_count);
         for (uint32_t i = 0; i < hdr.aril_count; ++i) {
             const auto& entry = entries[i];
-            if (entry.aril_offset + entry.aril_size > locule->file_size_) {
+            if (entry.aril_offset >= locule->file_size_ ||
+                entry.aril_size > locule->file_size_ ||
+                entry.aril_offset + entry.aril_size > locule->file_size_ ||
+                entry.aril_offset + entry.aril_size < entry.aril_offset) {
                 return Status::Corruption("aril block extends beyond locule memory buffer");
+            }
+
+            if (entry.checksum != 0) {
+                uint32_t actual_crc = pomai::util::Crc32c(locule->base_addr_ + entry.aril_offset, entry.aril_size);
+                if (actual_crc != entry.checksum) {
+                    return Status::Corruption("corruption: aril block " + std::to_string(entry.aril_id) + " checksum mismatch in memory buffer");
+                }
             }
 
             std::shared_ptr<ArilReader> aril;
@@ -241,14 +300,14 @@ Status Locule::Write(Env* env, const std::string& filepath,
     hdr.directory_offset = dir_offset;
     hdr.directory_size = dir_size;
     hdr.footer_offset = footer_offset;
-    hdr.checksum = 0;
-
-    std::memcpy(buffer.data(), &hdr, sizeof(hdr));
 
     // Copy directory entries
     if (!entries.empty()) {
         std::memcpy(buffer.data() + dir_offset, entries.data(), dir_size);
+        hdr.checksum = pomai::util::Crc32c(entries.data(), dir_size);
     }
+
+    std::memcpy(buffer.data(), &hdr, sizeof(hdr));
 
     // Copy Aril blocks
     for (size_t i = 0; i < serialized_arils.size(); ++i) {

@@ -118,6 +118,7 @@ POMAI_TEST(Recall_Clustered_Basic) {
         double rec = ComputeRecall(res, gt, k);
         recalls.push_back(rec);
         
+
         if (rec < 0.5) {
              // Verbose failure (Phase 2C - Reporting)
              std::cout << "[RecallTest] Query " << i << " FAILED recall=" << rec 

@@ -473,6 +473,56 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(pomegranate_hnsw_e2e_test)
   pomai_add_labeled_test(pomegranate_hnsw_e2e_test "integ")
 
+  add_executable(corruption_war_test tests/adversarial/corruption_war_test.cc)
+  pomai_setup_test(corruption_war_test)
+  pomai_add_labeled_test(corruption_war_test "adversarial")
+
+  add_executable(crash_consistency_test tests/adversarial/crash_consistency_test.cc)
+  pomai_setup_test(crash_consistency_test)
+  pomai_add_labeled_test(crash_consistency_test "adversarial")
+
+  add_executable(hnsw_torture_test tests/adversarial/hnsw_torture_test.cc)
+  pomai_setup_test(hnsw_torture_test)
+  pomai_add_labeled_test(hnsw_torture_test "adversarial")
+
+  add_executable(delete_concurrency_torture_test tests/adversarial/delete_concurrency_torture_test.cc)
+  pomai_setup_test(delete_concurrency_torture_test)
+  pomai_add_labeled_test(delete_concurrency_torture_test "adversarial")
+
+  add_executable(compass_spatial_torture_test tests/adversarial/compass_spatial_torture_test.cc)
+  pomai_setup_test(compass_spatial_torture_test)
+  pomai_add_labeled_test(compass_spatial_torture_test "adversarial")
+
+  add_executable(semantics_filters_torture_test tests/adversarial/semantics_filters_torture_test.cc)
+  pomai_setup_test(semantics_filters_torture_test)
+  pomai_add_labeled_test(semantics_filters_torture_test "adversarial")
+
+  # Extinction Campaign Targets
+  add_executable(stateful_fuzzer tests/extinction/stateful_fuzzer.cc)
+  pomai_setup_test(stateful_fuzzer)
+  pomai_add_labeled_test(stateful_fuzzer "extinction")
+
+  add_executable(crash_recovery_campaign tests/extinction/crash_recovery_campaign.cc)
+  pomai_setup_test(crash_recovery_campaign)
+  pomai_add_labeled_test(crash_recovery_campaign "extinction")
+
+  add_executable(persistence_mutation_war tests/extinction/persistence_mutation_war.cc)
+  pomai_setup_test(persistence_mutation_war)
+  pomai_add_labeled_test(persistence_mutation_war "extinction")
+
+  add_executable(concurrency_extinction tests/extinction/concurrency_extinction.cc)
+  pomai_setup_test(concurrency_extinction)
+  pomai_add_labeled_test(concurrency_extinction "extinction")
+
+  add_executable(pomai_extinction_replay tests/extinction/extinction_replay.cc)
+  target_link_libraries(pomai_extinction_replay PRIVATE pomai)
+  target_include_directories(pomai_extinction_replay PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
+  )
+
   add_executable(db_partial_search_test tests/integ/db_partial_search_test.cc)
   pomai_setup_test(db_partial_search_test)
   pomai_add_labeled_test(db_partial_search_test "integ")

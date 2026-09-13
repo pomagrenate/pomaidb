@@ -32,10 +32,13 @@ pomai::Status ArilReader::OpenFromMemory(const uint8_t* base_addr, size_t max_si
         return pomai::Status::Corruption("unsupported aril version");
     }
 
-    // Strict bounds validation
+    // Strict bounds validation with overflow protection
     auto validate_bounds = [&](uint64_t off, uint64_t size, const char* name) -> pomai::Status {
-        if (size > 0 && (off + size > max_size || off < sizeof(format::ArilHeader))) {
-            return pomai::Status::Corruption(std::string("aril section out of bounds: ") + name);
+        if (size > 0) {
+            if (off < sizeof(format::ArilHeader) || off >= max_size || size > max_size ||
+                off + size > max_size || off + size < off) {
+                return pomai::Status::Corruption(std::string("aril section out of bounds: ") + name);
+            }
         }
         return pomai::Status::Ok();
     };
@@ -52,6 +55,40 @@ pomai::Status ArilReader::OpenFromMemory(const uint8_t* base_addr, size_t max_si
     if (!st.ok()) return st;
     st = validate_bounds(hdr.metadata_offset, hdr.metadata_size, "metadata");
     if (!st.ok()) return st;
+    if (hdr.dimension == 0 || hdr.dimension > 65536) {
+        return pomai::Status::Corruption("invalid aril dimension");
+    }
+
+    // Section size consistency against declared vector count
+    if (hdr.vector_count > 0) {
+        if (hdr.vector_count > max_size) {
+            return pomai::Status::Corruption("aril declared vector_count out of bounds");
+        }
+        if (hdr.pulp_size > 0) {
+            uint64_t min_pulp = static_cast<uint64_t>(hdr.vector_count) * hdr.dimension;
+            if (hdr.pulp_size < min_pulp) {
+                return pomai::Status::Corruption("aril pulp section truncated for declared vector_count");
+            }
+        }
+        if (hdr.kernel_size > 0) {
+            uint64_t min_kernel = static_cast<uint64_t>(hdr.vector_count) * hdr.dimension * sizeof(float);
+            if (hdr.kernel_size < min_kernel) {
+                return pomai::Status::Corruption("aril kernel section truncated for declared vector_count");
+            }
+        }
+        if (hdr.dir_size > 0) {
+            uint64_t min_dir = static_cast<uint64_t>(hdr.vector_count) * sizeof(format::SeedDirectoryEntry);
+            if (hdr.dir_size < min_dir) {
+                return pomai::Status::Corruption("aril directory section truncated for declared vector_count");
+            }
+        }
+        if (hdr.scar_size > 0) {
+            uint64_t min_scar = (static_cast<uint64_t>(hdr.vector_count) + 7) / 8;
+            if (hdr.scar_size < min_scar) {
+                return pomai::Status::Corruption("aril scar section truncated for declared vector_count");
+            }
+        }
+    }
 
     auto reader = std::shared_ptr<ArilReader>(new ArilReader());
     reader->aril_id_ = aril_id;

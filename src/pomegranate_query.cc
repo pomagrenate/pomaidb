@@ -146,16 +146,16 @@ Status PomegranateQuery::Execute(std::span<const float> query,
             if (!loc) continue;
 
             // Dynamic Spatial Peel: If pick_heap is full and this locule's lower-bound distance
-            // is strictly worse than the worst score in the heap, prune this and further locules
+            // is strictly worse than the worst score in the heap, skip this locule
             if (pick_heap.size() >= pick_target) {
                 float worst_score = pick_heap.top().score;
                 if (metric == MetricType::kL2) {
                     if (cand_loc.min_possible_distance > -worst_score) {
-                        break;
+                        continue;
                     }
                 } else {
                     if (cand_loc.min_possible_distance < worst_score) {
-                        break;
+                        continue;
                     }
                 }
             }
@@ -199,8 +199,8 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                     ArilFilter filter(aril.get(), rind_tombstone_snap, has_filters, opts);
                     std::vector<VectorId> graph_slots;
                     std::vector<float> graph_dists;
-                    uint32_t aril_k = static_cast<uint32_t>(std::min<size_t>(pick_target, topk + 32));
-                    int ef_search = (opts.ef_search > 0) ? static_cast<int>(opts.ef_search) : static_cast<int>(aril_k * 2);
+                    uint32_t aril_k = static_cast<uint32_t>(std::min<size_t>(pick_target, topk + 48));
+                    int ef_search = std::max<int>({static_cast<int>(opts.ef_search), static_cast<int>(aril_k * 6), 512});
                     Status st = aril->local_graph()->Search(
                         query, aril_k, ef_search,
                         &graph_slots, &graph_dists, &filter);
