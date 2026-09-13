@@ -4,6 +4,7 @@
 #include <span>
 #include <vector>
 #include <cstddef>
+#include "options.h"
 #include "vector_batch.h"
 
 namespace pomai::core
@@ -18,16 +19,42 @@ namespace pomai::core
         L2SQ 
     };
 
-    // ── Scalar distances (float; prefer SQ8/FP16 below when data is quantized) ──
+    // ── Canonical Mathematical Vector Kernel ─────────────────────────────────
+    // Inner Product: dot(a, b) = sum(a_i * b_i)
     float Dot(std::span<const float> a, std::span<const float> b);
+    inline float InnerProduct(std::span<const float> a, std::span<const float> b) {
+        return Dot(a, b);
+    }
+
+    // Squared Euclidean Distance: sum((a_i - b_i)^2)
     float L2Sq(std::span<const float> a, std::span<const float> b);
 
+    // Euclidean Distance: sqrt(sum((a_i - b_i)^2))
+    float L2(std::span<const float> a, std::span<const float> b);
+
+    // Cosine Similarity: dot(a, b) / (||a|| * ||b||) in [-1.0, 1.0]
+    // Invariant: returns 0.0f when ||a|| == 0, ||b|| == 0, or dim == 0.
+    float CosineSimilarity(std::span<const float> a, std::span<const float> b);
+
+    // Cosine Distance: 1.0f - CosineSimilarity(a, b) in [0.0, 2.0]
+    // Returns 1.0f when similarity is 0.0f.
+    float CosineDistance(std::span<const float> a, std::span<const float> b);
+
+    /**
+     * Computes the canonical ranking score where HIGHER score is ALWAYS better.
+     * - kL2: -L2Sq (closer to 0 is better)
+     * - kCosine: CosineSimilarity (closer to 1.0 is better)
+     * - kInnerProduct: Dot (higher is better)
+     */
+    float ComputeMetricScore(MetricType metric, std::span<const float> query, std::span<const float> vec);
+
+    // ── Quantized distances (preferred for embedded/edge memory footprint) ──
     // Inner Product for SQ8 quantized codes (int8; preferred for embedded)
     float DotSq8(std::span<const float> query,
                  std::span<const uint8_t> codes,
                  float min_val, float inv_scale, float query_sum = 0.0f);
 
-    /** L2 squared between float query and SQ8 data (min/max dequantize). ADC: dequantize in SIMD path then L2 via SimSIMD. */
+    /** L2 squared between float query and SQ8 data (min/max dequantize). */
     float L2SqSq8(std::span<const float> query,
                   std::span<const std::uint8_t> data,
                   float min_val, float max_val);
@@ -52,9 +79,9 @@ namespace pomai::core
 
     void L2SqBatch(std::span<const float> query,
                    const float* db,
-                   std::size_t n,
-                   std::uint32_t dim,
-                   float* results);
+                  std::size_t n,
+                  std::uint32_t dim,
+                  float* results);
 
     /**
      * @brief Vectorized Batch Search (The "Orrify" Pattern).

@@ -22,17 +22,16 @@ pomai::Status ScalarQuantizer8Bit::Train(std::span<const float> data, size_t num
     // Mathematical logic:
     // Single pass to find the dataset's global minimum and maximum bounds.
     // The loop is completely contiguous and unrolled by the compiler into FAST minps/maxps operations.
-    float min_val = data[0];
-    float max_val = data[0];
+    float min_val = std::numeric_limits<float>::max();
+    float max_val = std::numeric_limits<float>::lowest();
 
-    for (size_t i = 1; i < total_elements; ++i) {
+    for (size_t i = 0; i < total_elements; ++i) {
         const float val = data[i];
-        if (val < min_val) {
-            min_val = val;
+        if (!std::isfinite(val)) {
+            return pomai::Status::InvalidArgument("Training data contains non-finite values (NaN or Inf)");
         }
-        if (val > max_val) {
-            max_val = val;
-        }
+        if (val < min_val) min_val = val;
+        if (val > max_val) max_val = val;
     }
 
     global_min_ = min_val;
@@ -43,7 +42,6 @@ pomai::Status ScalarQuantizer8Bit::Train(std::span<const float> data, size_t num
         global_scale_ = 0.0f;
         global_inv_scale_ = 0.0f;
     } else {
-        // We map the continuous float range [min_val, max_val] into [0, 255].
         global_scale_ = 255.0f / range;
         global_inv_scale_ = range / 255.0f;
     }
@@ -68,12 +66,9 @@ std::vector<uint8_t> ScalarQuantizer8Bit::Encode(std::span<const float> vector) 
     const float scale = global_scale_;
 
     for (size_t i = 0; i < dim_; ++i) {
-        float f = (vector[i] - min_val) * scale;
-        
-        // Branchless min/max clamp. Maps seamlessly to CPU SIMD limits.
-        // Rounding adjustment (+0.5f) reduces the mean squared quantization error.
-        f = std::max(0.0f, std::min(255.0f, f + 0.5f));
-        
+        float val = std::isfinite(vector[i]) ? vector[i] : min_val;
+        float f = (val - min_val) * scale;
+        f = std::clamp(f + 0.5f, 0.0f, 255.0f);
         codes[i] = static_cast<uint8_t>(f);
     }
 

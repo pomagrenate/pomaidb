@@ -268,15 +268,15 @@ namespace pomai::storage {
 
     pomai::Status Wal::AppendPut(pomai::VectorId id, pomai::VectorView vec, const pomai::Metadata& meta)
     {
-        RecordPrefix rp{};
-        rp.seq = ++seq_;
-        rp.op = static_cast<std::uint8_t>(meta.tenant.empty() ? Op::kPut : Op::kPutMeta);
-        rp.id = id;
-        rp.dim = vec.dim;
-
         const bool has_extra_meta = !meta.tenant.empty() || !meta.device_id.empty() ||
                                    !meta.location_id.empty() || meta.timestamp > 0 ||
                                    meta.lsn > 0 || !meta.payload.empty();
+
+        RecordPrefix rp{};
+        rp.seq = ++seq_;
+        rp.op = static_cast<std::uint8_t>(has_extra_meta ? Op::kPutMeta : Op::kPut);
+        rp.id = id;
+        rp.dim = vec.dim;
 
         // Fast path for raw vector ingestion (no heap allocs, incremental CRC)
         if (!encryption_enabled_ && !has_extra_meta) {

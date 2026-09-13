@@ -7,10 +7,245 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <numeric>
+#include <random>
 
 #include "distance.h"
 
 namespace pomai::compact {
+
+namespace {
+
+struct Item {
+    VectorId id{0};
+    std::vector<float> vec;
+    Metadata meta;
+};
+
+struct PartitionedLocule {
+    format::LoculeAnchor anchor;
+    std::vector<Item> items;
+};
+
+std::vector<PartitionedLocule> PartitionItemsSpatially(
+    std::vector<Item> all_items,
+    uint32_t dim,
+    MetricType metric,
+    size_t locule_capacity,
+    uint32_t base_id) {
+
+    if (all_items.empty()) return {};
+
+    if (locule_capacity == 0) locule_capacity = 50000;
+    size_t num_locules = (all_items.size() + locule_capacity - 1) / locule_capacity;
+    if (num_locules == 0) num_locules = 1;
+
+    std::vector<PartitionedLocule> result(num_locules);
+    for (size_t l = 0; l < num_locules; ++l) {
+        result[l].anchor.id = base_id + static_cast<uint32_t>(l + 1);
+        result[l].anchor.centroid.assign(dim, 0.0f);
+        result[l].anchor.radius = 0.0f;
+    }
+
+    if (num_locules == 1 || all_items.size() <= num_locules) {
+        // Single locule or very few items: trivial assignment
+        for (size_t i = 0; i < all_items.size(); ++i) {
+            size_t target_loc = std::min(i, num_locules - 1);
+            result[target_loc].items.push_back(std::move(all_items[i]));
+        }
+        for (auto& pl : result) {
+            if (pl.items.empty()) continue;
+            for (const auto& it : pl.items) {
+                for (size_t d = 0; d < dim; ++d) pl.anchor.centroid[d] += it.vec[d];
+            }
+            float inv = 1.0f / static_cast<float>(pl.items.size());
+            for (size_t d = 0; d < dim; ++d) pl.anchor.centroid[d] *= inv;
+            float max_dsq = 0.0f;
+            for (const auto& it : pl.items) {
+                float dsq = core::L2Sq(it.vec, pl.anchor.centroid);
+                if (dsq > max_dsq) max_dsq = dsq;
+            }
+            pl.anchor.radius = std::sqrt(std::max(0.0f, max_dsq));
+        }
+        return result;
+    }
+
+    // Balanced K-Means clustering (K = num_locules)
+    const size_t K = num_locules;
+    const size_t N = all_items.size();
+    std::vector<std::vector<float>> centroids(K, std::vector<float>(dim, 0.0f));
+
+    // K-Means++ deterministic initialization (seed 42)
+    std::mt19937_64 rng(42);
+    std::uniform_int_distribution<size_t> uni(0, N - 1);
+    size_t first_idx = uni(rng);
+    centroids[0] = all_items[first_idx].vec;
+
+    std::vector<double> min_dist_sq(N, 1e30);
+    for (size_t k = 1; k < K; ++k) {
+        double total_dist = 0.0;
+        for (size_t i = 0; i < N; ++i) {
+            float dsq = core::L2Sq(all_items[i].vec, centroids[k - 1]);
+            if (static_cast<double>(dsq) < min_dist_sq[i]) {
+                min_dist_sq[i] = static_cast<double>(dsq);
+            }
+            total_dist += min_dist_sq[i];
+        }
+        if (total_dist <= 1e-9) {
+            for (size_t rem = k; rem < K; ++rem) {
+                centroids[rem] = all_items[rem % N].vec;
+            }
+            break;
+        }
+        std::uniform_real_distribution<double> dist_dist(0.0, total_dist);
+        double r = dist_dist(rng);
+        double cum = 0.0;
+        size_t chosen = N - 1;
+        for (size_t i = 0; i < N; ++i) {
+            cum += min_dist_sq[i];
+            if (cum >= r) {
+                chosen = i;
+                break;
+            }
+        }
+        centroids[k] = all_items[chosen].vec;
+    }
+
+    // Normalize initial centroids if spherical
+    if (metric == MetricType::kCosine || metric == MetricType::kInnerProduct) {
+        for (size_t k = 0; k < K; ++k) {
+            float norm_sq = 0.0f;
+            for (size_t d = 0; d < dim; ++d) norm_sq += centroids[k][d] * centroids[k][d];
+            if (norm_sq > 1e-12f) {
+                float inv_norm = 1.0f / std::sqrt(norm_sq);
+                for (size_t d = 0; d < dim; ++d) centroids[k][d] *= inv_norm;
+            }
+        }
+    }
+
+    // Maximum allowed capacity per cluster (giving 25% headroom)
+    size_t max_cluster_cap = (N + K - 1) / K;
+    max_cluster_cap = std::min(N, static_cast<size_t>(std::ceil(max_cluster_cap * 1.25f)));
+
+    const int kMaxIters = 12;
+    std::vector<size_t> assignment(N, 0);
+
+    struct ItemPriority {
+        size_t item_idx;
+        size_t best_cluster;
+        float margin; // distance to second best - distance to best
+    };
+
+    for (int iter = 0; iter < kMaxIters; ++iter) {
+        std::vector<ItemPriority> priorities(N);
+        for (size_t i = 0; i < N; ++i) {
+            size_t best_c = 0;
+            float best_d = 1e30f;
+            float second_best_d = 1e30f;
+
+            for (size_t k = 0; k < K; ++k) {
+                float d = 0.0f;
+                if (metric == MetricType::kCosine || metric == MetricType::kInnerProduct) {
+                    d = 1.0f - core::Dot(all_items[i].vec, centroids[k]);
+                } else {
+                    d = core::L2Sq(all_items[i].vec, centroids[k]);
+                }
+                if (d < best_d) {
+                    second_best_d = best_d;
+                    best_d = d;
+                    best_c = k;
+                } else if (d < second_best_d) {
+                    second_best_d = d;
+                }
+            }
+            priorities[i] = {i, best_c, second_best_d - best_d};
+        }
+
+        std::sort(priorities.begin(), priorities.end(), [](const ItemPriority& a, const ItemPriority& b) {
+            return a.margin > b.margin;
+        });
+
+        std::vector<size_t> cluster_counts(K, 0);
+        for (const auto& p : priorities) {
+            size_t chosen_k = p.best_cluster;
+            if (cluster_counts[chosen_k] >= max_cluster_cap) {
+                float next_best_d = 1e30f;
+                size_t next_best_k = chosen_k;
+                for (size_t k = 0; k < K; ++k) {
+                    if (cluster_counts[k] < max_cluster_cap) {
+                        float d = (metric == MetricType::kCosine || metric == MetricType::kInnerProduct)
+                            ? (1.0f - core::Dot(all_items[p.item_idx].vec, centroids[k]))
+                            : core::L2Sq(all_items[p.item_idx].vec, centroids[k]);
+                        if (d < next_best_d) {
+                            next_best_d = d;
+                            next_best_k = k;
+                        }
+                    }
+                }
+                chosen_k = next_best_k;
+            }
+            cluster_counts[chosen_k]++;
+            assignment[p.item_idx] = chosen_k;
+        }
+
+        // Centroid update
+        std::vector<std::vector<float>> new_centroids(K, std::vector<float>(dim, 0.0f));
+        std::vector<size_t> new_counts(K, 0);
+
+        for (size_t i = 0; i < N; ++i) {
+            size_t c = assignment[i];
+            new_counts[c]++;
+            for (size_t d = 0; d < dim; ++d) {
+                new_centroids[c][d] += all_items[i].vec[d];
+            }
+        }
+
+        for (size_t k = 0; k < K; ++k) {
+            if (new_counts[k] > 0) {
+                float inv = 1.0f / static_cast<float>(new_counts[k]);
+                for (size_t d = 0; d < dim; ++d) {
+                    new_centroids[k][d] *= inv;
+                }
+                if (metric == MetricType::kCosine || metric == MetricType::kInnerProduct) {
+                    float norm_sq = 0.0f;
+                    for (size_t d = 0; d < dim; ++d) norm_sq += new_centroids[k][d] * new_centroids[k][d];
+                    if (norm_sq > 1e-12f) {
+                        float inv_norm = 1.0f / std::sqrt(norm_sq);
+                        for (size_t d = 0; d < dim; ++d) new_centroids[k][d] *= inv_norm;
+                    }
+                }
+                centroids[k] = std::move(new_centroids[k]);
+            }
+        }
+    }
+
+    // Distribute items into PartitionedLocules
+    for (size_t i = 0; i < N; ++i) {
+        size_t c = assignment[i];
+        result[c].items.push_back(std::move(all_items[i]));
+    }
+
+    std::vector<PartitionedLocule> final_result;
+    final_result.reserve(K);
+
+    for (size_t k = 0; k < K; ++k) {
+        if (result[k].items.empty()) continue;
+        result[k].anchor.centroid = centroids[k];
+
+        float max_dsq = 0.0f;
+        for (const auto& it : result[k].items) {
+            float dsq = core::L2Sq(it.vec, result[k].anchor.centroid);
+            if (dsq > max_dsq) max_dsq = dsq;
+        }
+        result[k].anchor.radius = std::sqrt(std::max(0.0f, max_dsq));
+        result[k].anchor.id = base_id + static_cast<uint32_t>(final_result.size() + 1);
+        final_result.push_back(std::move(result[k]));
+    }
+
+    return final_result;
+}
+
+} // namespace
 
 Press::Press(Env* env,
              std::string db_dir,
@@ -38,11 +273,6 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
         return Status::Ok();
     }
 
-    struct Item {
-        VectorId id{0};
-        std::vector<float> vec;
-        Metadata meta;
-    };
     std::map<VectorId, Item> live_items;
 
     // 1. Drying: extract live vectors from existing Locules in the snapshot
@@ -113,46 +343,22 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
         all_items.push_back(std::move(kv.second));
     }
 
-    // 3. Reseeding: Partition into Locules and compute anchors
+    // 3. Reseeding: Spatial Locule Partitioning (Balanced Spherical/Euclidean K-Means)
     size_t locule_capacity = options_.target_aril_vector_count * options_.target_locule_aril_count;
     if (locule_capacity == 0) locule_capacity = 50000;
-    size_t num_locules = (all_items.size() + locule_capacity - 1) / locule_capacity;
-    if (num_locules == 0) num_locules = 1;
+
+    auto partitioned = PartitionItemsSpatially(
+        std::move(all_items), dim_, metric_, locule_capacity, 0);
 
     std::vector<std::string> new_locule_files;
     std::vector<std::shared_ptr<storage::Locule>> new_locules;
-    new_locules.reserve(num_locules);
-    new_locule_files.reserve(num_locules);
+    new_locules.reserve(partitioned.size());
+    new_locule_files.reserve(partitioned.size());
 
-    for (size_t l_idx = 0; l_idx < num_locules; ++l_idx) {
-        size_t start = l_idx * locule_capacity;
-        size_t end = std::min(all_items.size(), start + locule_capacity);
-        size_t locule_count = end - start;
-
-        format::LoculeAnchor anchor;
-        anchor.id = static_cast<uint32_t>(l_idx + 1);
-        anchor.centroid.assign(dim_, 0.0f);
-
-        for (size_t i = start; i < end; ++i) {
-            const auto& v = all_items[i].vec;
-            for (size_t d = 0; d < dim_; ++d) {
-                anchor.centroid[d] += v[d];
-            }
-        }
-
-        if (locule_count > 0) {
-            float inv = 1.0f / static_cast<float>(locule_count);
-            for (size_t d = 0; d < dim_; ++d) {
-                anchor.centroid[d] *= inv;
-            }
-        }
-
-        float max_dsq = 0.0f;
-        for (size_t i = start; i < end; ++i) {
-            float dsq = core::L2Sq(all_items[i].vec, anchor.centroid);
-            if (dsq > max_dsq) max_dsq = dsq;
-        }
-        anchor.radius = std::sqrt(std::max(0.0f, max_dsq));
+    for (auto& pl : partitioned) {
+        format::LoculeAnchor anchor = std::move(pl.anchor);
+        const auto& cluster_items = pl.items;
+        size_t locule_count = cluster_items.size();
 
         // 4. Pressing: Break into Arils and build
         std::vector<std::vector<uint8_t>> serialized_arils;
@@ -162,12 +368,12 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
         if (num_arils == 0) num_arils = 1;
 
         for (size_t a_idx = 0; a_idx < num_arils; ++a_idx) {
-            size_t a_start = start + a_idx * aril_cap;
-            size_t a_end = std::min(end, a_start + aril_cap);
+            size_t a_start = a_idx * aril_cap;
+            size_t a_end = std::min(locule_count, a_start + aril_cap);
 
             storage::ArilBuilder builder(static_cast<uint32_t>(a_idx + 1), dim_, options_.index_params, metric_);
             for (size_t i = a_start; i < a_end; ++i) {
-                (void)builder.Add(all_items[i].id, all_items[i].vec, false, all_items[i].meta);
+                (void)builder.Add(cluster_items[i].id, cluster_items[i].vec, false, cluster_items[i].meta);
             }
 
             std::vector<uint8_t> aril_bytes;
@@ -218,11 +424,6 @@ Status Press::PressFrozenRindOnly(ingest::Rind* rind, manifest::FruitMap* fruit_
     auto frozen = rind->TakeFrozenMemtables();
     if (frozen.empty()) return Status::Ok();
 
-    struct Item {
-        VectorId id{0};
-        std::vector<float> vec;
-        Metadata meta;
-    };
     std::vector<Item> items;
 
     for (const auto& table : frozen) {
@@ -266,38 +467,14 @@ Status Press::PressFrozenRindOnly(ingest::Rind* rind, manifest::FruitMap* fruit_
 
     size_t locule_capacity = options_.target_aril_vector_count * options_.target_locule_aril_count;
     if (locule_capacity == 0) locule_capacity = 50000;
-    size_t num_locules = (items.size() + locule_capacity - 1) / locule_capacity;
-    if (num_locules == 0) num_locules = 1;
 
-    for (size_t l_idx = 0; l_idx < num_locules; ++l_idx) {
-        size_t start = l_idx * locule_capacity;
-        size_t end = std::min(items.size(), start + locule_capacity);
-        size_t locule_count = end - start;
+    auto partitioned = PartitionItemsSpatially(
+        std::move(items), dim_, metric_, locule_capacity, base_id);
 
-        format::LoculeAnchor anchor;
-        anchor.id = base_id + static_cast<uint32_t>(l_idx + 1);
-        anchor.centroid.assign(dim_, 0.0f);
-
-        for (size_t i = start; i < end; ++i) {
-            const auto& v = items[i].vec;
-            for (size_t d = 0; d < dim_; ++d) {
-                anchor.centroid[d] += v[d];
-            }
-        }
-
-        if (locule_count > 0) {
-            float inv = 1.0f / static_cast<float>(locule_count);
-            for (size_t d = 0; d < dim_; ++d) {
-                anchor.centroid[d] *= inv;
-            }
-        }
-
-        float max_dsq = 0.0f;
-        for (size_t i = start; i < end; ++i) {
-            float dsq = core::L2Sq(items[i].vec, anchor.centroid);
-            if (dsq > max_dsq) max_dsq = dsq;
-        }
-        anchor.radius = std::sqrt(std::max(0.0f, max_dsq));
+    for (auto& pl : partitioned) {
+        format::LoculeAnchor anchor = std::move(pl.anchor);
+        const auto& cluster_items = pl.items;
+        size_t locule_count = cluster_items.size();
 
         std::vector<std::vector<uint8_t>> serialized_arils;
         size_t aril_cap = options_.target_aril_vector_count;
@@ -306,12 +483,12 @@ Status Press::PressFrozenRindOnly(ingest::Rind* rind, manifest::FruitMap* fruit_
         if (num_arils == 0) num_arils = 1;
 
         for (size_t a_idx = 0; a_idx < num_arils; ++a_idx) {
-            size_t a_start = start + a_idx * aril_cap;
-            size_t a_end = std::min(end, a_start + aril_cap);
+            size_t a_start = a_idx * aril_cap;
+            size_t a_end = std::min(locule_count, a_start + aril_cap);
 
             storage::ArilBuilder builder(static_cast<uint32_t>(a_idx + 1), dim_, options_.index_params, metric_);
             for (size_t i = a_start; i < a_end; ++i) {
-                (void)builder.Add(items[i].id, items[i].vec, false, items[i].meta);
+                (void)builder.Add(cluster_items[i].id, cluster_items[i].vec, false, cluster_items[i].meta);
             }
 
             std::vector<uint8_t> aril_bytes;

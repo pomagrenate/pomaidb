@@ -1,6 +1,7 @@
 #pragma once
 #include <memory>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -88,6 +89,7 @@ namespace pomai::core
 
         MembraneState *GetMembraneOrNull(std::string_view name);
         const MembraneState *GetMembraneOrNull(std::string_view name) const;
+        std::shared_ptr<MembraneState> GetMembrane(std::string_view name) const;
 
         /** Backpressure helper: if enabled and over threshold, Freeze() before writes. */
         Status MaybeApplyBackpressure(MembraneState* state);
@@ -96,7 +98,8 @@ namespace pomai::core
         pomai::DBOptions base_;
         bool opened_ = false;
 
-        std::unordered_map<std::string, MembraneState> membranes_;
+        mutable std::shared_mutex membranes_mu_;
+        std::unordered_map<std::string, std::shared_ptr<MembraneState>> membranes_;
         TaskScheduler scheduler_;
     };
 

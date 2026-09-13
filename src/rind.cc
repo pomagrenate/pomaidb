@@ -43,6 +43,17 @@ Status Rind::Open() {
     s = wal_->ReplayInto(*active_memtable_);
     if (!s.ok()) return s;
 
+    // Populate initial tombstones from replayed active memtable
+    tombstones_.clear();
+    auto cursor = active_memtable_->CreateCursor();
+    table::MemTable::CursorEntry entry;
+    while (cursor.Next(&entry)) {
+        if (entry.is_deleted) {
+            tombstones_.insert(entry.id);
+        }
+    }
+    tombstones_dirty_ = true;
+
     opened_ = true;
     return Status::Ok();
 }
@@ -61,6 +72,11 @@ Status Rind::Close() {
 Status Rind::Put(VectorId id, std::span<const float> vec, const Metadata* meta) {
     if (vec.size() != dim_) {
         return Status::InvalidArgument("dimension mismatch");
+    }
+    for (float v : vec) {
+        if (!std::isfinite(v)) {
+            return Status::InvalidArgument("vector contains non-finite values (NaN or Inf)");
+        }
     }
 
     std::lock_guard<std::mutex> lock(mu_);
@@ -83,6 +99,9 @@ Status Rind::Put(VectorId id, std::span<const float> vec, const Metadata* meta) 
     }
     if (!s.ok()) return s;
 
+    tombstones_.erase(id);
+    tombstones_dirty_ = true;
+
     if (active_memtable_->BytesUsed() >= memtable_size_bytes_) {
         // Auto-freeze when threshold exceeded
         (void)wal_->Flush();
@@ -96,6 +115,11 @@ Status Rind::Put(VectorId id, std::span<const float> vec, const Metadata* meta) 
 Status Rind::PutBatch(std::span<const VectorId> ids, std::span<const float> vecs, uint32_t dim) {
     if (dim != dim_ || vecs.size() != ids.size() * dim) {
         return Status::InvalidArgument("invalid batch dimension or vector size");
+    }
+    for (float v : vecs) {
+        if (!std::isfinite(v)) {
+            return Status::InvalidArgument("vector contains non-finite values (NaN or Inf)");
+        }
     }
 
     std::lock_guard<std::mutex> lock(mu_);
@@ -117,6 +141,11 @@ Status Rind::PutBatch(std::span<const VectorId> ids, std::span<const float> vecs
     s = active_memtable_->PutBatch(ids_vec, views);
     if (!s.ok()) return s;
 
+    for (VectorId id : ids) {
+        tombstones_.erase(id);
+    }
+    tombstones_dirty_ = true;
+
     if (active_memtable_->BytesUsed() >= memtable_size_bytes_) {
         (void)wal_->Flush();
         frozen_memtables_.push_back(active_memtable_);
@@ -135,7 +164,12 @@ Status Rind::Delete(VectorId id) {
         if (!s.ok()) return s;
     }
 
-    return active_memtable_->Delete(id);
+    Status s = active_memtable_->Delete(id);
+    if (s.ok()) {
+        tombstones_.insert(id);
+        tombstones_dirty_ = true;
+    }
+    return s;
 }
 
 Status Rind::Get(VectorId id, std::vector<float>* out, Metadata* meta) const {
@@ -201,17 +235,18 @@ bool Rind::Contains(VectorId id) const {
 bool Rind::IsDeleted(VectorId id) const {
     std::lock_guard<std::mutex> lock(mu_);
     if (!opened_) return false;
+    return tombstones_.find(id) != tombstones_.end();
+}
 
-    if (active_memtable_->IsTombstone(id)) return true;
-    if (active_memtable_->GetPtr(id) != nullptr) return false;
+RindTombstoneSnapshot Rind::CaptureTombstoneSnapshot() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!opened_) return RindTombstoneSnapshot{};
 
-    for (auto it = frozen_memtables_.rbegin(); it != frozen_memtables_.rend(); ++it) {
-        const auto& table = *it;
-        if (!table) continue;
-        if (table->IsTombstone(id)) return true;
-        if (table->GetPtr(id) != nullptr) return false;
+    if (tombstones_dirty_ || !cached_tombstones_) {
+        cached_tombstones_ = std::make_shared<const std::unordered_set<VectorId>>(tombstones_);
+        tombstones_dirty_ = false;
     }
-    return false;
+    return RindTombstoneSnapshot(cached_tombstones_);
 }
 
 Status Rind::Flush() {
@@ -240,6 +275,19 @@ std::vector<std::shared_ptr<table::MemTable>> Rind::TakeFrozenMemtables() {
     std::lock_guard<std::mutex> lock(mu_);
     auto res = std::move(frozen_memtables_);
     frozen_memtables_.clear();
+
+    // Re-sync tombstones from active_memtable_
+    tombstones_.clear();
+    if (active_memtable_) {
+        auto cursor = active_memtable_->CreateCursor();
+        table::MemTable::CursorEntry entry;
+        while (cursor.Next(&entry)) {
+            if (entry.is_deleted) {
+                tombstones_.insert(entry.id);
+            }
+        }
+    }
+    tombstones_dirty_ = true;
     return res;
 }
 
@@ -256,13 +304,8 @@ void Rind::Taste(std::span<const float> query, uint32_t topk, MetricType metric,
         while (cursor.Next(&entry)) {
             if (entry.is_deleted || entry.vec.size() != dim_) continue;
 
-            float dist = 0.0f;
-            if (metric == MetricType::kL2) {
-                dist = core::L2Sq(query, entry.vec);
-            } else {
-                dist = core::Dot(query, entry.vec);
-            }
-            out_hits->push_back({entry.id, dist});
+            float score = core::ComputeMetricScore(metric, query, entry.vec);
+            out_hits->push_back({entry.id, score});
         }
     };
 

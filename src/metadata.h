@@ -78,6 +78,7 @@ namespace pomai
         std::string partition_location_id;
         bool force_fanout = false;
         uint32_t routing_probe_override = 0;
+        uint32_t ef_search = 64;
         bool zero_copy = false;
         
         SearchOptions() = default;

@@ -15,6 +15,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "memtable.h"
@@ -30,6 +31,33 @@ namespace pomai::ingest {
 struct RindHit {
     VectorId id;
     float distance;
+};
+
+/**
+ * RindTombstoneSnapshot: Immutable point-in-time snapshot of active/frozen memtable tombstones.
+ * Acquired in O(1) time (single shared_ptr copy), accessed lock-free in query loops.
+ */
+class RindTombstoneSnapshot {
+public:
+    RindTombstoneSnapshot() = default;
+    explicit RindTombstoneSnapshot(std::shared_ptr<const std::unordered_set<VectorId>> tombstones)
+        : tombstones_(std::move(tombstones)) {}
+
+    [[nodiscard]] bool IsDeleted(VectorId id) const noexcept {
+        if (!tombstones_ || tombstones_->empty()) return false;
+        return tombstones_->find(id) != tombstones_->end();
+    }
+
+    [[nodiscard]] size_t size() const noexcept {
+        return tombstones_ ? tombstones_->size() : 0;
+    }
+
+    [[nodiscard]] bool empty() const noexcept {
+        return !tombstones_ || tombstones_->empty();
+    }
+
+private:
+    std::shared_ptr<const std::unordered_set<VectorId>> tombstones_;
 };
 
 class Rind {
@@ -55,6 +83,7 @@ public:
     Status Get(VectorId id, std::vector<float>* out, Metadata* meta = nullptr) const;
     [[nodiscard]] bool Contains(VectorId id) const;
     [[nodiscard]] bool IsDeleted(VectorId id) const;
+    [[nodiscard]] RindTombstoneSnapshot CaptureTombstoneSnapshot() const;
 
     // Durability & Lifecycle
     Status Flush();
@@ -74,6 +103,7 @@ public:
     [[nodiscard]] size_t BytesUsed() const noexcept;
     [[nodiscard]] size_t ActiveCount() const noexcept;
     [[nodiscard]] bool HasFrozen() const noexcept;
+    [[nodiscard]] uint32_t dimension() const noexcept { return dim_; }
 
     void ForEachEntry(const std::function<void(VectorId, std::span<const float>, bool is_deleted, const Metadata*)>& fn) const;
 
@@ -90,6 +120,11 @@ private:
     std::vector<std::shared_ptr<table::MemTable>> frozen_memtables_;
     std::unique_ptr<storage::Wal> wal_;
     bool opened_{false};
+
+    // Fast Point-in-time tombstone snapshot tracking
+    std::unordered_set<VectorId> tombstones_;
+    mutable std::shared_ptr<const std::unordered_set<VectorId>> cached_tombstones_;
+    mutable bool tombstones_dirty_{true};
 };
 
 } // namespace pomai::ingest

@@ -59,7 +59,16 @@ class [[nodiscard]] Status {
 
   std::string ToString() const {
     if (ok()) return "OK";
-    std::string s = "Error: ";
+    std::string s;
+    switch (code_) {
+        case ErrorCode::kCorruption: s = "Corruption: "; break;
+        case ErrorCode::kInvalidArgument: s = "InvalidArgument: "; break;
+        case ErrorCode::kNotFound: s = "NotFound: "; break;
+        case ErrorCode::kAlreadyExists: s = "AlreadyExists: "; break;
+        case ErrorCode::kResourceExhausted: s = "ResourceExhausted: "; break;
+        case ErrorCode::kIO: s = "IOError: "; break;
+        default: s = "Error: "; break;
+    }
     s += std::to_string(static_cast<int>(code_));
     if (!message_.empty()) {
         s += " (";

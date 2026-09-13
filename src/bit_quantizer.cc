@@ -7,6 +7,8 @@ namespace pomai::core {
 BitQuantizer::BitQuantizer(size_t dim) : dim_(dim) {}
 
 pomai::Status BitQuantizer::Train(std::span<const float> data, size_t num_vectors) {
+    (void)data;
+    (void)num_vectors;
     is_trained_ = true;
     return pomai::Status::Ok();
 }

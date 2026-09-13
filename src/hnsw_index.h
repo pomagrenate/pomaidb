@@ -1,135 +1,112 @@
-// hnsw_index.h — PomaiDB wrapper around faiss::IndexHNSWFlat.
+// src/hnsw_index.h — PomaiDB production wrapper around upstream nmslib/hnswlib
 //
-// Phase 3: Wraps FAISS HNSW for use as a drop-in sidecar index per runtime.
-// Activated via DBOptions::index_type = IndexType::kHNSW.
-// Backward-compatible: when not set, IvfFlatIndex is used as before.
+// Algorithmic Authority: nmslib/hnswlib (upstream commit 058d7a866e462c00f0a6dea8660969379d5916bd)
+// Integrated via PomaiDistanceSpace with PomaiDB SIMD distance kernels.
 //
-// Phase 4: Save/Load via faiss::index_io for .idx sidecar persistence.
+// Copyright 2026 PomaiDB authors. MIT License.
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iosfwd>
 #include <memory>
 #include <span>
 #include <string>
 #include <vector>
-#include "aligned_vector.h"
 
+#include "options.h"
 #include "status.h"
 #include "types.h"
-#include "options.h"
-
-namespace pomai::hnsw {
-class HNSW;
-}
 
 namespace pomai::index {
 
-/// Options for the HNSW index.
+/// Production HNSW configuration parameters
 struct HnswOptions {
-    int M            = 32;    // Number of HNSW neighbors per node. Higher = better recall, more RAM.
-    int ef_construction = 200; // Candidates during build. Higher = better graph quality.
-    int ef_search    = 64;    // Candidates during query. Tunable at query time.
+    size_t M = 16;
+    size_t ef_construction = 200;
+    size_t ef_search = 64;
+    size_t initial_max_elements = 1024;
+    size_t random_seed = 100;
 };
 
-/// Per-runtime HNSW index. Thread-safe for concurrent reads; single-writer Add().
+/// Interface for in-graph filtering of VectorIds during search
+class IdFilter {
+public:
+    virtual ~IdFilter() = default;
+    virtual bool IsAllowed(VectorId id) = 0;
+};
+
+/// High-performance production HNSW index wrapping hnswlib::HierarchicalNSW<float>
 class HnswIndex {
 public:
-    /// Create an empty HNSW index (not yet trained/populated).
-    HnswIndex(uint32_t dim, HnswOptions opts = {}, pomai::MetricType metric = pomai::MetricType::kInnerProduct);
+    HnswIndex(uint32_t dim, HnswOptions opts = {}, pomai::MetricType metric = pomai::MetricType::kL2);
     ~HnswIndex();
 
-    // Non-copyable
+    // Non-copyable, movable
     HnswIndex(const HnswIndex&) = delete;
     HnswIndex& operator=(const HnswIndex&) = delete;
+    HnswIndex(HnswIndex&&) noexcept;
+    HnswIndex& operator=(HnswIndex&&) noexcept;
 
     // ── Build Phase ───────────────────────────────────────────────────────────
-    /// Add one vector with the given PomaiDB VectorId.
-    /// NOTE: FAISS HNSW stores vectors contiguously; internal FAISS ids are
-    ///       sequential. We keep a mapping faiss_id → VectorId.
     pomai::Status Add(VectorId id, std::span<const float> vec);
-
-    /// Add a batch of vectors.
-    pomai::Status AddBatch(const VectorId* ids,
-                           const float*    vecs,
-                           std::size_t     n);
+    pomai::Status AddBatch(const VectorId* ids, const float* vecs, std::size_t n);
 
     // ── Query Phase ───────────────────────────────────────────────────────────
     /// Approximate nearest neighbor search.
     /// @param query     Query vector (dim() floats).
     /// @param topk      Number of results requested.
-    /// @param ef_search Override for ef_search (0 = use default from HnswOptions).
-    /// @param out_ids   Output VectorIds (size topk).
-    /// @param out_dists Output distances (size topk).
+    /// @param ef_search Override for ef_search (0 = use default from HnswOptions; enforces ef_search >= topk).
+    /// @param out_ids   Output VectorIds (sorted closest first).
+    /// @param out_dists Output distances (sorted closest first).
+    /// @param filter    Optional in-graph filter for tombstones/metadata.
     pomai::Status Search(std::span<const float> query,
-                         uint32_t               topk,
-                         int                    ef_search,
+                         uint32_t topk,
+                         int ef_search,
                          std::vector<VectorId>* out_ids,
-                         std::vector<float>*    out_dists) const;
+                         std::vector<float>* out_dists,
+                         IdFilter* filter = nullptr) const;
 
     // ── Metadata ──────────────────────────────────────────────────────────────
-    uint32_t    dim()   const { return dim_; }
-    std::size_t count() const { return id_map_.size(); }
-    HnswOptions opts()  const { return opts_; }
+    [[nodiscard]] uint32_t dim() const noexcept { return dim_; }
+    [[nodiscard]] std::size_t count() const;
+    [[nodiscard]] HnswOptions opts() const noexcept { return opts_; }
+    [[nodiscard]] pomai::MetricType metric() const noexcept { return metric_; }
 
-    // ── Persistence (Phase 4) ─────────────────────────────────────────────────
-    /// Write index to path with full vector pool. Also writes entry_index_map
-    /// in new v1 format (magic header).
+    // ── Persistence ───────────────────────────────────────────────────────────
+    pomai::Status SaveToStream(std::ostream& out) const;
+    pomai::Status LoadFromStream(std::istream& in);
+
+    pomai::Status SaveToBuffer(std::vector<uint8_t>* out) const;
+    pomai::Status LoadFromBuffer(const uint8_t* data, size_t len);
+
     pomai::Status Save(const std::string& path) const;
-
-    /// Write index without vector pool (v2 format). Requires SetEntryIndexMap()
-    /// to have been called. The segment provides vectors at query time via
-    /// SetVectorGetter().
-    pomai::Status SaveNoPool(const std::string& path) const;
-
-    /// Load from path. Handles old format (no magic), v1 (pool), v2 (no-pool).
     static pomai::Status Load(const std::string& path,
                               std::unique_ptr<HnswIndex>* out);
+    static pomai::Status Load(const std::string& path,
+                              uint32_t dim,
+                              pomai::MetricType metric,
+                              std::unique_ptr<HnswIndex>* out);
 
-    // ── No-pool mode (graph-only RAM saving) ──────────────────────────────────
-    /// Maps HNSW internal index → segment entry index (built at BuildIndex time).
-    /// Must be set before SaveNoPool().
-    void SetEntryIndexMap(std::vector<uint32_t> map) {
-        entry_index_map_ = std::move(map);
-    }
-
-    /// Inject a vector getter for no-pool mode. Called by SegmentReader after
-    /// Load() when IsNoVectorPool() is true.
-    /// @param getter  fn(entry_index) → const float*  (points into mmap).
-    void SetVectorGetter(std::function<const float*(uint32_t)> getter) {
-        vector_getter_ = std::move(getter);
-    }
-
-    /// True when loaded from a no-pool file (vector_pool_ is empty).
-    bool IsNoVectorPool() const { return no_vector_pool_; }
+    // ── Legacy Sidecar Compatibility ──────────────────────────────────────────
+    void SetEntryIndexMap(std::vector<uint32_t> map) { entry_index_map_ = std::move(map); }
+    void SetVectorGetter(std::function<const float*(uint32_t)> getter) { vector_getter_ = std::move(getter); }
+    [[nodiscard]] bool IsNoVectorPool() const noexcept { return no_vector_pool_; }
+    pomai::Status SaveNoPool(const std::string& path) const { return Save(path); }
 
 private:
-    uint32_t    dim_;
+    uint32_t dim_;
     HnswOptions opts_;
-
-    // Owned native HNSW index
-    std::unique_ptr<pomai::hnsw::HNSW> index_;
-
-    // Vector storage for distance computation during Add/Search.
-    // Empty when no_vector_pool_ == true (search uses vector_getter_ instead).
-    pomai::util::AlignedVector<float> vector_pool_;
     pomai::MetricType metric_;
 
-    // HNSW internal idx → PomaiDB VectorId mapping
-    std::vector<VectorId> id_map_;
-
-    // No-pool mode: HNSW internal idx → segment entry index
     std::vector<uint32_t> entry_index_map_;
-
-    // When true, vector_pool_ is empty and vector_getter_ provides vectors.
+    std::function<const float*(uint32_t)> vector_getter_;
     bool no_vector_pool_{false};
 
-    // Segment mmap vector resolver (set by SegmentReader in no-pool mode).
-    std::function<const float*(uint32_t)> vector_getter_;
-
-    // File format magic for versioned header detection.
-    static constexpr uint32_t kFileMagic = 0x504D4831u; // "PMH1"
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace pomai::index

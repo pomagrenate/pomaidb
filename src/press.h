@@ -27,9 +27,16 @@
 namespace pomai::compact {
 
 struct PressOptions {
-    size_t target_aril_vector_count{10000};
-    size_t target_locule_aril_count{5};
-    IndexParams index_params;
+    size_t target_aril_vector_count{50000};
+    size_t target_locule_aril_count{2};
+    IndexParams index_params{[]() {
+        IndexParams p;
+        p.type = IndexType::kHnsw;
+        p.hnsw_m = 16;
+        p.hnsw_ef_construction = 200;
+        p.hnsw_ef_search = 64;
+        return p;
+    }()};
 };
 
 class Press {

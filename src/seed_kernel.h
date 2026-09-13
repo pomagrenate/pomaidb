@@ -42,20 +42,13 @@ public:
 
     /**
      * Rerank: Computes exact FP32 distance for the candidate slot.
-     * Higher score = better candidate (negated L2 for Euclidean metric).
+     * Higher score = better candidate (delegates to canonical ComputeMetricScore).
      */
     [[nodiscard]] float Rerank(std::span<const float> query, uint32_t slot,
                                pomai::MetricType metric) const noexcept {
         if (!data_ || slot >= count_) return -1e9f;
         auto vec = GetVector(slot);
-
-        const bool is_ip = (metric == pomai::MetricType::kInnerProduct ||
-                            metric == pomai::MetricType::kCosine);
-        if (is_ip) {
-            return pomai::core::Dot(query, vec);
-        } else {
-            return -pomai::core::L2Sq(query, vec);
-        }
+        return pomai::core::ComputeMetricScore(metric, query, vec);
     }
 
 private:

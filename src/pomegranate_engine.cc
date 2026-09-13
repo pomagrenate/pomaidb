@@ -93,6 +93,13 @@ Status PomegranateEngine::Open() {
 
     compact::PressOptions press_opts;
     press_opts.index_params = opt_.index_params;
+    if (press_opts.index_params.type == IndexType::kIvfFlat) {
+        // PomegranateEngine uses HNSW for its sub-linear intra-Locule graph search.
+        press_opts.index_params.type = IndexType::kHnsw;
+        if (press_opts.index_params.hnsw_m == 0) press_opts.index_params.hnsw_m = 16;
+        if (press_opts.index_params.hnsw_ef_construction == 0) press_opts.index_params.hnsw_ef_construction = 200;
+        if (press_opts.index_params.hnsw_ef_search == 0) press_opts.index_params.hnsw_ef_search = 64;
+    }
     press_ = std::make_unique<compact::Press>(env_, opt_.path, opt_.dim, metric_, press_opts);
 
     opened_ = true;
@@ -220,6 +227,8 @@ Status PomegranateEngine::Freeze() {
 
 Status PomegranateEngine::Compact() {
     if (!opened_) return Status::Corruption("engine not open");
+    Status s = rind_->Freeze();
+    if (!s.ok()) return s;
     return press_->Compact(rind_.get(), fruit_map_.get());
 }
 
@@ -243,6 +252,11 @@ Status PomegranateEngine::Search(std::span<const float> query,
                                 const SearchOptions& opts,
                                 SearchHitSink& sink) {
     if (!opened_) return Status::Corruption("engine not open");
+    if (query.size() != opt_.dim) {
+        return Status::InvalidArgument("query vector dimension mismatch: expected " +
+                                       std::to_string(opt_.dim) + ", got " +
+                                       std::to_string(query.size()));
+    }
     auto snap = fruit_map_->CurrentSnapshot();
     return query::PomegranateQuery::Execute(query, topk, opts, metric_, snap.get(), rind_.get(), sink);
 }

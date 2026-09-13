@@ -83,11 +83,25 @@ Status Locule::Open(Env* env, const std::string& filepath, std::shared_ptr<Locul
         const auto* entries = reinterpret_cast<const format::ArilDirectoryEntry*>(
             locule->base_addr_ + hdr.directory_offset);
 
+        if (hdr.checksum != 0 && hdr.directory_size > 0) {
+            uint32_t dir_crc = pomai::util::Crc32c(locule->base_addr_ + hdr.directory_offset, hdr.directory_size);
+            if (dir_crc != hdr.checksum) {
+                return Status::Corruption("header directory checksum mismatch in " + filepath);
+            }
+        }
+
         locule->arils_.reserve(hdr.aril_count);
         for (uint32_t i = 0; i < hdr.aril_count; ++i) {
             const auto& entry = entries[i];
             if (entry.aril_offset + entry.aril_size > locule->file_size_) {
                 return Status::Corruption("aril block extends beyond locule file size: " + filepath);
+            }
+
+            if (entry.checksum != 0) {
+                uint32_t actual_crc = pomai::util::Crc32c(locule->base_addr_ + entry.aril_offset, entry.aril_size);
+                if (actual_crc != entry.checksum) {
+                    return Status::Corruption("corruption: aril block " + std::to_string(entry.aril_id) + " checksum mismatch in " + filepath);
+                }
             }
 
             std::shared_ptr<ArilReader> aril;
@@ -257,8 +271,12 @@ Status Locule::Write(Env* env, const std::string& filepath,
                     centroid_bytes);
     }
 
-    // Compute checksum over content excluding header checksum field
-    hdr.checksum = pomai::util::Crc32c(buffer.data() + 16, total_size - 16);
+    // Compute checksum over directory entries
+    if (dir_size > 0) {
+        hdr.checksum = pomai::util::Crc32c(buffer.data() + dir_offset, dir_size);
+    } else {
+        hdr.checksum = 0;
+    }
     std::memcpy(buffer.data(), &hdr, sizeof(hdr));
 
     // Write file atomically (.tmp -> rename)

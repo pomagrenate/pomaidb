@@ -4,11 +4,14 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "palloc_compat.h"
@@ -19,6 +22,25 @@
 #include "version.h"
 
 namespace {
+
+std::mutex g_handles_mutex;
+std::unordered_set<const pomai_db_t*> g_active_handles;
+
+bool IsValidHandle(const pomai_db_t* db) {
+    if (db == nullptr) return false;
+    std::lock_guard<std::mutex> lock(g_handles_mutex);
+    return g_active_handles.find(db) != g_active_handles.end();
+}
+
+void RegisterHandle(const pomai_db_t* db) {
+    std::lock_guard<std::mutex> lock(g_handles_mutex);
+    g_active_handles.insert(db);
+}
+
+bool UnregisterHandle(const pomai_db_t* db) {
+    std::lock_guard<std::mutex> lock(g_handles_mutex);
+    return g_active_handles.erase(db) > 0;
+}
 
 constexpr const char* kDefaultMembrane = "__default__";
 
@@ -394,12 +416,16 @@ pomai_status_t* pomai_open(const pomai_options_t* opts, pomai_db_t** out_db) {
     void* raw = palloc_malloc_aligned(sizeof(pomai_db_t), alignof(pomai_db_t));
     if (!raw) return MakeStatus(POMAI_STATUS_RESOURCE_EXHAUSTED, "db handle allocation failed");
     *out_db = new (raw) pomai_db_t{std::move(db)};
+    RegisterHandle(*out_db);
     return nullptr;
 }
 
 pomai_status_t* pomai_close(pomai_db_t* db) {
     if (db == nullptr) {
         return nullptr;
+    }
+    if (!UnregisterHandle(db)) {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "database handle already closed or invalid");
     }
     auto st = db->db->Close();
     db->~pomai_db_t();
@@ -408,8 +434,8 @@ pomai_status_t* pomai_close(pomai_db_t* db) {
 }
 
 pomai_status_t* pomai_freeze_membrane(pomai_db_t* db, const char* membrane) {
-    if (db == nullptr) {
-        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null");
+    if (!IsValidHandle(db)) {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null and valid");
     }
     const char* memb = (membrane && membrane[0] != '\0') ? membrane : kDefaultMembrane;
     return ToCStatus(db->db->Freeze(memb));
@@ -420,25 +446,30 @@ pomai_status_t* pomai_freeze(pomai_db_t* db) {
 }
 
 pomai_status_t* pomai_flush(pomai_db_t* db) {
-    if (db == nullptr) {
-        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null");
+    if (!IsValidHandle(db)) {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null and valid");
     }
     return ToCStatus(db->db->Flush());
 }
 
 pomai_status_t* pomai_compact(pomai_db_t* db) {
-    if (db == nullptr) {
-        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null");
+    if (!IsValidHandle(db)) {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null and valid");
     }
     return ToCStatus(db->db->Compact(kDefaultMembrane));
 }
 
 pomai_status_t* pomai_put_membrane(pomai_db_t* db, const char* membrane, const pomai_upsert_t* item) {
-    if (db == nullptr || item == nullptr || item->vector == nullptr || item->dim == 0) {
+    if (!IsValidHandle(db) || item == nullptr || item->vector == nullptr || item->dim == 0) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid put arguments");
     }
     if (item->struct_size < MinUpsertStructSize()) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "upsert.struct_size is too small");
+    }
+    for (uint32_t d = 0; d < item->dim; ++d) {
+        if (!std::isfinite(item->vector[d])) {
+            return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "vector contains non-finite values (NaN or Inf)");
+        }
     }
     const char* struct_memb = (item->struct_size >= offsetof(pomai_upsert_t, membrane) + sizeof(const char*))
                                 ? item->membrane : nullptr;
@@ -452,8 +483,8 @@ pomai_status_t* pomai_put(pomai_db_t* db, const pomai_upsert_t* item) {
 }
 
 pomai_status_t* pomai_put_batch_membrane(pomai_db_t* db, const char* membrane, const pomai_upsert_t* items, size_t n) {
-    if (db == nullptr) {
-        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null");
+    if (!IsValidHandle(db)) {
+        return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db must be non-null and valid");
     }
     if (n == 0) {
         return nullptr;
@@ -466,11 +497,6 @@ pomai_status_t* pomai_put_batch_membrane(pomai_db_t* db, const char* membrane, c
                                 ? items[0].membrane : nullptr;
     const char* memb = ResolveMembrane(membrane, struct_memb);
 
-    std::vector<pomai::VectorId> ids;
-    std::vector<std::span<const float>> vecs;
-    ids.reserve(n);
-    vecs.reserve(n);
-
     for (size_t i = 0; i < n; ++i) {
         if (items[i].struct_size < MinUpsertStructSize()) {
             return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "all batch items require valid struct_size");
@@ -478,10 +504,18 @@ pomai_status_t* pomai_put_batch_membrane(pomai_db_t* db, const char* membrane, c
         if (items[i].vector == nullptr || items[i].dim == 0) {
             return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "all batch items require vector and dim");
         }
-        ids.push_back(items[i].id);
-        vecs.emplace_back(items[i].vector, items[i].dim);
+        for (uint32_t d = 0; d < items[i].dim; ++d) {
+            if (!std::isfinite(items[i].vector[d])) {
+                return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "vector contains non-finite values (NaN or Inf)");
+            }
+        }
+        std::span<const float> vec(items[i].vector, items[i].dim);
+        auto s = db->db->PutVector(memb, items[i].id, vec, ToMetadata(items[i]));
+        if (!s.ok()) {
+            return ToCStatus(s);
+        }
     }
-    return ToCStatus(db->db->PutBatch(memb, ids, vecs));
+    return nullptr;
 }
 
 pomai_status_t* pomai_put_batch(pomai_db_t* db, const pomai_upsert_t* items, size_t n) {
@@ -573,7 +607,7 @@ void pomai_record_free(pomai_record_t* record) {
 }
 
 pomai_status_t* pomai_search_membrane(pomai_db_t* db, const char* membrane, const pomai_query_t* query, pomai_search_results_t** out) {
-    if (db == nullptr || query == nullptr || out == nullptr) {
+    if (!IsValidHandle(db) || query == nullptr || out == nullptr) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "invalid search arguments");
     }
     if (query->struct_size < MinQueryStructSize()) {
@@ -581,6 +615,11 @@ pomai_status_t* pomai_search_membrane(pomai_db_t* db, const char* membrane, cons
     }
     if (query->vector == nullptr || query->dim == 0) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "query vector and dim required");
+    }
+    for (uint32_t d = 0; d < query->dim; ++d) {
+        if (!std::isfinite(query->vector[d])) {
+            return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "query vector contains non-finite values (NaN or Inf)");
+        }
     }
     if (DeadlineExceeded(query->deadline_ms)) {
         return MakeStatus(POMAI_STATUS_DEADLINE_EXCEEDED, "deadline exceeded before search execution");

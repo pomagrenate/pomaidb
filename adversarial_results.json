@@ -1,0 +1,72 @@
+{
+  "EXP-01": {
+    "name": "Frozen MemTable Update Shadowing",
+    "status": "PASS",
+    "evidence": "Search returned correct updated score: -0.0",
+    "severity": null,
+    "bug_id": null
+  },
+  "EXP-02": {
+    "name": "Silent Metadata & Payload Loss in pomai_put_batch",
+    "status": "PASS",
+    "evidence": "Batch metadata preserved: payload=b'PAYLOAD_101_SECRET', ts=999999",
+    "severity": null,
+    "bug_id": null
+  },
+  "EXP-03": {
+    "name": "Missing Checksum Verification on Read",
+    "status": "PASS",
+    "evidence": "Corruption correctly detected: failed to open locule ./adversarial_test_exp03/membranes/__default__/locule_1_gen_2.pom: Corruption: 11 (corruption: aril block 1 checksum mismatch in ./adversarial_test_exp03/membranes/__default__/locule_1_gen_2.pom)",
+    "severity": null,
+    "bug_id": null
+  },
+  "EXP-04": {
+    "name": "NaN/Inf Vector Input Validation",
+    "status": "PASS",
+    "evidence": "Database rejected NaN and Inf vectors gracefully.",
+    "severity": null,
+    "bug_id": null
+  },
+  "EXP-05": {
+    "name": "Cosine Metric Magnitude Distortion",
+    "status": "PASS",
+    "evidence": "Cosine similarity invariant held: V1 score=1.0000, V2 score=1.0000",
+    "severity": null,
+    "bug_id": null
+  },
+  "EXP-06": {
+    "name": "MembraneManager Concurrency",
+    "status": "PASS",
+    "evidence": "Concurrent DDL (create/drop) and DML (put/search) completed without crash.",
+    "severity": null,
+    "bug_id": null
+  },
+  "EXP-07": {
+    "name": "Double Close Protection",
+    "status": "PASS",
+    "evidence": "Double close safely guarded by handle registry; returned status: b'database handle already closed or invalid'",
+    "severity": null,
+    "bug_id": null
+  },
+  "EXP-08": {
+    "name": "Search Recall@10 vs Exact NumPy Oracle",
+    "status": "PASS",
+    "evidence": "Recall@10 = 100.0% (min: 100.0%) across 20 queries.",
+    "severity": null,
+    "bug_id": null
+  },
+  "EXP-09": {
+    "name": "1000-Cycle Insert/Delete Churn Soak",
+    "status": "PASS",
+    "evidence": "Completed 1,000 write/delete/flush cycles in 0.03s without crash or unbounded growth.",
+    "severity": null,
+    "bug_id": null
+  },
+  "EXP-10": {
+    "name": "Boundary Search Parameters",
+    "status": "PASS",
+    "evidence": "Boundary cases handled cleanly: empty=0, k0=0, huge_k=1",
+    "severity": null,
+    "bug_id": null
+  }
+}

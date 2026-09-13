@@ -89,6 +89,17 @@ pomai::Status ArilReader::OpenFromMemory(const uint8_t* base_addr, size_t max_si
         reader->meta_size_ = hdr.metadata_size;
     }
 
+    // Resolve Graph (with graceful fallback on corruption)
+    if (hdr.graph_size > 0) {
+        auto graph_idx = std::make_unique<index::HnswIndex>(hdr.dimension);
+        auto load_st = graph_idx->LoadFromBuffer(base_addr + hdr.graph_offset, hdr.graph_size);
+        if (load_st.ok()) {
+            reader->graph_ = std::move(graph_idx);
+        } else {
+            reader->graph_ = nullptr; // Fallback to Pulp SQ8 flat scan
+        }
+    }
+
     *out = std::move(reader);
     return pomai::Status::Ok();
 }
@@ -305,6 +316,28 @@ pomai::Status ArilBuilder::Build(std::vector<uint8_t>* out_bytes) {
     const uint64_t kernel_sz = kernel_builder.size_bytes();
     current_offset += kernel_sz;
 
+    // Graph Block
+    std::vector<uint8_t> graph_bytes;
+    if (index_params_.type == IndexType::kHnsw && count > 0) {
+        index::HnswOptions opts;
+        opts.M = (index_params_.hnsw_m > 0) ? index_params_.hnsw_m : 16;
+        opts.ef_construction = (index_params_.hnsw_ef_construction > 0) ? index_params_.hnsw_ef_construction : 200;
+        opts.ef_search = (index_params_.hnsw_ef_search > 0) ? index_params_.hnsw_ef_search : 64;
+        opts.initial_max_elements = count;
+
+        index::HnswIndex hnsw(dim_, opts, metric_);
+        for (uint32_t i = 0; i < count; ++i) {
+            (void)hnsw.Add(static_cast<VectorId>(i), entries_[i].vec);
+        }
+        (void)hnsw.SaveToBuffer(&graph_bytes);
+    }
+
+    // Graph offset
+    current_offset = align64(current_offset);
+    const uint64_t graph_off = current_offset;
+    const uint64_t graph_sz = graph_bytes.size();
+    current_offset += graph_sz;
+
     // Scar offset
     current_offset = align64(current_offset);
     const uint64_t scar_off = current_offset;
@@ -340,8 +373,8 @@ pomai::Status ArilBuilder::Build(std::vector<uint8_t>* out_bytes) {
     hdr.kernel_offset = kernel_off;
     hdr.kernel_size = kernel_sz;
 
-    hdr.graph_offset = 0;
-    hdr.graph_size = 0;
+    hdr.graph_offset = (graph_sz > 0) ? graph_off : 0;
+    hdr.graph_size = graph_sz;
 
     hdr.scar_offset = scar_off;
     hdr.scar_size = scar_sz;
@@ -366,6 +399,11 @@ pomai::Status ArilBuilder::Build(std::vector<uint8_t>* out_bytes) {
     // Copy Kernel
     if (kernel_sz > 0) {
         std::memcpy(out_bytes->data() + kernel_off, kernel_builder.data().data(), kernel_sz);
+    }
+
+    // Copy Graph
+    if (graph_sz > 0) {
+        std::memcpy(out_bytes->data() + graph_off, graph_bytes.data(), graph_sz);
     }
 
     // Copy Scar

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <chrono>
+#include <mutex>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -47,12 +48,12 @@ namespace pomai::core
             opt.index_params = loaded_spec.index_params;
             opt.path = base_.path + "/membranes/" + spec.name;
 
-            MembraneState state;
-            state.spec = loaded_spec;
-            state.vector_engine = std::make_unique<VectorEngine>(opt, loaded_spec.kind, loaded_spec.metric, loaded_spec.ttl_sec,
+            auto state = std::make_shared<MembraneState>();
+            state->spec = loaded_spec;
+            state->vector_engine = std::make_unique<VectorEngine>(opt, loaded_spec.kind, loaded_spec.metric, loaded_spec.ttl_sec,
                                                                  loaded_spec.retention_max_count, loaded_spec.retention_max_bytes,
                                                                  loaded_spec.sync_lsn);
-            state.lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
+            state->lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
             membranes_.emplace(spec.name, std::move(state));
             st = Status::Ok();
         }
@@ -87,12 +88,12 @@ namespace pomai::core
                 opt.index_params = mspec.index_params;
                 opt.path = base_.path + "/membranes/" + name;
 
-                MembraneState state;
-                state.spec = mspec;
-                state.vector_engine = std::make_unique<VectorEngine>(opt, mspec.kind, mspec.metric, mspec.ttl_sec,
+                auto state = std::make_shared<MembraneState>();
+                state->spec = mspec;
+                state->vector_engine = std::make_unique<VectorEngine>(opt, mspec.kind, mspec.metric, mspec.ttl_sec,
                                                                      mspec.retention_max_count, mspec.retention_max_bytes,
                                                                      mspec.sync_lsn);
-                state.lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
+                state->lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
                 membranes_.emplace(name, std::move(state));
             }
 
@@ -110,10 +111,11 @@ namespace pomai::core
 
     Status MembraneManager::FlushAll()
     {
+        std::shared_lock<std::shared_mutex> lock(membranes_mu_);
         for (auto &kv : membranes_)
         {
-            if (kv.second.vector_engine) {
-                auto st = kv.second.vector_engine->Flush();
+            if (kv.second && kv.second->vector_engine) {
+                auto st = kv.second->vector_engine->Flush();
                 if (!st.ok())
                     return st;
             }
@@ -123,9 +125,10 @@ namespace pomai::core
 
     Status MembraneManager::CloseAll()
     {
+        std::unique_lock<std::shared_mutex> lock(membranes_mu_);
         for (auto &kv : membranes_) {
-            if (kv.second.vector_engine) {
-                (void)kv.second.vector_engine->Close();
+            if (kv.second && kv.second->vector_engine) {
+                (void)kv.second->vector_engine->Close();
             }
         }
         membranes_.clear();
@@ -133,20 +136,31 @@ namespace pomai::core
         return Status::Ok();
     }
 
-    MembraneManager::MembraneState *MembraneManager::GetMembraneOrNull(std::string_view name)
+    std::shared_ptr<MembraneManager::MembraneState> MembraneManager::GetMembrane(std::string_view name) const
     {
+        std::shared_lock<std::shared_mutex> lock(membranes_mu_);
         auto it = membranes_.find(std::string(name));
         if (it == membranes_.end())
             return nullptr;
-        return &it->second;
+        return it->second;
+    }
+
+    MembraneManager::MembraneState *MembraneManager::GetMembraneOrNull(std::string_view name)
+    {
+        std::shared_lock<std::shared_mutex> lock(membranes_mu_);
+        auto it = membranes_.find(std::string(name));
+        if (it == membranes_.end())
+            return nullptr;
+        return it->second.get();
     }
 
     const MembraneManager::MembraneState *MembraneManager::GetMembraneOrNull(std::string_view name) const
     {
+        std::shared_lock<std::shared_mutex> lock(membranes_mu_);
         auto it = membranes_.find(std::string(name));
         if (it == membranes_.end())
             return nullptr;
-        return &it->second;
+        return it->second.get();
     }
 
     Status MembraneManager::CreateMembrane(const pomai::MembraneSpec &spec)
@@ -158,6 +172,7 @@ namespace pomai::core
         if (spec.shard_count == 0)
             return Status::InvalidArgument("membrane shard_count must be > 0");
 
+        std::unique_lock<std::shared_mutex> lock(membranes_mu_);
         if (membranes_.find(spec.name) != membranes_.end())
             return Status::AlreadyExists("membrane already exists");
 
@@ -171,30 +186,35 @@ namespace pomai::core
         opt.index_params = spec.index_params;
         opt.path = base_.path + "/membranes/" + spec.name;
 
-        MembraneState state;
-        state.spec = spec;
-        state.vector_engine = std::make_unique<VectorEngine>(opt, spec.kind, spec.metric, spec.ttl_sec, spec.retention_max_count,
+        auto state = std::make_shared<MembraneState>();
+        state->spec = spec;
+        state->vector_engine = std::make_unique<VectorEngine>(opt, spec.kind, spec.metric, spec.ttl_sec, spec.retention_max_count,
                                                              spec.retention_max_bytes, spec.sync_lsn);
-        state.lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
+        state->lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
         membranes_.emplace(spec.name, std::move(state));
         return Status::Ok();
     }
 
     Status MembraneManager::DropMembrane(std::string_view name)
     {
-        auto it = membranes_.find(std::string(name));
-        if (it == membranes_.end())
-            return Status::NotFound("membrane not found");
+        std::shared_ptr<MembraneState> to_close;
+        {
+            std::unique_lock<std::shared_mutex> lock(membranes_mu_);
+            auto it = membranes_.find(std::string(name));
+            if (it == membranes_.end())
+                return Status::NotFound("membrane not found");
+            to_close = it->second;
+            membranes_.erase(it);
+        }
 
         // 1. Persist to Manifest
         auto st = storage::Manifest::DropMembrane(base_.path, name);
         if (!st.ok()) return st;
 
         // 2. Remove from Memory
-        if (it->second.vector_engine) {
-            (void)it->second.vector_engine->Close();
+        if (to_close && to_close->vector_engine) {
+            (void)to_close->vector_engine->Close();
         }
-        membranes_.erase(it);
         return Status::Ok();
     }
 
@@ -250,6 +270,7 @@ namespace pomai::core
     {
         if (!out)
             return Status::InvalidArgument("out is null");
+        std::shared_lock<std::shared_mutex> lock(membranes_mu_);
         out->clear();
         out->reserve(membranes_.size());
         for (const auto &kv : membranes_)

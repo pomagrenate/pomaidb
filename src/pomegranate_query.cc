@@ -11,6 +11,8 @@
 #include <unordered_set>
 
 #include "distance.h"
+#include "hnsw_index.h"
+#include "topk.h"
 
 namespace pomai::query {
 
@@ -26,7 +28,10 @@ struct PickItem {
 
 struct PickMinComparator {
     bool operator()(const PickItem& a, const PickItem& b) const noexcept {
-        return a.score > b.score; // min-heap: smallest score on top
+        if (a.score != b.score) {
+            return a.score > b.score; // min-heap: smallest score on top
+        }
+        return a.id < b.id; // tie-break: larger id on top (evicted first)
     }
 };
 
@@ -39,8 +44,26 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                                 const manifest::FruitSnapshot* snapshot,
                                 const ingest::Rind* rind,
                                 SearchHitSink& sink) {
-    if (topk == 0 || query.empty()) {
+    if (topk == 0) {
         return Status::Ok();
+    }
+    if (query.empty()) {
+        return Status::InvalidArgument("query vector is empty");
+    }
+    for (float v : query) {
+        if (!std::isfinite(v)) {
+            return Status::InvalidArgument("query vector contains non-finite values (NaN or Inf)");
+        }
+    }
+    if (rind && rind->dimension() > 0 && query.size() != rind->dimension()) {
+        return Status::InvalidArgument("query vector dimension mismatch: expected " +
+                                       std::to_string(rind->dimension()) + ", got " +
+                                       std::to_string(query.size()));
+    }
+    if (snapshot && snapshot->dimension() > 0 && query.size() != snapshot->dimension()) {
+        return Status::InvalidArgument("query vector dimension mismatch: expected " +
+                                       std::to_string(snapshot->dimension()) + ", got " +
+                                       std::to_string(query.size()));
     }
 
     float query_sum = 0.0f;
@@ -48,16 +71,19 @@ Status PomegranateQuery::Execute(std::span<const float> query,
         query_sum += v;
     }
 
-    size_t pick_target = std::max<size_t>(topk * 4, 64);
+    size_t pick_target = std::max<size_t>(topk * 2, 64);
 
     std::priority_queue<PickItem, std::vector<PickItem>, PickMinComparator> pick_heap;
     std::unordered_set<VectorId> seen_ids;
     seen_ids.reserve(pick_target * 2);
 
-    // Helper to conditionally push into bounded pick heap
+    // Helper to conditionally push into bounded pick heap with deterministic tie-breaking
     auto push_candidate = [&](const PickItem& item) {
-        if (pick_heap.size() >= pick_target && item.score <= pick_heap.top().score) {
-            return;
+        if (pick_heap.size() >= pick_target) {
+            const auto& worst = pick_heap.top();
+            if (item.score < worst.score || (item.score == worst.score && item.id >= worst.id)) {
+                return;
+            }
         }
         if (!seen_ids.insert(item.id).second) {
             return; // Duplicate ID
@@ -73,6 +99,9 @@ Status PomegranateQuery::Execute(std::span<const float> query,
     const bool has_filters = !opts.filters.empty() || opts.as_of_ts > 0 || opts.as_of_lsn > 0 ||
                              !opts.partition_device_id.empty() || !opts.partition_location_id.empty();
 
+    // Capture point-in-time tombstone snapshot to eliminate lock contention during scan loops
+    const auto rind_tombstone_snap = rind ? rind->CaptureTombstoneSnapshot() : ingest::RindTombstoneSnapshot{};
+
     // -------------------------------------------------------------------------
     // Stage 3a: Taste Rind (immediate RAM visibility for live memtables)
     // -------------------------------------------------------------------------
@@ -85,10 +114,9 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                 (void)rind->Get(rh.id, nullptr, &meta);
                 if (!opts.Matches(meta)) continue;
             }
-            float score = (metric == MetricType::kL2) ? -rh.distance : rh.distance;
             PickItem pi;
             pi.id = rh.id;
-            pi.score = score;
+            pi.score = rh.distance;
             pi.from_rind = true;
             push_candidate(pi);
         }
@@ -111,11 +139,26 @@ Status PomegranateQuery::Execute(std::span<const float> query,
         }
 
         // ---------------------------------------------------------------------
-        // Stage 3b: Taste Pulp in Arils
+        // Stage 3b: Intra-Locule Search (HNSW Fast-Path + Pulp SQ8 Fallback)
         // ---------------------------------------------------------------------
         for (const auto& cand_loc : candidate_locules) {
             const auto& loc = cand_loc.locule;
             if (!loc) continue;
+
+            // Dynamic Spatial Peel: If pick_heap is full and this locule's lower-bound distance
+            // is strictly worse than the worst score in the heap, prune this and further locules
+            if (pick_heap.size() >= pick_target) {
+                float worst_score = pick_heap.top().score;
+                if (metric == MetricType::kL2) {
+                    if (cand_loc.min_possible_distance > -worst_score) {
+                        break;
+                    }
+                } else {
+                    if (cand_loc.min_possible_distance < worst_score) {
+                        break;
+                    }
+                }
+            }
 
             for (const auto& aril : loc->arils()) {
                 if (!aril || aril->vector_count() == 0) continue;
@@ -123,11 +166,70 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                 const uint32_t count = aril->vector_count();
                 const auto dir = aril->directory();
 
+                if (aril->HasGraph()) {
+                    // Intra-Locule HNSW Graph Search with in-graph filtering
+                    class ArilFilter : public index::IdFilter {
+                    public:
+                        ArilFilter(const storage::ArilReader* a,
+                                   const ingest::RindTombstoneSnapshot& r_snap,
+                                   bool h_filt,
+                                   const SearchOptions& o)
+                            : aril_(a), rind_snap_(r_snap), has_filters_(h_filt), opts_(o) {}
+
+                        bool IsAllowed(VectorId slot_as_id) override {
+                            uint32_t slot = static_cast<uint32_t>(slot_as_id);
+                            if (aril_->scar().IsDeleted(slot)) return false;
+                            const auto d = aril_->directory();
+                            VectorId id = (slot < d.size()) ? d[slot].id : 0;
+                            if (rind_snap_.IsDeleted(id)) return false;
+                            if (has_filters_) {
+                                Metadata meta;
+                                (void)aril_->GetMetadata(slot, &meta);
+                                if (!opts_.Matches(meta)) return false;
+                            }
+                            return true;
+                        }
+                    private:
+                        const storage::ArilReader* aril_;
+                        const ingest::RindTombstoneSnapshot& rind_snap_;
+                        bool has_filters_;
+                        const SearchOptions& opts_;
+                    };
+
+                    ArilFilter filter(aril.get(), rind_tombstone_snap, has_filters, opts);
+                    std::vector<VectorId> graph_slots;
+                    std::vector<float> graph_dists;
+                    uint32_t aril_k = static_cast<uint32_t>(std::min<size_t>(pick_target, topk + 32));
+                    int ef_search = (opts.ef_search > 0) ? static_cast<int>(opts.ef_search) : static_cast<int>(aril_k * 2);
+                    Status st = aril->local_graph()->Search(
+                        query, aril_k, ef_search,
+                        &graph_slots, &graph_dists, &filter);
+
+                    if (st.ok() && !graph_slots.empty()) {
+                        for (size_t i = 0; i < graph_slots.size(); ++i) {
+                            uint32_t slot = static_cast<uint32_t>(graph_slots[i]);
+                            VectorId id = (slot < dir.size()) ? dir[slot].id : 0;
+                            float dist = graph_dists[i];
+                            float approx_score = (metric == MetricType::kL2) ? -dist : (1.0f - dist);
+
+                            PickItem pi;
+                            pi.id = id;
+                            pi.score = approx_score;
+                            pi.aril = aril.get();
+                            pi.slot = slot;
+                            pi.from_rind = false;
+                            push_candidate(pi);
+                        }
+                        continue; // Successfully retrieved candidates via HNSW
+                    }
+                }
+
+                // Fallback path: SIMD Pulp SQ8 flat scan
                 for (uint32_t slot = 0; slot < count; ++slot) {
                     if (aril->scar().IsDeleted(slot)) continue;
 
                     VectorId id = (slot < dir.size()) ? dir[slot].id : 0;
-                    if (rind && rind->IsDeleted(id)) continue;
+                    if (rind_tombstone_snap.IsDeleted(id)) continue;
 
                     if (has_filters) {
                         Metadata meta;
@@ -163,37 +265,26 @@ Status PomegranateQuery::Execute(std::span<const float> query,
     // -------------------------------------------------------------------------
     // Stage 5: Rerank (Exact distance via SeedKernel)
     // -------------------------------------------------------------------------
-    struct ExactHit {
-        VectorId id{0};
-        float score{0.0f};
-    };
-    std::vector<ExactHit> exact_hits;
+    std::vector<core::TopKItem> exact_hits;
     exact_hits.reserve(picked.size());
 
     for (const auto& item : picked) {
         if (item.from_rind) {
-            exact_hits.push_back({item.id, item.score});
+            exact_hits.push_back({item.id, item.score, 0, nullptr});
         } else if (item.aril) {
             auto span = item.aril->GetVectorSpan(item.slot);
             if (!span.empty() && span.size() == query.size()) {
-                float exact_score = 0.0f;
-                if (metric == MetricType::kL2) {
-                    exact_score = -core::L2Sq(query, span);
-                } else {
-                    exact_score = core::Dot(query, span);
-                }
-                exact_hits.push_back({item.id, exact_score});
+                float exact_score = core::ComputeMetricScore(metric, query, span);
+                exact_hits.push_back({item.id, exact_score, 0, nullptr});
             }
         }
     }
 
-    std::sort(exact_hits.begin(), exact_hits.end(), [](const ExactHit& a, const ExactHit& b) {
-        return a.score > b.score; // highest score first
-    });
+    // Optimal deterministic top-k selection
+    core::SelectTopK(exact_hits, topk);
 
-    size_t out_count = std::min<size_t>(topk, exact_hits.size());
-    for (size_t i = 0; i < out_count; ++i) {
-        sink.Push(exact_hits[i].id, exact_hits[i].score);
+    for (const auto& hit : exact_hits) {
+        sink.Push(hit.id, hit.score);
     }
 
     return Status::Ok();

@@ -120,6 +120,7 @@ add_library(pomai STATIC
   src/ivf_coarse.cc
   src/ivf_flat.cc
   src/distance.cc
+  src/reference_distance.cc
 
   src/routing_table.cc
   src/kmeans_lite.cc
@@ -411,6 +412,10 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(kernel_hardening_test)
   pomai_add_labeled_test(kernel_hardening_test "unit")
 
+  add_executable(kernel_differential_test tests/unit/kernel_differential_test.cc)
+  pomai_setup_test(kernel_differential_test)
+  pomai_add_labeled_test(kernel_differential_test "unit")
+
   add_executable(low_ram_limits_test tests/unit/low_ram_limits_test.cc)
   pomai_setup_test(low_ram_limits_test)
   pomai_add_labeled_test(low_ram_limits_test "unit")
@@ -422,6 +427,18 @@ if (POMAI_BUILD_TESTS)
   add_executable(vulkan_memory_bridge_test tests/unit/vulkan_memory_bridge_test.cc)
   pomai_setup_test(vulkan_memory_bridge_test)
   pomai_add_labeled_test(vulkan_memory_bridge_test "unit")
+
+  add_executable(rind_concurrency_test tests/unit/rind_concurrency_test.cc)
+  pomai_setup_test(rind_concurrency_test)
+  pomai_add_labeled_test(rind_concurrency_test "unit")
+
+  add_executable(spatial_press_test tests/unit/spatial_press_test.cc)
+  pomai_setup_test(spatial_press_test)
+  pomai_add_labeled_test(spatial_press_test "unit")
+
+  add_executable(hnsw_upstream_test tests/unit/hnsw_upstream_test.cc)
+  pomai_setup_test(hnsw_upstream_test)
+  pomai_add_labeled_test(hnsw_upstream_test "unit")
 
   add_executable(recall_test tests/recall/recall_test.cc tests/recall/recall_dataset.cc tests/common/bruteforce_oracle.cc)
   pomai_setup_test(recall_test)
@@ -451,6 +468,10 @@ if (POMAI_BUILD_TESTS)
   add_executable(db_consistency_test tests/integ/db_consistency_test.cc)
   pomai_setup_test(db_consistency_test)
   pomai_add_labeled_test(db_consistency_test "integ")
+
+  add_executable(pomegranate_hnsw_e2e_test tests/integ/pomegranate_hnsw_e2e_test.cc)
+  pomai_setup_test(pomegranate_hnsw_e2e_test)
+  pomai_add_labeled_test(pomegranate_hnsw_e2e_test "integ")
 
   add_executable(db_partial_search_test tests/integ/db_partial_search_test.cc)
   pomai_setup_test(db_partial_search_test)
@@ -659,6 +680,52 @@ target_include_directories(vulkan_transfer_bench PRIVATE ${CMAKE_CURRENT_SOURCE_
 add_executable(kernel_dispatch_bench benchmarks/kernel_dispatch_bench.cc)
 target_link_libraries(kernel_dispatch_bench PRIVATE ${POMAI_EXE_DEPS})
 target_include_directories(kernel_dispatch_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
+add_executable(kernel_micro_bench benchmarks/kernel_micro_bench.cc)
+target_link_libraries(kernel_micro_bench PRIVATE ${POMAI_EXE_DEPS})
+target_include_directories(kernel_micro_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
+add_executable(crossover_bench benchmarks/crossover_bench.cc)
+target_link_libraries(crossover_bench PRIVATE ${POMAI_EXE_DEPS})
+target_include_directories(crossover_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
+add_executable(production_hnsw_bench benchmarks/production_hnsw_bench.cc)
+target_link_libraries(production_hnsw_bench PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
+target_include_directories(production_hnsw_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
+# Round 2 Benchmark Targets
+add_executable(round2_cost_model benchmarks/round2_cost_model.cc)
+target_link_libraries(round2_cost_model PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
+target_include_directories(round2_cost_model PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
+add_executable(round2_concurrency benchmarks/round2_concurrency.cc)
+target_link_libraries(round2_concurrency PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
+target_include_directories(round2_concurrency PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
+add_executable(round2_compass_kmeans benchmarks/round2_compass_kmeans.cc)
+target_link_libraries(round2_compass_kmeans PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
+target_include_directories(round2_compass_kmeans PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
+add_executable(round2_hnsw_audit benchmarks/round2_hnsw_audit.cc)
+target_link_libraries(round2_hnsw_audit PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
+target_include_directories(round2_hnsw_audit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
+add_executable(round2_hybrid benchmarks/round2_hybrid.cc)
+target_link_libraries(round2_hybrid PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
+target_include_directories(round2_hybrid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
+# Round 3 Benchmark Targets
+add_executable(round3_hnsw_audit_suite benchmarks/round3_hnsw_audit_suite.cc)
+target_link_libraries(round3_hnsw_audit_suite PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
+target_include_directories(round3_hnsw_audit_suite PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
+add_executable(round3_reproduce_198x benchmarks/round3_reproduce_198x.cc)
+target_link_libraries(round3_reproduce_198x PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
+target_include_directories(round3_reproduce_198x PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
+add_executable(round3_rind_concurrency_fix benchmarks/round3_rind_concurrency_fix.cc)
+target_link_libraries(round3_rind_concurrency_fix PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
+target_include_directories(round3_rind_concurrency_fix PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
 # Bounded benchmark smoke tests (avoid ctest default 1500s timeout on heavy workloads).
 if (POMAI_REGISTER_BENCH_CTEST)
