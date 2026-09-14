@@ -1,4 +1,5 @@
 #include "membrane_manager.h"
+#include "utils/memtable_sizing.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -12,10 +13,12 @@
 #include "pomai.h"
 #include "iterator.h"
 #include "manifest.h"
-#include "logging.h"
+#include "utils/logging.h"
 
 namespace pomai::core
 {
+
+using pomai::utils::CalculateDynamicMemtableThreshold;
     MembraneManager::MembraneManager(pomai::DBOptions base) : base_(std::move(base)) {}
     MembraneManager::~MembraneManager() = default;
 
@@ -111,11 +114,21 @@ namespace pomai::core
 
     Status MembraneManager::FlushAll()
     {
-        std::shared_lock<std::shared_mutex> lock(membranes_mu_);
-        for (auto &kv : membranes_)
+        // CRITICAL FIX: Snapshot membrane pointers under minimal lock, then Flush outside lock
+        std::vector<std::shared_ptr<MembraneState>> membranes_snapshot;
         {
-            if (kv.second && kv.second->vector_engine) {
-                auto st = kv.second->vector_engine->Flush();
+            std::shared_lock<std::shared_mutex> lock(membranes_mu_);
+            membranes_snapshot.reserve(membranes_.size());
+            for (auto &kv : membranes_) {
+                membranes_snapshot.push_back(kv.second);
+            }
+        }
+
+        // Execute Flush() entirely outside membranes_mu_ lock (blocking disk I/O)
+        for (auto &state : membranes_snapshot)
+        {
+            if (state && state->vector_engine) {
+                auto st = state->vector_engine->Flush();
                 if (!st.ok())
                     return st;
             }
@@ -328,6 +341,10 @@ namespace pomai::core
         if (!state) return Status::NotFound("membrane not found");
         if (!state->vector_engine)
             return Status::InvalidArgument("vector_engine not available");
+        
+        // RAII batch guard for thread-safe burst dampening
+        BatchScopeGuard batch_guard(state->active_batch_count);
+        
         auto st = MaybeApplyBackpressure(state);
         if (!st.ok()) return st;
         return state->vector_engine->PutBatch(ids, vectors);
@@ -508,18 +525,36 @@ namespace pomai::core
             return Status::Ok();
         if (!base_.auto_freeze_on_pressure)
             return Status::Ok();
-        if (base_.memtable_flush_threshold_mb == 0)
-            return Status::Ok();
 
         const std::size_t used_bytes = state->vector_engine->MemTableBytesUsed();
-        const std::size_t threshold_bytes =
-            static_cast<std::size_t>(base_.memtable_flush_threshold_mb) * 1024u * 1024u;
-        if (used_bytes < threshold_bytes)
+        
+        // Calculate threshold (either manual override or dynamic)
+        std::size_t threshold_bytes;
+        if (base_.memtable_flush_threshold_mb > 0) {
+            // Manual override mode
+            threshold_bytes = static_cast<std::size_t>(base_.memtable_flush_threshold_mb) * 1024u * 1024u;
+        } else {
+            // Dynamic sizing mode - recalculate based on current options and dimension
+            threshold_bytes = static_cast<std::size_t>(
+                CalculateDynamicMemtableThreshold(base_, state->spec.dim)
+            );
+        }
+
+        // Apply burst dampening if there's an active batch
+        std::size_t effective_threshold = threshold_bytes;
+        if (state->active_batch_count.load(std::memory_order_relaxed) > 0) {
+            effective_threshold = static_cast<std::size_t>(
+                threshold_bytes * (1.0f + base_.memtable_burst_dampening_factor)
+            );
+        }
+
+        if (used_bytes < effective_threshold)
             return Status::Ok();
 
         const unsigned used_mb = static_cast<unsigned>(used_bytes / (1024u * 1024u));
-        POMAI_LOG_WARN("Membrane '{}' memtable pressure ({} MB). Triggering Auto-Freeze.",
-                       state->spec.name, used_mb);
+        const unsigned threshold_mb = static_cast<unsigned>(threshold_bytes / (1024u * 1024u));
+        POMAI_LOG_WARN("Membrane '{}' memtable pressure ({} MB / {} MB threshold). Triggering Auto-Freeze.",
+                       state->spec.name, used_mb, threshold_mb);
         return state->vector_engine->Freeze();
     }
 

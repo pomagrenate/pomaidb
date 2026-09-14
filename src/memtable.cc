@@ -4,12 +4,22 @@
 // FlatHashMemMap (open-addressing, robin-hood, backward-shift deletion).
 // Single-writer (VectorRuntime): no lock needed on write path.
 // Seqlock protects readers.
+//
+// PHASE 2 UPDATE: Removed global operator new/delete override.
+// Using scoped PallocAllocator for internal containers.
+//
+// PHASE 3 UPDATE: Added mutex protection for temporal index to prevent race conditions.
 
 #include "memtable.h"
 #include "palloc_compat.h"
+#include "utils/palloc_allocator.h"
 #include <cstring>
+#include <mutex>
+#include <shared_mutex>
 
 namespace pomai::table {
+
+using alloc::PallocVector;
 
 static std::size_t AlignUp(std::size_t x, std::size_t a) {
     return (x + (a - 1)) & ~(a - 1);
@@ -109,27 +119,31 @@ pomai::Status MemTable::Put(pomai::VectorId id, pomai::VectorView vec,
     map_.Put(id, dst);
 
     // Temporal Index Management
-    auto it_old = metadata_.find(id);
-    if (it_old != metadata_.end()) {
-        uint64_t old_ts = it_old->second.timestamp;
-        if (old_ts > 0) {
-            auto range = temporal_index_.equal_range(old_ts);
-            for (auto it = range.first; it != range.second; ++it) {
-                if (it->second == id) {
-                    temporal_index_.erase(it);
-                    break;
+    // CRITICAL FIX: Use unique_lock for write operations on temporal index
+    {
+        std::unique_lock<std::shared_mutex> lock(temporal_mutex_);
+        auto it_old = metadata_.find(id);
+        if (it_old != metadata_.end()) {
+            uint64_t old_ts = it_old->second.timestamp;
+            if (old_ts > 0) {
+                auto range = temporal_index_.equal_range(old_ts);
+                for (auto it = range.first; it != range.second; ++it) {
+                    if (it->second == id) {
+                        temporal_index_.erase(it);
+                        break;
+                    }
                 }
             }
         }
-    }
 
-    if (!meta.tenant.empty() || meta.timestamp != 0 || meta.lsn != 0 || !meta.device_id.empty() || !meta.location_id.empty() || !meta.payload.empty()) {
-        metadata_[id] = meta;
-        if (meta.timestamp > 0) {
-            temporal_index_.insert({meta.timestamp, id});
+        if (!meta.tenant.empty() || meta.timestamp != 0 || meta.lsn != 0 || !meta.device_id.empty() || !meta.location_id.empty() || !meta.payload.empty()) {
+            metadata_[id] = meta;
+            if (meta.timestamp > 0) {
+                temporal_index_.insert({meta.timestamp, id});
+            }
+        } else {
+            metadata_.erase(id);
         }
-    } else {
-        metadata_.erase(id);
     }
     return pomai::Status::Ok();
 }
@@ -149,7 +163,8 @@ pomai::Status MemTable::PutBatch(const std::vector<pomai::VectorId>& ids,
             return pomai::Status::InvalidArgument("dim mismatch");
 
     // Allocate all memory first (arena is not thread-safe, writer-only).
-    std::vector<float*> ptrs;
+    // Use scoped allocator for temporary pointer storage
+    alloc::PallocVector<float*> ptrs;
     ptrs.reserve(ids.size());
     for (const auto& vec : vectors) {
         float* dst = static_cast<float*>(arena_.Allocate(vec.size_bytes(), alignof(float)));
@@ -169,21 +184,25 @@ pomai::Status MemTable::PutBatch(const std::vector<pomai::VectorId>& ids,
 pomai::Status MemTable::Delete(pomai::VectorId id) {
     map_.Put(id, nullptr); // nullptr = tombstone
 
-    auto it = metadata_.find(id);
-    if (it != metadata_.end()) {
-        uint64_t ts = it->second.timestamp;
-        if (ts > 0) {
-            auto range = temporal_index_.equal_range(ts);
-            for (auto search_it = range.first; search_it != range.second; ++search_it) {
-                if (search_it->second == id) {
-                    temporal_index_.erase(search_it);
-                    break;
+    // CRITICAL FIX: Use unique_lock for write operations on temporal index
+    {
+        std::unique_lock<std::shared_mutex> lock(temporal_mutex_);
+        auto it = metadata_.find(id);
+        if (it != metadata_.end()) {
+            uint64_t ts = it->second.timestamp;
+            if (ts > 0) {
+                auto range = temporal_index_.equal_range(ts);
+                for (auto search_it = range.first; search_it != range.second; ++search_it) {
+                    if (search_it->second == id) {
+                        temporal_index_.erase(search_it);
+                        break;
+                    }
                 }
             }
         }
-    }
 
-    metadata_.erase(id);
+        metadata_.erase(id);
+    }
     return pomai::Status::Ok();
 }
 
@@ -211,6 +230,8 @@ pomai::Status MemTable::Get(pomai::VectorId id, const float** out_vec,
     *out_vec = ptr;
 
     if (out_meta) {
+        // CRITICAL FIX: Protect metadata read with shared_lock
+        std::shared_lock<std::shared_mutex> lock(temporal_mutex_);
         auto it = metadata_.find(id);
         *out_meta = (it != metadata_.end()) ? it->second : pomai::Metadata{};
     }
@@ -223,8 +244,12 @@ pomai::Status MemTable::Get(pomai::VectorId id, const float** out_vec,
 void MemTable::Clear() {
     map_.Clear();
 
-    metadata_.clear();
-    temporal_index_.clear();
+    // CRITICAL FIX: Use unique_lock for write operations on temporal index
+    {
+        std::unique_lock<std::shared_mutex> lock(temporal_mutex_);
+        metadata_.clear();
+        temporal_index_.clear();
+    }
     arena_.Clear();
 }
 
@@ -232,7 +257,7 @@ void MemTable::Clear() {
 // Cursor — snapshot of all slots at creation time
 // ------------------------------------------------
 MemTable::Cursor MemTable::CreateCursor() const {
-    std::vector<Cursor::Entry> snap;
+    alloc::PallocVector<Cursor::Entry> snap;
     // Snapshot the table under a seqlock read.
     map_.ForEach([&](const pomai::VectorId& id, float* const& ptr) {
         snap.push_back({id, ptr});
@@ -266,6 +291,8 @@ bool MemTable::Cursor::Next(CursorEntry* out) {
 
     const pomai::Metadata* meta_ptr = nullptr;
     if (!is_deleted) {
+        // CRITICAL FIX: Protect metadata read with shared_lock
+        std::shared_lock<std::shared_mutex> lock(mem_->temporal_mutex_);
         auto it = mem_->metadata_.find(e.id);
         if (it != mem_->metadata_.end()) meta_ptr = &it->second;
     }

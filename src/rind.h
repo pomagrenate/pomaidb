@@ -12,7 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <mutex>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -115,7 +115,7 @@ private:
     FsyncPolicy fsync_;
     size_t memtable_size_bytes_;
 
-    mutable std::mutex mu_;
+    mutable std::shared_mutex mu_;  // CRITICAL FIX: Convert to reader-writer lock for read scalability
     std::shared_ptr<table::MemTable> active_memtable_;
     std::vector<std::shared_ptr<table::MemTable>> frozen_memtables_;
     std::unique_ptr<storage::Wal> wal_;

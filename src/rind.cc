@@ -5,6 +5,7 @@
 #include "rind.h"
 
 #include <algorithm>
+#include <mutex>
 
 #include "distance.h"
 
@@ -28,7 +29,7 @@ Rind::~Rind() {
 }
 
 Status Rind::Open() {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::shared_mutex> lock(mu_);
     if (opened_) return Status::Ok();
 
     Status s = env_->CreateDirIfMissing(db_dir_);
@@ -59,7 +60,7 @@ Status Rind::Open() {
 }
 
 Status Rind::Close() {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return Status::Ok();
 
     if (wal_) {
@@ -79,7 +80,7 @@ Status Rind::Put(VectorId id, std::span<const float> vec, const Metadata* meta) 
         }
     }
 
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
 
     Status s;
@@ -122,7 +123,7 @@ Status Rind::PutBatch(std::span<const VectorId> ids, std::span<const float> vecs
         }
     }
 
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
 
     std::vector<VectorId> ids_vec(ids.begin(), ids.end());
@@ -156,7 +157,7 @@ Status Rind::PutBatch(std::span<const VectorId> ids, std::span<const float> vecs
 }
 
 Status Rind::Delete(VectorId id) {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
 
     if (wal_) {
@@ -173,7 +174,7 @@ Status Rind::Delete(VectorId id) {
 }
 
 Status Rind::Get(VectorId id, std::vector<float>* out, Metadata* meta) const {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::shared_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
 
     // Check active memtable
@@ -217,7 +218,7 @@ Status Rind::Get(VectorId id, std::vector<float>* out, Metadata* meta) const {
 }
 
 bool Rind::Contains(VectorId id) const {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::shared_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return false;
 
     if (active_memtable_->IsTombstone(id)) return false;
@@ -233,13 +234,13 @@ bool Rind::Contains(VectorId id) const {
 }
 
 bool Rind::IsDeleted(VectorId id) const {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::shared_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return false;
     return tombstones_.find(id) != tombstones_.end();
 }
 
 RindTombstoneSnapshot Rind::CaptureTombstoneSnapshot() const {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::shared_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return RindTombstoneSnapshot{};
 
     if (tombstones_dirty_ || !cached_tombstones_) {
@@ -250,14 +251,14 @@ RindTombstoneSnapshot Rind::CaptureTombstoneSnapshot() const {
 }
 
 Status Rind::Flush() {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
     if (wal_) return wal_->Flush();
     return Status::Ok();
 }
 
 Status Rind::Freeze() {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
     if (active_memtable_->GetCount() == 0) return Status::Ok();
 
@@ -272,7 +273,7 @@ Status Rind::Freeze() {
 }
 
 std::vector<std::shared_ptr<table::MemTable>> Rind::TakeFrozenMemtables() {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::shared_mutex> lock(mu_);
     auto res = std::move(frozen_memtables_);
     frozen_memtables_.clear();
 
@@ -294,32 +295,47 @@ std::vector<std::shared_ptr<table::MemTable>> Rind::TakeFrozenMemtables() {
 void Rind::Taste(std::span<const float> query, uint32_t topk, MetricType metric,
                  std::vector<RindHit>* out_hits) const {
     (void)topk;
-    std::lock_guard<std::mutex> lock(mu_);
-    if (!opened_ || !out_hits) return;
+    if (!out_hits) return;
 
-    // Helper lambda to scan a memtable
+    // CRITICAL FIX: Snapshot memtable pointers under minimal lock, then compute SIMD distances outside lock
+    std::shared_ptr<table::MemTable> active;
+    std::vector<std::shared_ptr<table::MemTable>> frozen;
+    uint32_t dim_snapshot;
+    bool opened_snapshot;
+    {
+        std::shared_lock<std::shared_mutex> lock(mu_);
+        if (!opened_) return;
+        active = active_memtable_;
+        frozen = frozen_memtables_;
+        dim_snapshot = dim_;
+        opened_snapshot = opened_;
+    }
+
+    if (!opened_snapshot) return;
+
+    // Helper lambda to scan a memtable (executed entirely outside lock)
     auto scan_table = [&](const table::MemTable& table) {
         auto cursor = table.CreateCursor();
         table::MemTable::CursorEntry entry;
         while (cursor.Next(&entry)) {
-            if (entry.is_deleted || entry.vec.size() != dim_) continue;
+            if (entry.is_deleted || entry.vec.size() != dim_snapshot) continue;
 
             float score = core::ComputeMetricScore(metric, query, entry.vec);
             out_hits->push_back({entry.id, score});
         }
     };
 
-    // Scan frozen memtables first, then active
-    for (const auto& table : frozen_memtables_) {
+    // Scan frozen memtables first, then active (all outside lock)
+    for (const auto& table : frozen) {
         if (table) scan_table(*table);
     }
-    if (active_memtable_) {
-        scan_table(*active_memtable_);
+    if (active) {
+        scan_table(*active);
     }
 }
 
 size_t Rind::BytesUsed() const noexcept {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::shared_lock<std::shared_mutex> lock(mu_);
     size_t total = active_memtable_ ? active_memtable_->BytesUsed() : 0;
     for (const auto& t : frozen_memtables_) {
         if (t) total += t->BytesUsed();
@@ -328,17 +344,17 @@ size_t Rind::BytesUsed() const noexcept {
 }
 
 size_t Rind::ActiveCount() const noexcept {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::shared_lock<std::shared_mutex> lock(mu_);
     return active_memtable_ ? active_memtable_->GetCount() : 0;
 }
 
 bool Rind::HasFrozen() const noexcept {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::shared_lock<std::shared_mutex> lock(mu_);
     return !frozen_memtables_.empty();
 }
 
 void Rind::ForEachEntry(const std::function<void(VectorId, std::span<const float>, bool is_deleted, const Metadata*)>& fn) const {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::shared_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return;
 
     for (const auto& table : frozen_memtables_) {

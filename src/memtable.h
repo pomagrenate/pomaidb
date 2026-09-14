@@ -15,6 +15,7 @@
 #include <span>
 #include <map>
 #include <unordered_map>
+#include <shared_mutex>
 #include "metadata.h"
 #include "status.h"
 #include "types.h"
@@ -22,6 +23,7 @@
 #include "arena.h"
 #include "flat_hash_memmap.h"
 #include "third_party/hash/xxhash64.h"
+#include "utils/palloc_allocator.h"
 
 namespace pomai::table {
 
@@ -79,13 +81,13 @@ public:
             pomai::VectorId id;
             float*          ptr;   // nullptr = tombstone
         };
-        Cursor(const MemTable* mem, std::vector<Entry> snapshot, bool quantized)
+        Cursor(const MemTable* mem, alloc::PallocVector<Entry> snapshot, bool quantized)
             : mem_(mem), snap_(std::move(snapshot)), idx_(0), quantized_(quantized) {}
-        const MemTable*    mem_;
-        std::vector<Entry> snap_;
-        size_t             idx_;
-        bool               quantized_{false};
-        std::vector<float> decode_buf_; // reused across Next() calls for quantized decode
+        const MemTable*                 mem_;
+        alloc::PallocVector<Entry>      snap_;
+        size_t                          idx_;
+        bool                            quantized_{false};
+        alloc::PallocVector<float>      decode_buf_; // reused across Next() calls for quantized decode
     };
 
     Cursor CreateCursor() const;
@@ -130,6 +132,8 @@ public:
                     for (uint32_t i = 0; i < dim_; ++i)
                         decode_buf[i] = vmin + codes[i] * scale;
                     vec = {decode_buf.data(), dim_};
+                    // CRITICAL FIX: Protect metadata read with shared_lock
+                    std::shared_lock<std::shared_mutex> lock(temporal_mutex_);
                     auto it = metadata_.find(id);
                     if (it != metadata_.end()) meta_ptr = &it->second;
                 }
@@ -142,6 +146,8 @@ public:
                 if (!is_deleted) vec = {ptr, dim_};
                 const pomai::Metadata* meta_ptr = nullptr;
                 if (!is_deleted) {
+                    // CRITICAL FIX: Protect metadata read with shared_lock
+                    std::shared_lock<std::shared_mutex> lock(temporal_mutex_);
                     auto it = metadata_.find(id);
                     if (it != metadata_.end()) meta_ptr = &it->second;
                 }
@@ -161,6 +167,8 @@ public:
                 return;
             }
             const pomai::Metadata* meta_ptr = nullptr;
+            // CRITICAL FIX: Protect metadata read with shared_lock
+            std::shared_lock<std::shared_mutex> lock(temporal_mutex_);
             auto it = metadata_.find(id);
             if (it != metadata_.end()) meta_ptr = &it->second;
             if (quantize_inmem_) {
@@ -187,6 +195,9 @@ public:
      */
     void GetByTimeRange(uint64_t start, uint64_t end, std::vector<pomai::VectorId>* out) const {
         if (!out) return;
+
+        // CRITICAL FIX: Use shared_lock for temporal index reads
+        std::shared_lock<std::shared_mutex> lock(temporal_mutex_);
         auto it_start = temporal_index_.lower_bound(start);
         auto it_end = temporal_index_.upper_bound(end);
         for (auto it = it_start; it != it_end; ++it) {
@@ -215,8 +226,12 @@ private:
     // XxHash64 gives better distribution than std::hash for sequential VectorIds (fewer collisions).
     mutable FlatHashMemMap<pomai::VectorId, float*, XxHash64ForVectorId> map_;
 
-    mutable std::unordered_map<pomai::VectorId, pomai::Metadata> metadata_;
-    mutable std::multimap<uint64_t, pomai::VectorId> temporal_index_;
+    // Use scoped allocator for metadata and temporal index to benefit from palloc
+    // CRITICAL FIX: Use shared_mutex for temporal index to allow concurrent reads
+    mutable alloc::PallocUnorderedMap<pomai::VectorId, pomai::Metadata> metadata_;
+    mutable std::multimap<uint64_t, pomai::VectorId, std::less<uint64_t>,
+                         alloc::PallocAllocator<std::pair<const uint64_t, pomai::VectorId>>> temporal_index_;
+    mutable std::shared_mutex temporal_mutex_;  // Protect temporal index mutations (reader-writer lock)
 };
 
 } // namespace pomai::table
