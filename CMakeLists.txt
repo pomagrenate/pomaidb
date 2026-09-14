@@ -523,6 +523,64 @@ if (POMAI_BUILD_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
   )
 
+  # Palloc Extinction Campaign Targets
+  add_executable(palloc_boundary_test tests/palloc/palloc_boundary_test.cc)
+  pomai_setup_test(palloc_boundary_test)
+  pomai_add_labeled_test(palloc_boundary_test "palloc")
+
+  add_executable(palloc_vector_module_torture_test tests/palloc/palloc_vector_module_torture_test.cc)
+  pomai_setup_test(palloc_vector_module_torture_test)
+  pomai_add_labeled_test(palloc_vector_module_torture_test "palloc")
+
+  add_executable(palloc_concurrency_extinction tests/palloc/palloc_concurrency_extinction.cc)
+  pomai_setup_test(palloc_concurrency_extinction)
+  pomai_add_labeled_test(palloc_concurrency_extinction "palloc")
+
+  add_executable(palloc_stateful_fuzzer tests/palloc/palloc_stateful_fuzzer.cc)
+  pomai_setup_test(palloc_stateful_fuzzer)
+  pomai_add_labeled_test(palloc_stateful_fuzzer "palloc")
+
+  add_executable(palloc_fragmentation_bench tests/palloc/palloc_fragmentation_bench.cc)
+  pomai_setup_test(palloc_fragmentation_bench)
+  pomai_add_labeled_test(palloc_fragmentation_bench "palloc")
+
+  add_executable(palloc_benchmark tests/palloc/palloc_benchmark.cc)
+  pomai_setup_test(palloc_benchmark)
+  pomai_add_labeled_test(palloc_benchmark "palloc")
+
+  add_executable(palloc_pomai_integration_test tests/palloc/palloc_pomai_integration_test.cc)
+  pomai_setup_test(palloc_pomai_integration_test)
+  pomai_add_labeled_test(palloc_pomai_integration_test "palloc")
+
+  add_executable(palloc_replay tests/palloc/palloc_replay.cc)
+  target_link_libraries(palloc_replay PRIVATE pomai palloc-static)
+  target_include_directories(palloc_replay PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
+  )
+
+  # ---- Hostile Forensic Verification Targets (Independent Oracle) ----
+  add_executable(palloc_forensic_bug_regression
+    tests/palloc/palloc_forensic_bug_regression.cc)
+  pomai_setup_test(palloc_forensic_bug_regression)
+  pomai_add_labeled_test(palloc_forensic_bug_regression "palloc_forensic")
+  target_link_libraries(palloc_forensic_bug_regression PRIVATE psapi)
+
+  add_executable(palloc_forensic_fuzzer
+    tests/palloc/palloc_forensic_fuzzer.cc)
+  pomai_setup_test(palloc_forensic_fuzzer)
+  pomai_add_labeled_test(palloc_forensic_fuzzer "palloc_forensic")
+  set_tests_properties(palloc_forensic_fuzzer PROPERTIES TIMEOUT 600)
+  target_link_libraries(palloc_forensic_fuzzer PRIVATE psapi)
+
+  add_executable(palloc_forensic_concurrency
+    tests/palloc/palloc_forensic_concurrency.cc)
+  pomai_setup_test(palloc_forensic_concurrency)
+  pomai_add_labeled_test(palloc_forensic_concurrency "palloc_forensic")
+  target_link_libraries(palloc_forensic_concurrency PRIVATE psapi)
+
   add_executable(db_partial_search_test tests/integ/db_partial_search_test.cc)
   pomai_setup_test(db_partial_search_test)
   pomai_add_labeled_test(db_partial_search_test "integ")

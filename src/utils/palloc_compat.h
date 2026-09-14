@@ -22,7 +22,7 @@ bool EnsurePallocInitialized();
 
 inline bool palloc_is_owned(const void* p) {
   if (!p) return false;
-  return pa_is_in_heap_region(p) || pa_usable_size(p) > 0;
+  return pa_is_in_heap_region(p);
 }
 
 namespace pomai {
