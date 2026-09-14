@@ -157,6 +157,7 @@ add_library(pomai STATIC
 
 target_include_directories(pomai
   PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
     ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
@@ -232,6 +233,11 @@ set(POMAI_C_API_SOURCES
   src/capi/capi_status.cc
   src/capi/capi_db.cc
   src/capi/capi_scan.cc
+  src/embedded_vec.c
+  src/pomaidb_wal.c
+  src/pomaidb_segment.c
+  src/pomaidb_engine.c
+  src/pomaidb_hnsw_mmap.c
 )
 
 add_library(pomai_c SHARED ${POMAI_C_API_SOURCES})
@@ -245,10 +251,11 @@ target_link_libraries(pomai_c PRIVATE pomai)
 target_link_libraries(pomai_c_static PUBLIC pomai)
 
 # Export C API symbols when building shared library on Windows.
-target_compile_definitions(pomai_c PRIVATE POMAI_C_BUILD_DLL)
+target_compile_definitions(pomai_c PRIVATE POMAI_C_BUILD_DLL EMBEDDED_VEC_BUILD_DLL POMAIDB_BUILD_DLL)
 
 target_include_directories(pomai_c
   PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
@@ -257,6 +264,7 @@ target_include_directories(pomai_c
 )
 target_include_directories(pomai_c_static
   PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
@@ -340,6 +348,18 @@ if (POMAI_BUILD_TESTS)
   endfunction()
 
   # ---- Unit ----
+  add_executable(pomaidb_hnsw_mmap_test tests/unit/pomaidb_hnsw_mmap_test.cc)
+  pomai_setup_test(pomaidb_hnsw_mmap_test)
+  pomai_add_labeled_test(pomaidb_hnsw_mmap_test "unit")
+
+  add_executable(pomaidb_test tests/unit/pomaidb_test.cc)
+  pomai_setup_test(pomaidb_test)
+  pomai_add_labeled_test(pomaidb_test "unit")
+
+  add_executable(embedded_vec_test tests/unit/embedded_vec_test.cc)
+  pomai_setup_test(embedded_vec_test)
+  pomai_add_labeled_test(embedded_vec_test "unit")
+
   add_executable(crc32c_test tests/unit/crc32c_test.cc)
   pomai_setup_test(crc32c_test)
   pomai_add_labeled_test(crc32c_test "unit")
