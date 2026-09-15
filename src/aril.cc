@@ -10,6 +10,7 @@
 #include "crc32c.h"
 #include "hnsw_index.h"
 #include "palloc_compat.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::storage {
 
@@ -17,7 +18,7 @@ ArilReader::~ArilReader() = default;
 
 pomai::Status ArilReader::OpenFromMemory(const uint8_t* base_addr, size_t max_size,
                                         uint32_t aril_id,
-                                        std::shared_ptr<ArilReader>* out) {
+                                        alloc::SharedPtr<ArilReader>* out) {
     if (!base_addr || max_size < sizeof(format::ArilHeader)) {
         return pomai::Status::Corruption("aril data too small for header");
     }
@@ -90,7 +91,10 @@ pomai::Status ArilReader::OpenFromMemory(const uint8_t* base_addr, size_t max_si
         }
     }
 
-    auto reader = std::shared_ptr<ArilReader>(new ArilReader());
+    // Allocate ArilReader with palloc with 64-byte alignment for SIMD
+    void* raw = palloc_malloc_aligned(sizeof(ArilReader), 64);
+    if (!raw) return pomai::Status::IOError("ArilReader allocation failed");
+    auto reader = alloc::SharedPtr<ArilReader>::AdoptPalloc(new (raw) ArilReader());
     reader->aril_id_ = aril_id;
     reader->header_ = hdr;
     reader->aril_base_ = base_addr;
@@ -127,17 +131,19 @@ pomai::Status ArilReader::OpenFromMemory(const uint8_t* base_addr, size_t max_si
     }
 
     // Resolve Graph (with graceful fallback on corruption)
+    // HNSW library allocates with new during LoadFromBuffer; use Adopt() to wrap
     if (hdr.graph_size > 0) {
-        auto graph_idx = std::make_unique<index::HnswIndex>(hdr.dimension);
+        auto* graph_idx = new index::HnswIndex(hdr.dimension);
         auto load_st = graph_idx->LoadFromBuffer(base_addr + hdr.graph_offset, hdr.graph_size);
         if (load_st.ok()) {
-            reader->graph_ = std::move(graph_idx);
+            reader->graph_ = alloc::UniquePtr<index::HnswIndex>::Adopt(graph_idx);
         } else {
+            delete graph_idx;
             reader->graph_ = nullptr; // Fallback to Pulp SQ8 flat scan
         }
     }
 
-    *out = std::move(reader);
+    *out = reader;
     return pomai::Status::Ok();
 }
 

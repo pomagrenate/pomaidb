@@ -1,3 +1,6 @@
 [submodule "third_party/palloc"]
 	path = third_party/palloc
 	url = https://github.com/AutoCookies/palloc.git
+[submodule "third_party/psync"]
+	path = third_party/psync
+	url = https://github.com/pomagrenate/psync.git

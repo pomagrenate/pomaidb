@@ -10,6 +10,7 @@
 #include "aes_gcm.h"
 #include "memtable.h"
 #include "crc32c.h"
+#include "storage/palloc_io.h"
 
 namespace pomai::storage {
 
@@ -50,7 +51,7 @@ namespace pomai::storage {
     class Wal::Impl
     {
     public:
-        std::unique_ptr<pomai::WritableFile> file;
+        alloc::UniquePtr<storage::PallocWritableFile> file;
         std::string path;
     };
 
@@ -95,15 +96,16 @@ namespace pomai::storage {
 
     pomai::Status Wal::Open()
     {
-        pomai::Status st = env_->CreateDirIfMissing(db_path_);
+        // Create directory using palloc filesystem
+        pomai::Status st = storage::PallocFilesystem::CreateDir(db_path_.c_str());
         if (!st.ok()) return st;
 
         gen_ = 0;
-        while (env_->FileExists(SegmentPath(gen_)).ok())
+        while (storage::PallocFilesystem::FileExists(SegmentPath(gen_).c_str()).ok())
             ++gen_;
         for (std::uint64_t g = 0; g < gen_; ++g) {
-            std::unique_ptr<pomai::RandomAccessFile> raf;
-            st = env_->NewRandomAccessFile(SegmentPath(g), &raf);
+            alloc::UniquePtr<storage::PallocRandomAccessFile> raf;
+            st = storage::PallocRandomAccessFile::Open(SegmentPath(g).c_str(), &raf);
             if (!st.ok() || !raf) return st.ok() ? pomai::Status::IOError("wal header open failed") : st;
             pomai::Slice hs;
             WalFileHeader hdr{};
@@ -123,7 +125,7 @@ namespace pomai::storage {
         impl_ = new (raw) Impl();
         impl_->path = SegmentPath(gen_);
 
-        st = env_->NewAppendableFile(impl_->path, &impl_->file);
+        st = storage::PallocWritableFile::OpenAppend(impl_->path.c_str(), &impl_->file);
         if (!st.ok() || !impl_->file)
         {
             impl_->~Impl();
@@ -132,8 +134,9 @@ namespace pomai::storage {
             return st.ok() ? pomai::Status::IOError("NewAppendableFile returned null") : st;
         }
 
+        // Get file size using palloc filesystem
         std::uint64_t sz = 0;
-        st = env_->GetFileSize(impl_->path, &sz);
+        st = storage::PallocFilesystem::GetFileSize(impl_->path.c_str(), &sz);
         if (!st.ok()) sz = 0;
 
         if (sz == 0)
@@ -197,7 +200,7 @@ namespace pomai::storage {
         if (!raw) return pomai::Status::IOError("WAL Impl allocation failed");
         impl_ = new (raw) Impl();
         impl_->path = SegmentPath(gen_);
-        pomai::Status st = env_->NewAppendableFile(impl_->path, &impl_->file);
+        pomai::Status st = storage::PallocWritableFile::OpenAppend(impl_->path.c_str(), &impl_->file);
         if (!st.ok() || !impl_->file)
         {
             impl_->~Impl();
@@ -249,7 +252,7 @@ namespace pomai::storage {
         return nonce;
     }
 
-    static pomai::Status AppendIovecs(pomai::WritableFile* file, std::span<const Iov> iovecs)
+    static pomai::Status AppendIovecs(storage::PallocWritableFile* file, std::span<const Iov> iovecs)
     {
         for (const auto& iov : iovecs)
         {
@@ -472,15 +475,15 @@ namespace pomai::storage {
     // Replay stops cleanly if it cannot read a full frame header or full body.
     pomai::Status Wal::ReplayInto(pomai::table::MemTable &mem)
     {
-        for (std::uint64_t g = 0; env_->FileExists(SegmentPath(g)).ok(); ++g)
+        for (std::uint64_t g = 0; storage::PallocFilesystem::FileExists(SegmentPath(g).c_str()).ok(); ++g)
         {
-            std::unique_ptr<pomai::RandomAccessFile> raf;
-            pomai::Status st = env_->NewRandomAccessFile(SegmentPath(g), &raf);
+            alloc::UniquePtr<storage::PallocRandomAccessFile> raf;
+            pomai::Status st = storage::PallocRandomAccessFile::Open(SegmentPath(g).c_str(), &raf);
             if (!st.ok() || !raf)
                 return st.ok() ? pomai::Status::IOError("NewRandomAccessFile returned null") : st;
 
             std::uint64_t file_size = 0;
-            st = env_->GetFileSize(SegmentPath(g), &file_size);
+            st = storage::PallocFilesystem::GetFileSize(SegmentPath(g).c_str(), &file_size);
             if (!st.ok())
                 return pomai::Status::IoError("wal GetFileSize failed");
 

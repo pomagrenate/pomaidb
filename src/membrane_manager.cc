@@ -13,7 +13,10 @@
 #include "pomai.h"
 #include "iterator.h"
 #include "manifest.h"
+#include "env.h"
 #include "utils/logging.h"
+#include "storage/palloc_io.h"
+#include "utils/palloc_compat.h"
 
 namespace pomai::core
 {
@@ -24,11 +27,28 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
 
     Status MembraneManager::Open()
     {
+        if (opened_) return Status::Ok();
+        
+        POMAI_LOG_INFO("MembraneManager::Open: path={}", base_.path);
+        
+        // Create base directory using palloc filesystem
+        std::string base_path = base_.path;
+        auto st = storage::PallocFilesystem::CreateDir(base_path.c_str());
+        if (!st.ok()) {
+            POMAI_LOG_ERROR("Failed to create base directory '{}': {} (code={})", base_path, st.message(), static_cast<int>(st.code()));
+            return st;
+        }
+
+        POMAI_LOG_INFO("Base directory created/verified: {}", base_path);
+
         auto compat = storage::Manifest::CheckCompatibility(base_.path);
         if (!compat.ok() && compat.code() != pomai::ErrorCode::kIO) {
+            POMAI_LOG_ERROR("Manifest compatibility check failed: {}", compat.message());
             return compat;
         }
         opened_ = true;
+
+        POMAI_LOG_INFO("Manifest compatibility check passed");
 
         // Ensure default membrane exists and is opened.
         pomai::MembraneSpec spec;
@@ -38,7 +58,21 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
         spec.index_params = base_.index_params;
         spec.metric = base_.metric;
 
-        auto st = CreateMembrane(spec);
+        // Create membranes directory using palloc filesystem
+        std::string membranes_dir = base_.path + "/membranes";
+        st = storage::PallocFilesystem::CreateDir(membranes_dir.c_str());
+        if (!st.ok()) {
+            POMAI_LOG_ERROR("Failed to create membranes directory '{}': {} (code={})", membranes_dir, st.message(), static_cast<int>(st.code()));
+            return st;
+        }
+
+        POMAI_LOG_INFO("Membranes directory created/verified: {}", membranes_dir);
+
+        st = CreateMembrane(spec);
+        if (!st.ok()) {
+            POMAI_LOG_ERROR("Failed to create membrane: {} (code={})", st.message(), static_cast<int>(st.code()));
+            return st;
+        }
         if (st.code() == pomai::ErrorCode::kAlreadyExists)
         {
             pomai::MembraneSpec loaded_spec;
@@ -51,13 +85,22 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
             opt.index_params = loaded_spec.index_params;
             opt.path = base_.path + "/membranes/" + spec.name;
 
-            auto state = std::make_shared<MembraneState>();
+            // Allocate MembraneState with palloc
+            void* raw = palloc_malloc_aligned(sizeof(MembraneState), alignof(MembraneState));
+            if (!raw) return Status::IOError("MembraneState allocation failed");
+            auto state = alloc::SharedPtr<MembraneState>::AdoptPalloc(new (raw) MembraneState());
+            
             state->spec = loaded_spec;
-            state->vector_engine = std::make_unique<VectorEngine>(opt, loaded_spec.kind, loaded_spec.metric, loaded_spec.ttl_sec,
+            
+            // Allocate VectorEngine with palloc (64-byte aligned for SIMD)
+            void* ve_raw = palloc_malloc_aligned(sizeof(VectorEngine), 64);
+            if (!ve_raw) return Status::IOError("VectorEngine allocation failed");
+            state->vector_engine = alloc::UniquePtr<VectorEngine>::AdoptPalloc(new (ve_raw) VectorEngine(opt, loaded_spec.kind, loaded_spec.metric, loaded_spec.ttl_sec,
                                                                  loaded_spec.retention_max_count, loaded_spec.retention_max_bytes,
-                                                                 loaded_spec.sync_lsn);
+                                                                 loaded_spec.sync_lsn));
+            
             state->lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
-            membranes_.emplace(spec.name, std::move(state));
+            membranes_.emplace(spec.name, state);
             st = Status::Ok();
         }
         else if (!st.ok())
@@ -91,13 +134,22 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
                 opt.index_params = mspec.index_params;
                 opt.path = base_.path + "/membranes/" + name;
 
-                auto state = std::make_shared<MembraneState>();
+                // Allocate MembraneState with palloc
+                void* raw = palloc_malloc_aligned(sizeof(MembraneState), alignof(MembraneState));
+                if (!raw) return Status::IOError("MembraneState allocation failed");
+                auto state = alloc::SharedPtr<MembraneState>::AdoptPalloc(new (raw) MembraneState());
+                
                 state->spec = mspec;
-                state->vector_engine = std::make_unique<VectorEngine>(opt, mspec.kind, mspec.metric, mspec.ttl_sec,
+                
+                // Allocate VectorEngine with palloc (64-byte aligned for SIMD)
+                void* ve_raw = palloc_malloc_aligned(sizeof(VectorEngine), 64);
+                if (!ve_raw) return Status::IOError("VectorEngine allocation failed");
+                state->vector_engine = alloc::UniquePtr<VectorEngine>::AdoptPalloc(new (ve_raw) VectorEngine(opt, mspec.kind, mspec.metric, mspec.ttl_sec,
                                                                      mspec.retention_max_count, mspec.retention_max_bytes,
-                                                                     mspec.sync_lsn);
+                                                                     mspec.sync_lsn));
+                
                 state->lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
-                membranes_.emplace(name, std::move(state));
+                membranes_.emplace(name, state);
             }
 
             st = OpenMembrane(name);
@@ -115,7 +167,7 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
     Status MembraneManager::FlushAll()
     {
         // CRITICAL FIX: Snapshot membrane pointers under minimal lock, then Flush outside lock
-        std::vector<std::shared_ptr<MembraneState>> membranes_snapshot;
+        std::vector<alloc::SharedPtr<MembraneState>> membranes_snapshot;
         {
             std::shared_lock<std::shared_mutex> lock(membranes_mu_);
             membranes_snapshot.reserve(membranes_.size());
@@ -149,7 +201,7 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
         return Status::Ok();
     }
 
-    std::shared_ptr<MembraneManager::MembraneState> MembraneManager::GetMembrane(std::string_view name) const
+    alloc::SharedPtr<MembraneManager::MembraneState> MembraneManager::GetMembrane(std::string_view name) const
     {
         std::shared_lock<std::shared_mutex> lock(membranes_mu_);
         auto it = membranes_.find(std::string(name));
@@ -178,6 +230,8 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
 
     Status MembraneManager::CreateMembrane(const pomai::MembraneSpec &spec)
     {
+        POMAI_LOG_INFO("MembraneManager::CreateMembrane: name={}", spec.name);
+        
         if (spec.name.empty())
             return Status::InvalidArgument("membrane name empty");
         if (spec.dim == 0)
@@ -199,18 +253,27 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
         opt.index_params = spec.index_params;
         opt.path = base_.path + "/membranes/" + spec.name;
 
-        auto state = std::make_shared<MembraneState>();
+        // Allocate MembraneState with palloc
+        void* raw = palloc_malloc_aligned(sizeof(MembraneState), alignof(MembraneState));
+        if (!raw) return Status::IOError("MembraneState allocation failed");
+        auto state = alloc::SharedPtr<MembraneState>::AdoptPalloc(new (raw) MembraneState());
+        
         state->spec = spec;
-        state->vector_engine = std::make_unique<VectorEngine>(opt, spec.kind, spec.metric, spec.ttl_sec, spec.retention_max_count,
-                                                             spec.retention_max_bytes, spec.sync_lsn);
+        
+        // Allocate VectorEngine with palloc (64-byte aligned for SIMD)
+        void* ve_raw = palloc_malloc_aligned(sizeof(VectorEngine), 64);
+        if (!ve_raw) return Status::IOError("VectorEngine allocation failed");
+        state->vector_engine = alloc::UniquePtr<VectorEngine>::AdoptPalloc(new (ve_raw) VectorEngine(opt, spec.kind, spec.metric, spec.ttl_sec, spec.retention_max_count,
+                                                             spec.retention_max_bytes, spec.sync_lsn));
+        
         state->lifecycle.SetMaxEntries(base_.max_lifecycle_entries);
-        membranes_.emplace(spec.name, std::move(state));
+        membranes_.emplace(spec.name, state);
         return Status::Ok();
     }
 
     Status MembraneManager::DropMembrane(std::string_view name)
     {
-        std::shared_ptr<MembraneState> to_close;
+        alloc::SharedPtr<MembraneState> to_close;
         {
             std::unique_lock<std::shared_mutex> lock(membranes_mu_);
             auto it = membranes_.find(std::string(name));

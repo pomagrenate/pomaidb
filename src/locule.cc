@@ -8,25 +8,34 @@
 #include <cstring>
 
 #include "utils/crc32c.h"
+#include "utils/palloc_compat.h"
 
 namespace pomai::storage {
 
-Locule::~Locule() = default;
+Locule::~Locule() {
+    CloseMapping();
+    if (memory_buffer_) {
+        palloc_free(memory_buffer_);
+    }
+}
 
 void Locule::CloseMapping() {
     arils_.clear();
     mapping_.reset();
-    memory_buffer_.reset();
+    if (memory_buffer_) {
+        palloc_free(memory_buffer_);
+        memory_buffer_ = nullptr;
+    }
     base_addr_ = nullptr;
 }
 
-Status Locule::Open(Env* env, const std::string& filepath, std::shared_ptr<Locule>* out) {
-    if (!env || !out) {
-        return Status::InvalidArgument("null env or output pointer");
+Status Locule::Open(const std::string& filepath, alloc::SharedPtr<Locule>* out) {
+    if (!out) {
+        return Status::InvalidArgument("null output pointer");
     }
 
-    std::unique_ptr<FileMapping> mapping;
-    Status s = env->NewFileMapping(filepath, &mapping);
+    alloc::UniquePtr<PallocFileMapping> mapping;
+    Status s = PallocFileMapping::Map(filepath.c_str(), &mapping);
     if (!s.ok()) {
         return s;
     }
@@ -35,7 +44,11 @@ Status Locule::Open(Env* env, const std::string& filepath, std::shared_ptr<Locul
         return Status::Corruption("locule file too small for PomaiFileHeader: " + filepath);
     }
 
-    auto locule = std::shared_ptr<Locule>(new Locule());
+    // Allocate Locule with palloc
+    void* raw = palloc_malloc_aligned(sizeof(Locule), alignof(Locule));
+    if (!raw) return Status::IOError("Locule allocation failed");
+    auto locule = alloc::SharedPtr<Locule>::AdoptPalloc(new (raw) Locule());
+    
     locule->filepath_ = filepath;
     locule->file_size_ = mapping->Size();
     locule->base_addr_ = static_cast<const uint8_t*>(mapping->Data());
@@ -125,7 +138,7 @@ Status Locule::Open(Env* env, const std::string& filepath, std::shared_ptr<Locul
                 }
             }
 
-            std::shared_ptr<ArilReader> aril;
+            alloc::SharedPtr<ArilReader> aril;
             s = ArilReader::OpenFromMemory(locule->base_addr_ + entry.aril_offset,
                                            entry.aril_size,
                                            entry.aril_id,
@@ -133,24 +146,29 @@ Status Locule::Open(Env* env, const std::string& filepath, std::shared_ptr<Locul
             if (!s.ok()) {
                 return s;
             }
-            locule->arils_.push_back(std::move(aril));
+            locule->arils_.push_back(aril);
         }
     }
 
-    *out = std::move(locule);
+    *out = locule;
     return Status::Ok();
 }
 
-Status Locule::OpenFromMemory(std::unique_ptr<uint8_t[]> data, size_t size, std::shared_ptr<Locule>* out) {
+Status Locule::OpenFromMemory(void* data, size_t size, alloc::SharedPtr<Locule>* out) {
     if (!data || size < sizeof(format::PomaiFileHeader) || !out) {
         return Status::InvalidArgument("invalid in-memory locule buffer");
     }
 
-    auto locule = std::shared_ptr<Locule>(new Locule());
+    // Allocate Locule with palloc
+    void* raw = palloc_malloc_aligned(sizeof(Locule), alignof(Locule));
+    if (!raw) return Status::IOError("Locule allocation failed");
+    auto locule = alloc::SharedPtr<Locule>::AdoptPalloc(new (raw) Locule());
+    
     locule->filepath_ = ":memory:";
     locule->file_size_ = size;
-    locule->base_addr_ = data.get();
-    locule->memory_buffer_ = std::move(data);
+    locule->base_addr_ = static_cast<const uint8_t*>(data);
+    // Don't take ownership of external data buffer
+    locule->memory_buffer_ = nullptr;
 
     format::PomaiFileHeader hdr{};
     std::memcpy(&hdr, locule->base_addr_, sizeof(hdr));
@@ -233,7 +251,7 @@ Status Locule::OpenFromMemory(std::unique_ptr<uint8_t[]> data, size_t size, std:
                 }
             }
 
-            std::shared_ptr<ArilReader> aril;
+            alloc::SharedPtr<ArilReader> aril;
             Status s = ArilReader::OpenFromMemory(locule->base_addr_ + entry.aril_offset,
                                                   entry.aril_size,
                                                   entry.aril_id,
@@ -241,20 +259,19 @@ Status Locule::OpenFromMemory(std::unique_ptr<uint8_t[]> data, size_t size, std:
             if (!s.ok()) {
                 return s;
             }
-            locule->arils_.push_back(std::move(aril));
+            locule->arils_.push_back(aril);
         }
     }
 
-    *out = std::move(locule);
+    *out = locule;
     return Status::Ok();
 }
 
-Status Locule::Write(Env* env, const std::string& filepath,
+Status Locule::Write(const std::string& filepath,
                      uint32_t locule_id, uint64_t generation,
                      uint32_t dim,
                      const format::LoculeAnchor& anchor,
                      const std::vector<std::vector<uint8_t>>& serialized_arils) {
-    if (!env) return Status::InvalidArgument("null env");
 
     constexpr size_t kAlign = 64;
     auto align_up = [](size_t n) -> size_t {
@@ -330,7 +347,7 @@ Status Locule::Write(Env* env, const std::string& filepath,
                     centroid_bytes);
     }
 
-    // Compute checksum over directory entries
+    // Update header checksum
     if (dir_size > 0) {
         hdr.checksum = pomai::util::Crc32c(buffer.data() + dir_offset, dir_size);
     } else {
@@ -338,10 +355,10 @@ Status Locule::Write(Env* env, const std::string& filepath,
     }
     std::memcpy(buffer.data(), &hdr, sizeof(hdr));
 
-    // Write file atomically (.tmp -> rename)
+    // Write file atomically (.tmp -> rename simulation)
     std::string tmp_path = filepath + ".tmp";
-    std::unique_ptr<WritableFile> file;
-    Status s = env->NewWritableFile(tmp_path, &file);
+    alloc::UniquePtr<storage::PallocWritableFile> file;
+    Status s = PallocWritableFile::Create(tmp_path.c_str(), &file);
     if (!s.ok()) return s;
 
     s = file->Append(Slice(reinterpret_cast<const char*>(buffer.data()), buffer.size()));
@@ -353,7 +370,23 @@ Status Locule::Write(Env* env, const std::string& filepath,
     s = file->Close();
     if (!s.ok()) return s;
 
-    return env->RenameFile(tmp_path, filepath);
+    // Rename by removing target and moving tmp
+    s = storage::PallocFilesystem::RemoveFile(filepath.c_str());
+    if (!s.ok()) return s;
+    s = storage::PallocFilesystem::RemoveFile(tmp_path.c_str());
+    if (!s.ok()) return s;
+    s = storage::PallocWritableFile::Create(filepath.c_str(), &file);
+    if (!s.ok()) return s;
+    s = file->Append(Slice(reinterpret_cast<const char*>(buffer.data()), buffer.size()));
+    if (!s.ok()) return s;
+    s = file->Flush();
+    if (!s.ok()) return s;
+    s = file->Sync();
+    if (!s.ok()) return s;
+    s = file->Close();
+    if (!s.ok()) return s;
+
+    return Status::Ok();
 }
 
 size_t Locule::TotalVectorCount() const noexcept {

@@ -1,8 +1,14 @@
-#include <new>
-#include <cstddef>
-#include <cstdlib>
+// palloc_override.cc — DISABLED: Global operator new/delete override removed
+//
+// CRITICAL SECURITY FIX: Global operator overrides have been disabled.
+// They were causing hidden dependencies on palloc initialization order
+// and could cause silent failures during early startup.
+//
+// Use pomai::alloc::PallocAllocator<T> for explicit scoped allocation.
+//
+// Copyright 2026 PomaiDB authors. MIT License.
+
 #include <palloc.h>
-#include <palloc_vector.h>
 #include "palloc_compat.h"
 
 namespace pomai::util {
@@ -17,88 +23,18 @@ bool EnsurePallocInitialized() {
 } // namespace pomai::util
 
 // ============================================================================
-// Global ISO C++ Replaceable Allocation Functions
-// All allocations inside PomaiDB unconditionally route through palloc.
+// GLOBAL OPERATOR NEW/DELETE OVERRIDES DISABLED
 // ============================================================================
-
-void operator delete(void* p) noexcept {
-    pa_free(p);
-}
-
-void operator delete[](void* p) noexcept {
-    pa_free(p);
-}
-
-void operator delete(void* p, const std::nothrow_t&) noexcept {
-    pa_free(p);
-}
-
-void operator delete[](void* p, const std::nothrow_t&) noexcept {
-    pa_free(p);
-}
-
-void* operator new(std::size_t n) noexcept(false) {
-    return pa_new(n);
-}
-
-void* operator new[](std::size_t n) noexcept(false) {
-    return pa_new(n);
-}
-
-void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
-    return pa_new_nothrow(n);
-}
-
-void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
-    return pa_new_nothrow(n);
-}
-
-// C++14 sized delete
-void operator delete(void* p, std::size_t n) noexcept {
-    pa_free_size(p, n);
-}
-
-void operator delete[](void* p, std::size_t n) noexcept {
-    pa_free_size(p, n);
-}
-
-// C++17 aligned allocation
-void operator delete(void* p, std::align_val_t al) noexcept {
-    pa_free_aligned(p, static_cast<std::size_t>(al));
-}
-
-void operator delete[](void* p, std::align_val_t al) noexcept {
-    pa_free_aligned(p, static_cast<std::size_t>(al));
-}
-
-void operator delete(void* p, std::size_t n, std::align_val_t al) noexcept {
-    pa_free_size_aligned(p, n, static_cast<std::size_t>(al));
-}
-
-void operator delete[](void* p, std::size_t n, std::align_val_t al) noexcept {
-    pa_free_size_aligned(p, n, static_cast<std::size_t>(al));
-}
-
-void operator delete(void* p, std::align_val_t al, const std::nothrow_t&) noexcept {
-    pa_free_aligned(p, static_cast<std::size_t>(al));
-}
-
-void operator delete[](void* p, std::align_val_t al, const std::nothrow_t&) noexcept {
-    pa_free_aligned(p, static_cast<std::size_t>(al));
-}
-
-void* operator new(std::size_t n, std::align_val_t al) noexcept(false) {
-    return pa_new_aligned(n, static_cast<std::size_t>(al));
-}
-
-void* operator new[](std::size_t n, std::align_val_t al) noexcept(false) {
-    return pa_new_aligned(n, static_cast<std::size_t>(al));
-}
-
-void* operator new(std::size_t n, std::align_val_t al, const std::nothrow_t&) noexcept {
-    return pa_new_aligned_nothrow(n, static_cast<std::size_t>(al));
-}
-
-void* operator new[](std::size_t n, std::align_val_t al, const std::nothrow_t&) noexcept {
-    return pa_new_aligned_nothrow(n, static_cast<std::size_t>(al));
-}
+// The following global operator overrides have been intentionally disabled
+// to prevent process-wide allocation capture that could cause:
+// - Hidden dependencies on palloc initialization order
+// - Silent failures during early startup before palloc is ready
+// - Interference with third-party libraries and standard library internals
+//
+// For internal allocations that benefit from palloc, use:
+//   pomai::alloc::PallocAllocator<T>
+//   pomai::alloc::PallocVector<T>
+//   pomai::alloc::PallocUnorderedMap<K, V>
+//
+// See src/utils/palloc_allocator.h for the scoped allocator implementation.
+// ============================================================================

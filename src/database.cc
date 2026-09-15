@@ -12,6 +12,7 @@
 #include "metadata.h"
 #include "search.h"
 #include "palloc_compat.h"
+#include "utils/logging.h"
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -24,12 +25,13 @@ constexpr uint32_t kKernelHotPathMaxMs = 2;
 }
 
 Status StorageEngine::Open(const EmbeddedOptions& options) {
-    auto env = options.env ? options.env : Env::Default();
     auto v_path = options.path + "/vectors";
+
+    POMAI_LOG_INFO("StorageEngine::Open: path={}", v_path);
 
     DBOptions dopt;
     dopt.path = v_path;
-    dopt.env = env;
+    dopt.env = nullptr; // Don't use Env anymore
     dopt.dim = options.dim;
     dopt.metric = options.metric;
     dopt.fsync = options.fsync;
@@ -39,7 +41,10 @@ Status StorageEngine::Open(const EmbeddedOptions& options) {
     auto v_engine = std::make_unique<core::VectorEngine>(
         dopt, MembraneKind::kVector, options.metric);
     Status st = v_engine->Open();
-    if (!st.ok()) return st;
+    if (!st.ok()) {
+        POMAI_LOG_ERROR("VectorEngine::Open failed: {}", st.message());
+        return st;
+    }
 
     return kernel_.RegisterPod(std::make_unique<core::VectorPod>(std::move(v_engine)));
 }

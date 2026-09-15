@@ -23,6 +23,7 @@
 #include "status.h"
 #include "metadata.h"
 #include "options.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::index { class HnswIndex; }
 
@@ -35,7 +36,7 @@ class ArilReader {
 public:
     static pomai::Status OpenFromMemory(const uint8_t* base_addr, size_t max_size,
                                         uint32_t aril_id,
-                                        std::shared_ptr<ArilReader>* out);
+                                        alloc::SharedPtr<ArilReader>* out);
 
     ~ArilReader();
 
@@ -75,7 +76,8 @@ private:
     const uint8_t* meta_base_{nullptr};
     size_t meta_size_{0};
 
-    std::unique_ptr<pomai::index::HnswIndex> graph_;
+    // HNSW graph loaded from memory uses Adopt() because HNSW library allocates with new
+    alloc::UniquePtr<pomai::index::HnswIndex> graph_;
 };
 
 /**

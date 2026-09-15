@@ -72,6 +72,10 @@ inline void* palloc_malloc_aligned(std::size_t size, std::size_t alignment) {
   return pa_malloc_aligned(size, alignment);
 }
 
+inline void* palloc_malloc(std::size_t size, std::size_t alignment) {
+  return palloc_malloc_aligned(size, alignment);
+}
+
 inline void palloc_free(void* p) { pa_free(p); }
 
 inline palloc_heap_t* palloc_heap_new(void) { return pa_heap_new(); }
@@ -87,6 +91,10 @@ inline void* palloc_heap_malloc_aligned(palloc_heap_t* heap, std::size_t size,
   if (alignment < sizeof(void*)) alignment = sizeof(void*);
   return heap ? pa_heap_malloc_aligned(heap, size, alignment)
               : pa_malloc_aligned(size, alignment);
+}
+
+inline void* palloc_heap_malloc(palloc_heap_t* heap, std::size_t size, std::size_t alignment) {
+  return palloc_heap_malloc_aligned(heap, size, alignment);
 }
 
 inline void palloc_option_set(long option, long value) {
@@ -107,6 +115,10 @@ static inline void* palloc_malloc_aligned(size_t size, size_t alignment) {
   return pa_malloc_aligned(size, alignment);
 }
 
+static inline void* palloc_malloc(size_t size, size_t alignment) {
+  return palloc_malloc_aligned(size, alignment);
+}
+
 static inline void palloc_free(void* p) { pa_free(p); }
 
 static inline palloc_heap_t* palloc_heap_new(void) { return pa_heap_new(); }
@@ -122,6 +134,10 @@ static inline void* palloc_heap_malloc_aligned(palloc_heap_t* heap, size_t size,
   if (alignment < sizeof(void*)) alignment = sizeof(void*);
   return heap ? pa_heap_malloc_aligned(heap, size, alignment)
               : pa_malloc_aligned(size, alignment);
+}
+
+static inline void* palloc_heap_malloc(palloc_heap_t* heap, size_t size, size_t alignment) {
+  return palloc_heap_malloc_aligned(heap, size, alignment);
 }
 
 static inline void palloc_option_set(long option, long value) {

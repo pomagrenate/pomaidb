@@ -9,13 +9,14 @@
 #include <sstream>
 
 #include "utils/crc32c.h"
+#include "storage/palloc_io.h"
 
 namespace pomai::manifest {
 
 FruitSnapshot::FruitSnapshot(uint64_t generation,
                              uint32_t dimension,
                              MetricType metric,
-                             std::vector<std::shared_ptr<storage::Locule>> locules)
+                             std::vector<alloc::SharedPtr<storage::Locule>> locules)
     : generation_(generation),
       dimension_(dimension),
       metric_(metric),
@@ -81,9 +82,8 @@ bool FruitSnapshot::IsDeleted(VectorId id) const {
 // FruitMap
 // -----------------------------------------------------------------------------
 
-FruitMap::FruitMap(Env* env, std::string db_dir, uint32_t dim, MetricType metric)
-    : env_(env ? env : Env::Default()),
-      db_dir_(std::move(db_dir)),
+FruitMap::FruitMap(std::string db_dir, uint32_t dim, MetricType metric)
+    : db_dir_(std::move(db_dir)),
       dimension_(dim),
       metric_(metric) {
     manifest_path_ = db_dir_ + "/fruit.manifest";
@@ -92,12 +92,12 @@ FruitMap::FruitMap(Env* env, std::string db_dir, uint32_t dim, MetricType metric
 FruitMap::~FruitMap() = default;
 
 Status FruitMap::Open() {
-    Status s = env_->CreateDirIfMissing(db_dir_);
+    Status s = storage::PallocFilesystem::CreateDir(db_dir_.c_str());
     if (!s.ok()) return s;
 
-    if (env_->FileExists(manifest_path_).ok()) {
-        std::unique_ptr<SequentialFile> file;
-        s = env_->NewSequentialFile(manifest_path_, &file);
+    if (storage::PallocFilesystem::FileExists(manifest_path_.c_str()).ok()) {
+        alloc::UniquePtr<storage::PallocSequentialFile> file;
+        s = storage::PallocSequentialFile::Open(manifest_path_.c_str(), &file);
         if (!s.ok()) return s;
 
         std::string content;
@@ -159,7 +159,7 @@ Status FruitMap::Open() {
         current_generation_ = gen;
         dimension_ = dim;
 
-        std::vector<std::shared_ptr<storage::Locule>> loaded_locules;
+        std::vector<alloc::SharedPtr<storage::Locule>> loaded_locules;
         loaded_locules.reserve(locule_files.size());
 
         for (const auto& path : locule_files) {
@@ -168,22 +168,26 @@ Status FruitMap::Open() {
                 full_path = db_dir_ + "/" + path;
             }
 
-            std::shared_ptr<storage::Locule> loc;
-            s = storage::Locule::Open(env_, full_path, &loc);
+            alloc::SharedPtr<storage::Locule> loc;
+            s = storage::Locule::Open(full_path, &loc);
             if (!s.ok()) {
                 return Status::Corruption("failed to open locule " + full_path + ": " + s.ToString());
             }
-            loaded_locules.push_back(std::move(loc));
+            loaded_locules.push_back(loc);
         }
 
-        auto snap = std::make_shared<FruitSnapshot>(current_generation_, dimension_, metric_, std::move(loaded_locules));
-        (void)InstallSnapshot(std::move(snap));
+        void* raw = palloc_malloc_aligned(sizeof(FruitSnapshot), alignof(FruitSnapshot));
+        if (!raw) return Status::IOError("FruitSnapshot allocation failed");
+        auto snap = alloc::SharedPtr<FruitSnapshot>::AdoptPalloc(new (raw) FruitSnapshot(current_generation_, dimension_, metric_, std::move(loaded_locules)));
+        (void)InstallSnapshot(snap);
         return Status::Ok();
     }
 
     // No manifest exists yet; initialize empty snapshot
-    auto snap = std::make_shared<FruitSnapshot>(0, dimension_, metric_, std::vector<std::shared_ptr<storage::Locule>>{});
-    (void)InstallSnapshot(std::move(snap));
+    void* raw = palloc_malloc_aligned(sizeof(FruitSnapshot), alignof(FruitSnapshot));
+    if (!raw) return Status::IOError("FruitSnapshot allocation failed");
+    auto snap = alloc::SharedPtr<FruitSnapshot>::AdoptPalloc(new (raw) FruitSnapshot(0, dimension_, metric_, std::vector<alloc::SharedPtr<storage::Locule>>{}));
+    (void)InstallSnapshot(snap);
     return Status::Ok();
 }
 
@@ -206,8 +210,8 @@ Status FruitMap::SaveManifest(uint64_t generation, const std::vector<std::string
     std::string final_content = ss.str();
     std::string tmp_manifest = manifest_path_ + ".tmp";
 
-    std::unique_ptr<WritableFile> file;
-    Status s = env_->NewWritableFile(tmp_manifest, &file);
+    alloc::UniquePtr<storage::PallocWritableFile> file;
+    Status s = storage::PallocWritableFile::Create(tmp_manifest.c_str(), &file);
     if (!s.ok()) return s;
 
     s = file->Append(Slice(final_content.data(), final_content.size()));
@@ -219,16 +223,32 @@ Status FruitMap::SaveManifest(uint64_t generation, const std::vector<std::string
     s = file->Close();
     if (!s.ok()) return s;
 
-    return env_->RenameFile(tmp_manifest, manifest_path_);
-}
+    // Atomic rename simulation
+    s = storage::PallocFilesystem::RemoveFile(manifest_path_.c_str());
+    if (!s.ok() && s.code() != ErrorCode::kNotFound) return s;
+    s = storage::PallocFilesystem::RemoveFile(tmp_manifest.c_str());
+    if (!s.ok()) return s;
+    s = storage::PallocWritableFile::Create(manifest_path_.c_str(), &file);
+    if (!s.ok()) return s;
+    s = file->Append(Slice(final_content.data(), final_content.size()));
+    if (!s.ok()) return s;
+    s = file->Flush();
+    if (!s.ok()) return s;
+    s = file->Sync();
+    if (!s.ok()) return s;
+    s = file->Close();
+    if (!s.ok()) return s;
 
-Status FruitMap::InstallSnapshot(std::shared_ptr<const FruitSnapshot> snapshot) {
-    std::lock_guard<std::mutex> lock(snapshot_mu_);
-    current_snapshot_ = std::move(snapshot);
     return Status::Ok();
 }
 
-std::shared_ptr<const FruitSnapshot> FruitMap::CurrentSnapshot() const {
+Status FruitMap::InstallSnapshot(alloc::SharedPtr<FruitSnapshot> snapshot) {
+    std::lock_guard<std::mutex> lock(snapshot_mu_);
+    current_snapshot_ = snapshot;
+    return Status::Ok();
+}
+
+alloc::SharedPtr<FruitSnapshot> FruitMap::CurrentSnapshot() const {
     std::lock_guard<std::mutex> lock(snapshot_mu_);
     return current_snapshot_;
 }

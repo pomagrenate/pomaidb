@@ -1,13 +1,11 @@
 #include "vector_engine.h"
 
 #include <algorithm>
-#include <filesystem>
-#include <system_error>
 
 #include "pomegranate_engine.h"
 #include "distance.h"
 #include "sync_provider.h"
-#include "utils/env.h"
+#include "storage/palloc_io.h"
 #include "vulkan_device_context.h"
 
 namespace pomai::core {
@@ -56,13 +54,13 @@ Status VectorEngine::OpenLocked() {
         return Status::InvalidArgument("VectorEngine requires dim > 0");
     }
 
-    pomai::Env* env = opt_.env ? opt_.env : pomai::Env::Default();
-    Status st_env = env->CreateDirIfMissing(opt_.path);
+    // Create directory using palloc filesystem
+    Status st_env = storage::PallocFilesystem::CreateDir(opt_.path.c_str());
     if (!st_env.ok()) {
-        return Status::IOError("VectorEngine CreateDirIfMissing failed: " + opt_.path);
+        return Status::IOError("VectorEngine CreateDir failed: " + opt_.path + " (" + st_env.message() + ")");
     }
 
-    engine_ = std::make_unique<PomegranateEngine>(opt_, metric_, env);
+    engine_ = std::make_unique<PomegranateEngine>(opt_, metric_, nullptr);
     Status s = engine_->Open();
     if (!s.ok()) {
         engine_.reset();

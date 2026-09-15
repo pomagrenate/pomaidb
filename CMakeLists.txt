@@ -94,6 +94,7 @@ add_library(pomai STATIC
   src/database.cc
   src/utils/palloc_override.cc
   src/utils/palloc_page_pool.cc
+  src/storage/palloc_io.cc
   src/vector_engine.cc
   src/simd_dispatch.cc
   src/semantic_lifecycle.cc
@@ -153,6 +154,10 @@ add_library(pomai STATIC
   src/utils/env.cc
   src/utils/crc32c.cc
   src/utils/logging.cc
+  src/utils/system_memory.cc
+  src/utils/memtable_sizing.cc
+  src/utils/scratch_buffer.cc
+  src/utils/sigbus_handler.cc
 )
 
 target_include_directories(pomai
@@ -443,6 +448,14 @@ if (POMAI_BUILD_TESTS)
   add_executable(edge_profile_options_test tests/unit/edge_profile_options_test.cc)
   pomai_setup_test(edge_profile_options_test)
   pomai_add_labeled_test(edge_profile_options_test "unit")
+
+  add_executable(memtable_sizing_test tests/unit/memtable_sizing_test.cc)
+  pomai_setup_test(memtable_sizing_test)
+  pomai_add_labeled_test(memtable_sizing_test "unit")
+
+  add_executable(batch_dampening_test tests/unit/batch_dampening_test.cc)
+  pomai_setup_test(batch_dampening_test)
+  pomai_add_labeled_test(batch_dampening_test "unit")
 
   add_executable(vulkan_memory_bridge_test tests/unit/vulkan_memory_bridge_test.cc)
   pomai_setup_test(vulkan_memory_bridge_test)
