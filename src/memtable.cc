@@ -14,8 +14,7 @@
 #include "palloc_compat.h"
 #include "utils/palloc_allocator.h"
 #include <cstring>
-#include <mutex>
-#include <shared_mutex>
+#include <psync/psync.h>
 
 namespace pomai::table {
 
@@ -121,7 +120,7 @@ pomai::Status MemTable::Put(pomai::VectorId id, pomai::VectorView vec,
     // Temporal Index Management
     // CRITICAL FIX: Use unique_lock for write operations on temporal index
     {
-        std::unique_lock<std::shared_mutex> lock(temporal_mutex_);
+        psync::UniqueLock<psync::SharedMutex> lock(temporal_mutex_);
         auto it_old = metadata_.find(id);
         if (it_old != metadata_.end()) {
             uint64_t old_ts = it_old->second.timestamp;
@@ -186,7 +185,7 @@ pomai::Status MemTable::Delete(pomai::VectorId id) {
 
     // CRITICAL FIX: Use unique_lock for write operations on temporal index
     {
-        std::unique_lock<std::shared_mutex> lock(temporal_mutex_);
+        psync::UniqueLock<psync::SharedMutex> lock(temporal_mutex_);
         auto it = metadata_.find(id);
         if (it != metadata_.end()) {
             uint64_t ts = it->second.timestamp;
@@ -231,7 +230,7 @@ pomai::Status MemTable::Get(pomai::VectorId id, const float** out_vec,
 
     if (out_meta) {
         // CRITICAL FIX: Protect metadata read with shared_lock
-        std::shared_lock<std::shared_mutex> lock(temporal_mutex_);
+        psync::SharedLock<psync::SharedMutex> lock(temporal_mutex_);
         auto it = metadata_.find(id);
         *out_meta = (it != metadata_.end()) ? it->second : pomai::Metadata{};
     }
@@ -246,7 +245,7 @@ void MemTable::Clear() {
 
     // CRITICAL FIX: Use unique_lock for write operations on temporal index
     {
-        std::unique_lock<std::shared_mutex> lock(temporal_mutex_);
+        psync::UniqueLock<psync::SharedMutex> lock(temporal_mutex_);
         metadata_.clear();
         temporal_index_.clear();
     }
@@ -292,7 +291,7 @@ bool MemTable::Cursor::Next(CursorEntry* out) {
     const pomai::Metadata* meta_ptr = nullptr;
     if (!is_deleted) {
         // CRITICAL FIX: Protect metadata read with shared_lock
-        std::shared_lock<std::shared_mutex> lock(mem_->temporal_mutex_);
+        psync::SharedLock<psync::SharedMutex> lock(mem_->temporal_mutex_);
         auto it = mem_->metadata_.find(e.id);
         if (it != mem_->metadata_.end()) meta_ptr = &it->second;
     }

@@ -2,8 +2,7 @@
 #include <vector>
 #include <queue>
 #include <thread>
-#include <mutex>
-#include <condition_variable>
+#include <psync/psync.h>
 #include <functional>
 #include <future>
 #include <atomic>
@@ -23,7 +22,7 @@ namespace pomai::util
                     for(;;) {
                         std::function<void()> task;
                         {
-                            std::unique_lock<std::mutex> lock(queue_mutex_);
+                            psync::UniqueLock<psync::Mutex> lock(queue_mutex_);
                             condition_.wait(lock, [this]{ return stop_ || !tasks_.empty(); });
                             if(stop_ && tasks_.empty()) return;
                             task = std::move(tasks_.front());
@@ -37,7 +36,7 @@ namespace pomai::util
         ~ThreadPool()
         {
             {
-                std::unique_lock<std::mutex> lock(queue_mutex_);
+                psync::UniqueLock<psync::Mutex> lock(queue_mutex_);
                 stop_ = true;
             }
             condition_.notify_all();
@@ -55,7 +54,7 @@ namespace pomai::util
 
             std::future<return_type> res = task->get_future();
             {
-                std::unique_lock<std::mutex> lock(queue_mutex_);
+                psync::UniqueLock<psync::Mutex> lock(queue_mutex_);
                 if (stop_)
                     throw std::runtime_error("enqueue on stopped ThreadPool");
 
@@ -76,8 +75,8 @@ namespace pomai::util
     private:
         std::vector<std::jthread> workers_;
         std::queue<std::function<void()>> tasks_;
-        std::mutex queue_mutex_;
-        std::condition_variable condition_;
+        psync::Mutex queue_mutex_;
+        psync::ConditionVariable condition_;
         bool stop_ = false;
         size_t thread_count_ = 0;
         std::atomic<size_t> pending_{0};

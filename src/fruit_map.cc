@@ -242,13 +242,13 @@ Status FruitMap::SaveManifest(uint64_t generation, const std::vector<std::string
 }
 
 Status FruitMap::InstallSnapshot(alloc::SharedPtr<FruitSnapshot> snapshot) {
-    std::lock_guard<std::mutex> lock(snapshot_mu_);
+    psync::LockGuard<psync::Mutex> lock(snapshot_mu_);
     current_snapshot_ = snapshot;
     return Status::Ok();
 }
 
 alloc::SharedPtr<FruitSnapshot> FruitMap::CurrentSnapshot() const {
-    std::lock_guard<std::mutex> lock(snapshot_mu_);
+    psync::LockGuard<psync::Mutex> lock(snapshot_mu_);
     return current_snapshot_;
 }
 

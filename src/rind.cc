@@ -5,7 +5,7 @@
 #include "rind.h"
 
 #include <algorithm>
-#include <mutex>
+#include <psync/psync.h>
 
 #include "distance.h"
 
@@ -29,7 +29,7 @@ Rind::~Rind() {
 }
 
 Status Rind::Open() {
-    std::unique_lock<std::shared_mutex> lock(mu_);
+    psync::UniqueLock<psync::SharedMutex> lock(mu_);
     if (opened_) return Status::Ok();
 
     Status s = env_->CreateDirIfMissing(db_dir_);
@@ -60,7 +60,7 @@ Status Rind::Open() {
 }
 
 Status Rind::Close() {
-    std::unique_lock<std::shared_mutex> lock(mu_);
+    psync::UniqueLock<psync::SharedMutex> lock(mu_);
     if (!opened_) return Status::Ok();
 
     if (wal_) {
@@ -80,7 +80,7 @@ Status Rind::Put(VectorId id, std::span<const float> vec, const Metadata* meta) 
         }
     }
 
-    std::unique_lock<std::shared_mutex> lock(mu_);
+    psync::UniqueLock<psync::SharedMutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
 
     Status s;
@@ -123,7 +123,7 @@ Status Rind::PutBatch(std::span<const VectorId> ids, std::span<const float> vecs
         }
     }
 
-    std::unique_lock<std::shared_mutex> lock(mu_);
+    psync::UniqueLock<psync::SharedMutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
 
     std::vector<VectorId> ids_vec(ids.begin(), ids.end());
@@ -157,7 +157,7 @@ Status Rind::PutBatch(std::span<const VectorId> ids, std::span<const float> vecs
 }
 
 Status Rind::Delete(VectorId id) {
-    std::unique_lock<std::shared_mutex> lock(mu_);
+    psync::UniqueLock<psync::SharedMutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
 
     if (wal_) {
@@ -174,7 +174,7 @@ Status Rind::Delete(VectorId id) {
 }
 
 Status Rind::Get(VectorId id, std::vector<float>* out, Metadata* meta) const {
-    std::shared_lock<std::shared_mutex> lock(mu_);
+    psync::SharedLock<psync::SharedMutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
 
     // Check active memtable
@@ -218,7 +218,7 @@ Status Rind::Get(VectorId id, std::vector<float>* out, Metadata* meta) const {
 }
 
 bool Rind::Contains(VectorId id) const {
-    std::shared_lock<std::shared_mutex> lock(mu_);
+    psync::SharedLock<psync::SharedMutex> lock(mu_);
     if (!opened_) return false;
 
     if (active_memtable_->IsTombstone(id)) return false;
@@ -234,17 +234,17 @@ bool Rind::Contains(VectorId id) const {
 }
 
 bool Rind::IsDeleted(VectorId id) const {
-    std::shared_lock<std::shared_mutex> lock(mu_);
+    psync::SharedLock<psync::SharedMutex> lock(mu_);
     if (!opened_) return false;
     return tombstones_.find(id) != tombstones_.end();
 }
 
 RindTombstoneSnapshot Rind::CaptureTombstoneSnapshot() const {
-    std::shared_lock<std::shared_mutex> lock(mu_);
+    psync::SharedLock<psync::SharedMutex> lock(mu_);
     if (!opened_) return RindTombstoneSnapshot{};
 
     if (tombstones_dirty_.load(std::memory_order_acquire) || !cached_tombstones_) {
-        std::lock_guard<std::mutex> snap_lock(snapshot_mu_);
+        psync::LockGuard<psync::Mutex> snap_lock(snapshot_mu_);
         if (tombstones_dirty_.load(std::memory_order_relaxed) || !cached_tombstones_) {
             cached_tombstones_ = std::make_shared<const std::unordered_set<VectorId>>(tombstones_);
             tombstones_dirty_.store(false, std::memory_order_release);
@@ -254,14 +254,14 @@ RindTombstoneSnapshot Rind::CaptureTombstoneSnapshot() const {
 }
 
 Status Rind::Flush() {
-    std::unique_lock<std::shared_mutex> lock(mu_);
+    psync::UniqueLock<psync::SharedMutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
     if (wal_) return wal_->Flush();
     return Status::Ok();
 }
 
 Status Rind::Freeze() {
-    std::unique_lock<std::shared_mutex> lock(mu_);
+    psync::UniqueLock<psync::SharedMutex> lock(mu_);
     if (!opened_) return Status::Corruption("rind is not open");
     if (active_memtable_->GetCount() == 0) return Status::Ok();
 
@@ -276,7 +276,7 @@ Status Rind::Freeze() {
 }
 
 std::vector<std::shared_ptr<table::MemTable>> Rind::TakeFrozenMemtables() {
-    std::unique_lock<std::shared_mutex> lock(mu_);
+    psync::UniqueLock<psync::SharedMutex> lock(mu_);
     auto res = std::move(frozen_memtables_);
     frozen_memtables_.clear();
 
@@ -306,7 +306,7 @@ void Rind::Taste(std::span<const float> query, uint32_t topk, MetricType metric,
     uint32_t dim_snapshot;
     bool opened_snapshot;
     {
-        std::shared_lock<std::shared_mutex> lock(mu_);
+        psync::SharedLock<psync::SharedMutex> lock(mu_);
         if (!opened_) return;
         active = active_memtable_;
         frozen = frozen_memtables_;
@@ -338,7 +338,7 @@ void Rind::Taste(std::span<const float> query, uint32_t topk, MetricType metric,
 }
 
 size_t Rind::BytesUsed() const noexcept {
-    std::shared_lock<std::shared_mutex> lock(mu_);
+    psync::SharedLock<psync::SharedMutex> lock(mu_);
     size_t total = active_memtable_ ? active_memtable_->BytesUsed() : 0;
     for (const auto& t : frozen_memtables_) {
         if (t) total += t->BytesUsed();
@@ -347,17 +347,17 @@ size_t Rind::BytesUsed() const noexcept {
 }
 
 size_t Rind::ActiveCount() const noexcept {
-    std::shared_lock<std::shared_mutex> lock(mu_);
+    psync::SharedLock<psync::SharedMutex> lock(mu_);
     return active_memtable_ ? active_memtable_->GetCount() : 0;
 }
 
 bool Rind::HasFrozen() const noexcept {
-    std::shared_lock<std::shared_mutex> lock(mu_);
+    psync::SharedLock<psync::SharedMutex> lock(mu_);
     return !frozen_memtables_.empty();
 }
 
 void Rind::ForEachEntry(const std::function<void(VectorId, std::span<const float>, bool is_deleted, const Metadata*)>& fn) const {
-    std::shared_lock<std::shared_mutex> lock(mu_);
+    psync::SharedLock<psync::SharedMutex> lock(mu_);
     if (!opened_) return;
 
     for (const auto& table : frozen_memtables_) {

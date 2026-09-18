@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <mutex>
+#include <psync/psync.h>
 #include <vector>
 
 #include "utils/half_float.h"
@@ -36,7 +36,7 @@ namespace {
 
 simsimd_metric_dense_punned_t g_dot_f32 = nullptr;
 simsimd_metric_dense_punned_t g_l2sq_f32 = nullptr;
-std::once_flag g_init_flag;
+psync::OnceFlag g_init_flag;
 
 void InitOnce() {
     simsimd_capability_t cap = simsimd_capabilities();
@@ -60,7 +60,7 @@ void InitOnce() {
 }
 
 inline void EnsureInit() {
-    std::call_once(g_init_flag, InitOnce);
+    psync::call_once(g_init_flag, InitOnce);
 }
 
 // ── Scalar fallback for DotSq8 (no SimSIMD equivalent) ──

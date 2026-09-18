@@ -10,7 +10,7 @@
 #pragma once
 
 #include <cstdint>
-#include <mutex>
+#include <psync/psync.h>
 #include <span>
 #include <string>
 #include <vector>
@@ -75,7 +75,7 @@ private:
     MetricType metric_{MetricType::kL2};
 
     uint64_t current_generation_{0};
-    mutable std::mutex snapshot_mu_;
+    mutable psync::Mutex snapshot_mu_;
     alloc::SharedPtr<FruitSnapshot> current_snapshot_;
 };
 

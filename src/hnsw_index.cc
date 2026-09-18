@@ -10,7 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
-#include <mutex>
+#include <psync/psync.h>
 #include <sstream>
 #include <streambuf>
 #include "storage/palloc_io.h"
@@ -172,7 +172,7 @@ public:
             return pomai::Status::InvalidArgument("vector dimension mismatch");
         }
 
-        std::unique_lock<std::mutex> lock(write_mu_);
+        psync::UniqueLock<psync::Mutex> lock(write_mu_);
         size_t cur = index_->cur_element_count;
         if (cur >= index_->max_elements_) {
             size_t new_cap = std::max<size_t>(index_->max_elements_ * 2, cur + 1024);
@@ -337,7 +337,7 @@ private:
     pomai::MetricType metric_;
     PomaiDistanceSpace space_;
     std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;
-    mutable std::mutex write_mu_;
+    mutable psync::Mutex write_mu_;
 };
 
 // ── Public HnswIndex Implementation ───────────────────────────────────────────

@@ -198,7 +198,7 @@ endif()
 
 find_package(OpenSSL QUIET)
 # PUBLIC: static lib pomai leaves unresolved pa_* until consumers link palloc-static too.
-target_link_libraries(pomai PUBLIC palloc-static Threads::Threads)
+target_link_libraries(pomai PUBLIC palloc-static psync Threads::Threads)
 target_compile_definitions(pomai PUBLIC PA_VECTOR=1)
 if (OPENSSL_FOUND)
   target_link_libraries(pomai PRIVATE OpenSSL::Crypto)

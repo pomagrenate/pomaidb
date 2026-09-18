@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
-#include <mutex>
+#include <psync/psync.h>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -23,22 +23,22 @@
 
 namespace {
 
-std::mutex g_handles_mutex;
+psync::Mutex g_handles_mutex;
 std::unordered_set<const pomai_db_t*> g_active_handles;
 
 bool IsValidHandle(const pomai_db_t* db) {
     if (db == nullptr) return false;
-    std::lock_guard<std::mutex> lock(g_handles_mutex);
+    psync::LockGuard<psync::Mutex> lock(g_handles_mutex);
     return g_active_handles.find(db) != g_active_handles.end();
 }
 
 void RegisterHandle(const pomai_db_t* db) {
-    std::lock_guard<std::mutex> lock(g_handles_mutex);
+    psync::LockGuard<psync::Mutex> lock(g_handles_mutex);
     g_active_handles.insert(db);
 }
 
 bool UnregisterHandle(const pomai_db_t* db) {
-    std::lock_guard<std::mutex> lock(g_handles_mutex);
+    psync::LockGuard<psync::Mutex> lock(g_handles_mutex);
     return g_active_handles.erase(db) > 0;
 }
 

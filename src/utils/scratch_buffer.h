@@ -10,7 +10,6 @@
 #include <cstddef>
 #include <cstring>
 #include <vector>
-#include <mutex>
 #include <atomic>
 
 namespace pomai::util {

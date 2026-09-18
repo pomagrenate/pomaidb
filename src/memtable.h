@@ -15,7 +15,7 @@
 #include <span>
 #include <map>
 #include <unordered_map>
-#include <shared_mutex>
+#include <psync/psync.h>
 #include "metadata.h"
 #include "status.h"
 #include "types.h"
@@ -133,7 +133,7 @@ public:
                         decode_buf[i] = vmin + codes[i] * scale;
                     vec = {decode_buf.data(), dim_};
                     // CRITICAL FIX: Protect metadata read with shared_lock
-                    std::shared_lock<std::shared_mutex> lock(temporal_mutex_);
+                    psync::SharedLock<psync::SharedMutex> lock(temporal_mutex_);
                     auto it = metadata_.find(id);
                     if (it != metadata_.end()) meta_ptr = &it->second;
                 }
@@ -147,7 +147,7 @@ public:
                 const pomai::Metadata* meta_ptr = nullptr;
                 if (!is_deleted) {
                     // CRITICAL FIX: Protect metadata read with shared_lock
-                    std::shared_lock<std::shared_mutex> lock(temporal_mutex_);
+                    psync::SharedLock<psync::SharedMutex> lock(temporal_mutex_);
                     auto it = metadata_.find(id);
                     if (it != metadata_.end()) meta_ptr = &it->second;
                 }
@@ -168,7 +168,7 @@ public:
             }
             const pomai::Metadata* meta_ptr = nullptr;
             // CRITICAL FIX: Protect metadata read with shared_lock
-            std::shared_lock<std::shared_mutex> lock(temporal_mutex_);
+            psync::SharedLock<psync::SharedMutex> lock(temporal_mutex_);
             auto it = metadata_.find(id);
             if (it != metadata_.end()) meta_ptr = &it->second;
             if (quantize_inmem_) {
@@ -197,7 +197,7 @@ public:
         if (!out) return;
 
         // CRITICAL FIX: Use shared_lock for temporal index reads
-        std::shared_lock<std::shared_mutex> lock(temporal_mutex_);
+        psync::SharedLock<psync::SharedMutex> lock(temporal_mutex_);
         auto it_start = temporal_index_.lower_bound(start);
         auto it_end = temporal_index_.upper_bound(end);
         for (auto it = it_start; it != it_end; ++it) {
@@ -231,7 +231,7 @@ private:
     mutable alloc::PallocUnorderedMap<pomai::VectorId, pomai::Metadata> metadata_;
     mutable std::multimap<uint64_t, pomai::VectorId, std::less<uint64_t>,
                          alloc::PallocAllocator<std::pair<const uint64_t, pomai::VectorId>>> temporal_index_;
-    mutable std::shared_mutex temporal_mutex_;  // Protect temporal index mutations (reader-writer lock)
+    mutable psync::SharedMutex temporal_mutex_;  // Protect temporal index mutations (reader-writer lock)
 };
 
 } // namespace pomai::table
