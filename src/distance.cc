@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "utils/half_float.h"
+#include "utils/scratch_buffer.h"
 
 // SimSIMD: by default uses compile-time dispatch.
 // For portable binaries with runtime dispatch, we query simsimd_capabilities()
@@ -132,11 +133,16 @@ float L2SqSimSIMD(std::span<const float> a, std::span<const float> b) {
 float DotFp16SimSIMD(std::span<const float> q, std::span<const uint16_t> c) {
     const std::size_t n = q.size();
     if (n == 0 || c.size() != n) return 0.0f;
-    std::vector<simsimd_f16_t> q_f16(n);
+    
+    // CRITICAL FIX: Use thread-local scratch buffer instead of heap allocation
+    simsimd_f16_t* q_f16 = reinterpret_cast<simsimd_f16_t*>(
+        util::UInt16Scratch::Get(n));
+    
     for (std::size_t i = 0; i < n; ++i)
         simsimd_f32_to_f16(q[i], &q_f16[i]);
+    
     simsimd_distance_t d = 0.0;
-    simsimd_dot_f16(q_f16.data(), reinterpret_cast<const simsimd_f16_t*>(c.data()),
+    simsimd_dot_f16(q_f16, reinterpret_cast<const simsimd_f16_t*>(c.data()),
                     static_cast<simsimd_size_t>(n), &d);
     return static_cast<float>(d);
 }
@@ -144,11 +150,13 @@ float DotFp16SimSIMD(std::span<const float> q, std::span<const uint16_t> c) {
 float L2SqFp16SimSIMD(std::span<const float> q, std::span<const uint16_t> c) {
     const std::size_t n = q.size();
     if (n == 0 || c.size() != n) return 0.0f;
-    std::vector<simsimd_f16_t> q_f16(n);
+    // CRITICAL FIX: Use thread-local scratch buffer instead of heap allocation
+    simsimd_f16_t* q_f16 = reinterpret_cast<simsimd_f16_t*>(
+        util::UInt16Scratch::Get(n));
     for (std::size_t i = 0; i < n; ++i)
         simsimd_f32_to_f16(q[i], &q_f16[i]);
     simsimd_distance_t d = 0.0;
-    simsimd_l2sq_f16(q_f16.data(), reinterpret_cast<const simsimd_f16_t*>(c.data()),
+    simsimd_l2sq_f16(q_f16, reinterpret_cast<const simsimd_f16_t*>(c.data()),
                      static_cast<simsimd_size_t>(n), &d);
     return static_cast<float>(d);
 }

@@ -11,6 +11,8 @@
 #include <random>
 
 #include "distance.h"
+#include "utils/palloc_compat.h"
+#include "storage/palloc_io.h"
 
 namespace pomai::compact {
 
@@ -247,13 +249,11 @@ std::vector<PartitionedLocule> PartitionItemsSpatially(
 
 } // namespace
 
-Press::Press(Env* env,
-             std::string db_dir,
+Press::Press(std::string db_dir,
              uint32_t dim,
              MetricType metric,
              PressOptions options)
-    : env_(env ? env : Env::Default()),
-      db_dir_(std::move(db_dir)),
+    : db_dir_(std::move(db_dir)),
       dim_(dim),
       metric_(metric),
       options_(std::move(options)) {}
@@ -321,15 +321,17 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
         Status s = fruit_map->SaveManifest(next_gen, {});
         if (!s.ok()) return s;
 
-        auto empty_snap = std::make_shared<manifest::FruitSnapshot>(
-            next_gen, dim_, metric_, std::vector<std::shared_ptr<storage::Locule>>{});
+        void* raw = palloc_malloc_aligned(sizeof(manifest::FruitSnapshot), alignof(manifest::FruitSnapshot));
+        if (!raw) return Status::IOError("FruitSnapshot allocation failed");
+        auto empty_snap = alloc::SharedPtr<manifest::FruitSnapshot>::AdoptPalloc(new (raw) manifest::FruitSnapshot(
+            next_gen, dim_, metric_, std::vector<alloc::SharedPtr<storage::Locule>>{}));
         (void)fruit_map->InstallSnapshot(empty_snap);
 
         if (snapshot) {
             for (const auto& old_loc : snapshot->locules()) {
                 if (old_loc) {
                     old_loc->CloseMapping();
-                    (void)env_->DeleteFile(old_loc->filepath());
+                    (void)storage::PallocFilesystem::RemoveFile(old_loc->filepath().c_str());
                 }
             }
         }
@@ -351,7 +353,7 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
         std::move(all_items), dim_, metric_, locule_capacity, 0);
 
     std::vector<std::string> new_locule_files;
-    std::vector<std::shared_ptr<storage::Locule>> new_locules;
+    std::vector<alloc::SharedPtr<storage::Locule>> new_locules;
     new_locules.reserve(partitioned.size());
     new_locule_files.reserve(partitioned.size());
 
@@ -385,14 +387,14 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
         std::string filename = "locule_" + std::to_string(anchor.id) + "_gen_" + std::to_string(next_gen) + ".pom";
         std::string full_path = db_dir_ + "/" + filename;
 
-        Status s = storage::Locule::Write(env_, full_path, anchor.id, next_gen, dim_, anchor, serialized_arils);
+        Status s = storage::Locule::Write(full_path, anchor.id, next_gen, dim_, anchor, serialized_arils);
         if (!s.ok()) return s;
 
-        std::shared_ptr<storage::Locule> opened_loc;
-        s = storage::Locule::Open(env_, full_path, &opened_loc);
+        alloc::SharedPtr<storage::Locule> opened_loc;
+        s = storage::Locule::Open(full_path, &opened_loc);
         if (!s.ok()) return s;
 
-        new_locules.push_back(std::move(opened_loc));
+        new_locules.push_back(opened_loc);
         new_locule_files.push_back(filename);
     }
 
@@ -400,8 +402,10 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
     Status s = fruit_map->SaveManifest(next_gen, new_locule_files);
     if (!s.ok()) return s;
 
-    auto new_snap = std::make_shared<manifest::FruitSnapshot>(
-        next_gen, dim_, metric_, std::move(new_locules));
+    void* raw = palloc_malloc_aligned(sizeof(manifest::FruitSnapshot), alignof(manifest::FruitSnapshot));
+    if (!raw) return Status::IOError("FruitSnapshot allocation failed");
+    auto new_snap = alloc::SharedPtr<manifest::FruitSnapshot>::AdoptPalloc(new (raw) manifest::FruitSnapshot(
+        next_gen, dim_, metric_, std::move(new_locules)));
     (void)fruit_map->InstallSnapshot(new_snap);
 
     // 6. Purge old locules
@@ -409,7 +413,7 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
         for (const auto& old_loc : snapshot->locules()) {
             if (old_loc) {
                 old_loc->CloseMapping();
-                (void)env_->DeleteFile(old_loc->filepath());
+                (void)storage::PallocFilesystem::RemoveFile(old_loc->filepath().c_str());
             }
         }
     }
@@ -448,7 +452,7 @@ Status Press::PressFrozenRindOnly(ingest::Rind* rind, manifest::FruitMap* fruit_
     uint64_t next_gen = fruit_map->NextGeneration();
 
     uint32_t base_id = 0;
-    std::vector<std::shared_ptr<storage::Locule>> all_locules;
+    std::vector<alloc::SharedPtr<storage::Locule>> all_locules;
     std::vector<std::string> all_locule_files;
     if (snapshot) {
         base_id = static_cast<uint32_t>(snapshot->locules().size());
@@ -500,22 +504,24 @@ Status Press::PressFrozenRindOnly(ingest::Rind* rind, manifest::FruitMap* fruit_
         std::string filename = "locule_" + std::to_string(anchor.id) + "_gen_" + std::to_string(next_gen) + ".pom";
         std::string full_path = db_dir_ + "/" + filename;
 
-        Status s = storage::Locule::Write(env_, full_path, anchor.id, next_gen, dim_, anchor, serialized_arils);
+        Status s = storage::Locule::Write(full_path, anchor.id, next_gen, dim_, anchor, serialized_arils);
         if (!s.ok()) return s;
 
-        std::shared_ptr<storage::Locule> opened_loc;
-        s = storage::Locule::Open(env_, full_path, &opened_loc);
+        alloc::SharedPtr<storage::Locule> opened_loc;
+        s = storage::Locule::Open(full_path, &opened_loc);
         if (!s.ok()) return s;
 
-        all_locules.push_back(std::move(opened_loc));
+        all_locules.push_back(opened_loc);
         all_locule_files.push_back(filename);
     }
 
     Status s = fruit_map->SaveManifest(next_gen, all_locule_files);
     if (!s.ok()) return s;
 
-    auto new_snap = std::make_shared<manifest::FruitSnapshot>(
-        next_gen, dim_, metric_, std::move(all_locules));
+    void* raw = palloc_malloc_aligned(sizeof(manifest::FruitSnapshot), alignof(manifest::FruitSnapshot));
+    if (!raw) return Status::IOError("FruitSnapshot allocation failed");
+    auto new_snap = alloc::SharedPtr<manifest::FruitSnapshot>::AdoptPalloc(new (raw) manifest::FruitSnapshot(
+        next_gen, dim_, metric_, std::move(all_locules)));
     (void)fruit_map->InstallSnapshot(new_snap);
 
     return Status::Ok();

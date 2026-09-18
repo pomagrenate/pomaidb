@@ -5,7 +5,6 @@
 #include "fruit_map.h"
 
 #include <algorithm>
-#include <fstream>
 #include <sstream>
 
 #include "utils/crc32c.h"

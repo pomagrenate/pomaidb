@@ -304,7 +304,15 @@ Status Locule::Write(const std::string& filepath,
     size_t footer_size = sizeof(format::LoculeFooter) + centroid_bytes;
     size_t total_size = align_up(footer_offset + footer_size);
 
-    std::vector<uint8_t> buffer(total_size, 0);
+    void* raw_buffer = palloc_malloc_aligned(total_size, 4096);
+    if (!raw_buffer) return Status::ResourceExhausted("Failed to allocate locule buffer");
+    std::memset(raw_buffer, 0, total_size);
+    uint8_t* buffer = static_cast<uint8_t*>(raw_buffer);
+
+    struct BufferGuard {
+        void* p;
+        ~BufferGuard() { if (p) palloc_free(p); }
+    } guard{raw_buffer};
 
     // Build header
     format::PomaiFileHeader hdr{};
@@ -320,15 +328,15 @@ Status Locule::Write(const std::string& filepath,
 
     // Copy directory entries
     if (!entries.empty()) {
-        std::memcpy(buffer.data() + dir_offset, entries.data(), dir_size);
+        std::memcpy(buffer + dir_offset, entries.data(), dir_size);
         hdr.checksum = pomai::util::Crc32c(entries.data(), dir_size);
     }
 
-    std::memcpy(buffer.data(), &hdr, sizeof(hdr));
+    std::memcpy(buffer, &hdr, sizeof(hdr));
 
     // Copy Aril blocks
     for (size_t i = 0; i < serialized_arils.size(); ++i) {
-        std::memcpy(buffer.data() + entries[i].aril_offset,
+        std::memcpy(buffer + entries[i].aril_offset,
                     serialized_arils[i].data(),
                     serialized_arils[i].size());
     }
@@ -340,20 +348,20 @@ Status Locule::Write(const std::string& filepath,
     footer.radius = anchor.radius;
     footer.centroid_dim = static_cast<uint32_t>(anchor.centroid.size());
     footer.checksum = 0;
-    std::memcpy(buffer.data() + footer_offset, &footer, sizeof(footer));
+    std::memcpy(buffer + footer_offset, &footer, sizeof(footer));
     if (!anchor.centroid.empty()) {
-        std::memcpy(buffer.data() + footer_offset + sizeof(footer),
+        std::memcpy(buffer + footer_offset + sizeof(footer),
                     anchor.centroid.data(),
                     centroid_bytes);
     }
 
     // Update header checksum
     if (dir_size > 0) {
-        hdr.checksum = pomai::util::Crc32c(buffer.data() + dir_offset, dir_size);
+        hdr.checksum = pomai::util::Crc32c(buffer + dir_offset, dir_size);
     } else {
         hdr.checksum = 0;
     }
-    std::memcpy(buffer.data(), &hdr, sizeof(hdr));
+    std::memcpy(buffer, &hdr, sizeof(hdr));
 
     // Write file atomically (.tmp -> rename simulation)
     std::string tmp_path = filepath + ".tmp";
@@ -361,7 +369,7 @@ Status Locule::Write(const std::string& filepath,
     Status s = PallocWritableFile::Create(tmp_path.c_str(), &file);
     if (!s.ok()) return s;
 
-    s = file->Append(Slice(reinterpret_cast<const char*>(buffer.data()), buffer.size()));
+    s = file->Append(Slice(reinterpret_cast<const char*>(buffer), total_size));
     if (!s.ok()) return s;
     s = file->Flush();
     if (!s.ok()) return s;
@@ -377,7 +385,7 @@ Status Locule::Write(const std::string& filepath,
     if (!s.ok()) return s;
     s = storage::PallocWritableFile::Create(filepath.c_str(), &file);
     if (!s.ok()) return s;
-    s = file->Append(Slice(reinterpret_cast<const char*>(buffer.data()), buffer.size()));
+    s = file->Append(Slice(reinterpret_cast<const char*>(buffer), total_size));
     if (!s.ok()) return s;
     s = file->Flush();
     if (!s.ok()) return s;

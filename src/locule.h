@@ -12,7 +12,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -22,16 +21,18 @@
 #include "status.h"
 #include "types.h"
 #include "metadata.h"
-#include "utils/env.h"
+#include "storage/palloc_io.h"
+#include "utils/palloc_smart_ptr.h"
+#include "utils/palloc_allocator.h"
 
 namespace pomai::storage {
 
 class Locule {
 public:
-    static Status Open(Env* env, const std::string& filepath, std::shared_ptr<Locule>* out);
-    static Status OpenFromMemory(std::unique_ptr<uint8_t[]> data, size_t size, std::shared_ptr<Locule>* out);
+    static Status Open(const std::string& filepath, alloc::SharedPtr<Locule>* out);
+    static Status OpenFromMemory(void* data, size_t size, alloc::SharedPtr<Locule>* out);
 
-    static Status Write(Env* env, const std::string& filepath,
+    static Status Write(const std::string& filepath,
                         uint32_t locule_id, uint64_t generation,
                         uint32_t dim,
                         const format::LoculeAnchor& anchor,
@@ -48,8 +49,8 @@ public:
     [[nodiscard]] const std::string& filepath() const noexcept { return filepath_; }
 
     [[nodiscard]] size_t aril_count() const noexcept { return arils_.size(); }
-    [[nodiscard]] const std::vector<std::shared_ptr<ArilReader>>& arils() const noexcept { return arils_; }
-    [[nodiscard]] std::shared_ptr<ArilReader> get_aril(size_t index) const {
+    [[nodiscard]] const std::vector<alloc::SharedPtr<ArilReader>>& arils() const noexcept { return arils_; }
+    [[nodiscard]] alloc::SharedPtr<ArilReader> get_aril(size_t index) const {
         if (index < arils_.size()) return arils_[index];
         return nullptr;
     }
@@ -70,12 +71,12 @@ private:
     format::LoculeAnchor anchor_;
     std::string filepath_;
 
-    std::unique_ptr<FileMapping> mapping_;
-    std::unique_ptr<uint8_t[]> memory_buffer_;
+    alloc::UniquePtr<storage::PallocFileMapping> mapping_;
+    uint8_t* memory_buffer_{nullptr};  // palloc-backed with 64-byte alignment
     const uint8_t* base_addr_{nullptr};
     size_t file_size_{0};
 
-    std::vector<std::shared_ptr<ArilReader>> arils_;
+    std::vector<alloc::SharedPtr<ArilReader>> arils_;
 };
 
 } // namespace pomai::storage

@@ -90,6 +90,7 @@ public:
 
     // Append data to file. Data may be copied to internal palloc buffer.
     virtual Status Append(Slice data) = 0;
+    virtual Status Pwrite(uint64_t offset, Slice data) = 0;
     virtual uint64_t BytesWritten() const = 0;
     virtual Status Flush() = 0;
     virtual Status Sync() = 0;
@@ -140,6 +141,9 @@ public:
 
     // Delete file (renamed to avoid Windows macro conflict)
     static Status RemoveFile(const char* path);
+
+    // Delete directory recursively
+    static Status RemoveDirRecursive(const char* path);
 
     // Create directory (recursively if needed)
     static Status CreateDir(const char* path);

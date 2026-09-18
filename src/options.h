@@ -114,10 +114,21 @@ namespace pomai
         uint32_t dim = 512;
         /** If true, use SQ8 scalar quantization in storage (4x compression). Default true for edge/memory-constrained builds. */
         bool enable_quantization = kDefaultEnableQuantization;
-        /** Memtable flush threshold in MiB; when exceeded, auto-freeze triggers backpressure. 0 = use pressure percent of max. */
-        uint32_t memtable_flush_threshold_mb = 64u;
+        /** Memtable flush threshold in MiB; when exceeded, auto-freeze triggers backpressure.
+         *  0 = use dynamic sizing based on system RAM and dimension (default).
+         *  > 0 = manual override (use static threshold for backward compatibility).
+         */
+        uint32_t memtable_flush_threshold_mb = 0u;
         /** If true, when memtable exceeds threshold the vector engine will Freeze() before accepting more writes. */
         bool auto_freeze_on_pressure = true;
+
+        // Dynamic memtable sizing (enabled by default when memtable_flush_threshold_mb == 0)
+        float memtable_budget_pct = 0.15f;  // 15% of available RAM
+        uint32_t memtable_min_vectors_per_segment = 8192;  // Target vectors per segment
+        uint32_t memtable_min_threshold_mb = 16u;  // Minimum threshold
+        uint32_t memtable_max_threshold_mb = 512u;  // Maximum threshold
+        // Velocity dampening: allow temporary headroom during burst writes (0-1.0)
+        float memtable_burst_dampening_factor = 0.2f;  // 20% headroom (enabled by default)
     
         /** Optional hard cap for memtable size in MiB (0 = unlimited, derive behavior from flush threshold only). */
         uint32_t max_memtable_mb = 0;
@@ -173,19 +184,28 @@ namespace pomai
             switch (edge_profile)
             {
                 case EdgeProfile::kEdgeSafe:
-                    memtable_flush_threshold_mb = 16u;
+                    memtable_flush_threshold_mb = 0u;  // Enable dynamic sizing
+                    memtable_budget_pct = 0.10f;  // 10% RAM budget for memory-constrained
+                    memtable_min_threshold_mb = 8u;
+                    memtable_max_threshold_mb = 32u;
                     max_memtable_mb = 64u;
                     auto_freeze_on_pressure = true;
                     fsync = FsyncPolicy::kAlways;
                     break;
                 case EdgeProfile::kEdgeBalanced:
-                    memtable_flush_threshold_mb = 64u;
+                    memtable_flush_threshold_mb = 0u;  // Enable dynamic sizing
+                    memtable_budget_pct = 0.15f;  // 15% RAM budget (balanced)
+                    memtable_min_threshold_mb = 16u;
+                    memtable_max_threshold_mb = 256u;
                     max_memtable_mb = 256u;
                     auto_freeze_on_pressure = true;
                     fsync = FsyncPolicy::kAlways;
                     break;
                 case EdgeProfile::kEdgeFast:
-                    memtable_flush_threshold_mb = 128u;
+                    memtable_flush_threshold_mb = 0u;  // Enable dynamic sizing
+                    memtable_budget_pct = 0.20f;  // 20% RAM budget for throughput
+                    memtable_min_threshold_mb = 32u;
+                    memtable_max_threshold_mb = 512u;
                     max_memtable_mb = 512u;
                     auto_freeze_on_pressure = true;
                     fsync = FsyncPolicy::kNever;

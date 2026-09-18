@@ -1,7 +1,6 @@
 #pragma once
-#include <memory>
+#include <atomic>
 #include <optional>
-#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -15,9 +14,12 @@
 #include "snapshot.h"
 #include "semantic_lifecycle.h"
 #include "scheduler.h"
+#include "utils/palloc_smart_ptr.h"
+#include "psync/psync_shared.h"
 
 namespace pomai::core
 {
+    using namespace psync; // Bring psync primitives into scope
 
     class VectorEngine;
     class SyncReceiver;
@@ -80,16 +82,32 @@ namespace pomai::core
         static constexpr std::string_view kDefaultMembrane = "__default__";
 
     private:
+        // RAII guard for thread-safe batch counting
+        class BatchScopeGuard {
+        public:
+            explicit BatchScopeGuard(std::atomic<uint32_t>& counter) : counter_(counter) {
+                counter_.fetch_add(1, std::memory_order_relaxed);
+            }
+            ~BatchScopeGuard() {
+                counter_.fetch_sub(1, std::memory_order_relaxed);
+            }
+            BatchScopeGuard(const BatchScopeGuard&) = delete;
+            BatchScopeGuard& operator=(const BatchScopeGuard&) = delete;
+        private:
+            std::atomic<uint32_t>& counter_;
+        };
+
         struct MembraneState
         {
             pomai::MembraneSpec spec;
-            std::unique_ptr<VectorEngine> vector_engine;
+            alloc::UniquePtr<VectorEngine> vector_engine;
             SemanticLifecycle lifecycle;
+            std::atomic<uint32_t> active_batch_count{0};  // Thread-safe batch tracking
         };
 
         MembraneState *GetMembraneOrNull(std::string_view name);
         const MembraneState *GetMembraneOrNull(std::string_view name) const;
-        std::shared_ptr<MembraneState> GetMembrane(std::string_view name) const;
+        alloc::SharedPtr<MembraneState> GetMembrane(std::string_view name) const;
 
         /** Backpressure helper: if enabled and over threshold, Freeze() before writes. */
         Status MaybeApplyBackpressure(MembraneState* state);
@@ -98,8 +116,8 @@ namespace pomai::core
         pomai::DBOptions base_;
         bool opened_ = false;
 
-        mutable std::shared_mutex membranes_mu_;
-        std::unordered_map<std::string, std::shared_ptr<MembraneState>> membranes_;
+        mutable psync::SharedMutex membranes_mu_;
+        std::unordered_map<std::string, alloc::SharedPtr<MembraneState>> membranes_;
         TaskScheduler scheduler_;
     };
 

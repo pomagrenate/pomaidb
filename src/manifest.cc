@@ -8,8 +8,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -500,10 +498,9 @@ namespace pomai::storage
         if (!st.ok())
             return st;
 
-        // Remove membrane directory (recursive removal simulation)
+        // Remove membrane directory
         std::string membrane_dir = MembraneDir(root_path, name);
-        // For now, just remove the manifest file
-        return storage::PallocFilesystem::RemoveFile(MembraneManifestPath(root_path, name).c_str());
+        return storage::PallocFilesystem::RemoveDirRecursive(membrane_dir.c_str());
     }
 
     pomai::Status Manifest::ListMembranes(std::string_view root_path, std::vector<std::string> *out)

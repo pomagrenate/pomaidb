@@ -15,8 +15,9 @@
 #include "scalar_quantizer.h"
 #include "half_float_quantizer.h"
 #include "pomai_pq.h"
-#include "io_provider.h"
+#include "storage/palloc_io.h"
 #include "slice.h"
+#include "utils/palloc_smart_ptr.h"
 
 // Forward declare in correct namespace
 namespace pomai::index { class HnswIndex; class IvfFlatIndex; }
@@ -211,26 +212,30 @@ namespace pomai::table
         SegmentReader();
 
         std::string path_;
-        std::unique_ptr<storage::MemoryMappedFile> mmap_file_;
+        alloc::UniquePtr<storage::PallocFileMapping> mmap_file_;
         uint32_t count_ = 0;
         uint32_t dim_ = 0;
         std::size_t entry_size_ = 0;
         uint32_t entries_start_offset_ = 0;
         uint32_t metadata_offset_ = 0;
         uint32_t temporal_index_offset_ = 0;
-        
+
         // V4: Quantization properties
         pomai::QuantizationType quant_type_{pomai::QuantizationType::kNone};
-        std::unique_ptr<core::VectorQuantizer<float>> quantizer_;
-        
+        // Quantizers: use palloc for SIMD alignment via MakeAligned
+        alloc::UniquePtr<core::VectorQuantizer<float>> quantizer_;
+
         const uint8_t* base_addr_ = nullptr;
         std::size_t file_size_ = 0;
-        
-        std::unique_ptr<pomai::index::IvfFlatIndex> index_;
-        std::unique_ptr<pomai::index::HnswIndex> hnsw_index_;
+
+        // HNSW/IVF indices loaded from disk use alloc::UniquePtr::Adopt
+        // because upstream libraries allocate with new during deserialization
+        alloc::UniquePtr<pomai::index::IvfFlatIndex> index_;
+        alloc::UniquePtr<pomai::index::HnswIndex> hnsw_index_;
         // kPq8: Product Quantizer loaded from .pq sidecar for ADC scoring.
-        std::unique_ptr<core::ProductQuantizer> pq_;
-        
+        // Also uses Adopt because Load() allocates with new
+        alloc::UniquePtr<core::ProductQuantizer> pq_;
+
         // Internal helpers
         void GetMetadata(uint32_t index, pomai::Metadata* out) const;
     };

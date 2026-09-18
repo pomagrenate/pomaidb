@@ -11,6 +11,8 @@
 #include "utils/palloc_compat.h"
 #include "utils/logging.h"
 
+#include <filesystem>
+
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -26,6 +28,26 @@ namespace pomai::storage {
 // =============================================================================
 // Windows Implementation
 // =============================================================================
+
+namespace {
+inline void NormalizeWinPath(const char* in, char* out, size_t max_len) {
+    if (!in || !out || max_len == 0) return;
+    size_t r = 0;
+    size_t w = 0;
+    while (in[r] != '\0' && w + 1 < max_len) {
+        char c = (in[r] == '/') ? '\\' : in[r];
+        if (c == '\\' && w > 0 && out[w - 1] == '\\') {
+            if (!(w == 1 && out[0] == '\\')) {
+                r++;
+                continue;
+            }
+        }
+        out[w++] = c;
+        r++;
+    }
+    out[w] = '\0';
+}
+} // namespace
 
 class WindowsPallocSequentialFile : public PallocSequentialFile {
 public:
@@ -89,28 +111,30 @@ private:
 };
 
 Status PallocSequentialFile::Open(const char* path, alloc::UniquePtr<PallocSequentialFile>* out) {
-    POMAI_LOG_INFO("PallocSequentialFile::Open: path='{}'", path);
+    char norm_path[MAX_PATH];
+    NormalizeWinPath(path, norm_path, sizeof(norm_path));
+    POMAI_LOG_INFO("PallocSequentialFile::Open: path='{}'", norm_path);
     
-    HANDLE handle = ::CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE handle = ::CreateFileA(norm_path, GENERIC_READ,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         DWORD err = ::GetLastError();
         char err_msg[256];
         DWORD len = ::FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, 
                                       nullptr, err, 0, err_msg, sizeof(err_msg) - 1, nullptr);
         if (len > 0) {
-            // Remove trailing newlines
             while (len > 0 && (err_msg[len-1] == '\r' || err_msg[len-1] == '\n')) {
                 err_msg[--len] = '\0';
             }
-            POMAI_LOG_ERROR("PallocSequentialFile::Open FAILED for '{}': Windows error={}, message='{}'", path, err, err_msg);
+            POMAI_LOG_ERROR("PallocSequentialFile::Open FAILED for '{}': Windows error={}, message='{}'", norm_path, err, err_msg);
         } else {
-            POMAI_LOG_ERROR("PallocSequentialFile::Open FAILED for '{}': Windows error={}", path, err);
+            POMAI_LOG_ERROR("PallocSequentialFile::Open FAILED for '{}': Windows error={}", norm_path, err);
         }
         return Status::IOError("Failed to open file");
     }
 
-    POMAI_LOG_INFO("PallocSequentialFile::Open SUCCESS for '{}'", path);
+    POMAI_LOG_INFO("PallocSequentialFile::Open SUCCESS for '{}'", norm_path);
     auto file = alloc::UniquePtr<PallocSequentialFile>::Adopt(new WindowsPallocSequentialFile(handle));
     *out = std::move(file);
     return Status::Ok();
@@ -168,28 +192,30 @@ private:
 };
 
 Status PallocRandomAccessFile::Open(const char* path, alloc::UniquePtr<PallocRandomAccessFile>* out) {
-    POMAI_LOG_INFO("PallocRandomAccessFile::Open: path='{}'", path);
+    char norm_path[MAX_PATH];
+    NormalizeWinPath(path, norm_path, sizeof(norm_path));
+    POMAI_LOG_INFO("PallocRandomAccessFile::Open: path='{}'", norm_path);
     
-    HANDLE handle = ::CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE handle = ::CreateFileA(norm_path, GENERIC_READ,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         DWORD err = ::GetLastError();
         char err_msg[256];
         DWORD len = ::FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, 
                                       nullptr, err, 0, err_msg, sizeof(err_msg) - 1, nullptr);
         if (len > 0) {
-            // Remove trailing newlines
             while (len > 0 && (err_msg[len-1] == '\r' || err_msg[len-1] == '\n')) {
                 err_msg[--len] = '\0';
             }
-            POMAI_LOG_ERROR("PallocRandomAccessFile::Open FAILED for '{}': Windows error={}, message='{}'", path, err, err_msg);
+            POMAI_LOG_ERROR("PallocRandomAccessFile::Open FAILED for '{}': Windows error={}, message='{}'", norm_path, err, err_msg);
         } else {
-            POMAI_LOG_ERROR("PallocRandomAccessFile::Open FAILED for '{}': Windows error={}", path, err);
+            POMAI_LOG_ERROR("PallocRandomAccessFile::Open FAILED for '{}': Windows error={}", norm_path, err);
         }
         return Status::IOError("Failed to open file");
     }
 
-    POMAI_LOG_INFO("PallocRandomAccessFile::Open SUCCESS for '{}'", path);
+    POMAI_LOG_INFO("PallocRandomAccessFile::Open SUCCESS for '{}'", norm_path);
     auto file = alloc::UniquePtr<PallocRandomAccessFile>::Adopt(new WindowsPallocRandomAccessFile(handle));
     *out = std::move(file);
     return Status::Ok();
@@ -230,6 +256,36 @@ public:
             buffer_pos_ += data.size();
         }
 
+        return Status::Ok();
+    }
+
+    Status Pwrite(uint64_t offset, Slice data) override {
+        if (handle_ == INVALID_HANDLE_VALUE) return Status::IOError("File closed");
+
+        auto st = Flush();
+        if (!st.ok()) return st;
+
+        LARGE_INTEGER saved_pos;
+        LARGE_INTEGER zero;
+        zero.QuadPart = 0;
+        if (!::SetFilePointerEx(handle_, zero, &saved_pos, FILE_CURRENT)) {
+            return Status::IOError("Failed to query file position");
+        }
+
+        LARGE_INTEGER target_pos;
+        target_pos.QuadPart = static_cast<LONGLONG>(offset);
+        if (!::SetFilePointerEx(handle_, target_pos, nullptr, FILE_BEGIN)) {
+            return Status::IOError("Failed to seek for pwrite");
+        }
+
+        DWORD bytes_written = 0;
+        BOOL success = ::WriteFile(handle_, data.data(), static_cast<DWORD>(data.size()),
+                                    &bytes_written, nullptr);
+        ::SetFilePointerEx(handle_, saved_pos, nullptr, FILE_BEGIN);
+
+        if (!success || bytes_written != data.size()) {
+            return Status::IOError("Pwrite failed");
+        }
         return Status::Ok();
     }
 
@@ -280,63 +336,67 @@ private:
 };
 
 Status PallocWritableFile::Create(const char* path, alloc::UniquePtr<PallocWritableFile>* out) {
-    POMAI_LOG_INFO("PallocWritableFile::Create: path='{}'", path);
+    char norm_path[MAX_PATH];
+    NormalizeWinPath(path, norm_path, sizeof(norm_path));
+    POMAI_LOG_INFO("PallocWritableFile::Create: path='{}'", norm_path);
     
-    HANDLE handle = ::CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE handle = ::CreateFileA(norm_path, GENERIC_WRITE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         DWORD err = ::GetLastError();
         char err_msg[256];
         DWORD len = ::FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, 
                                       nullptr, err, 0, err_msg, sizeof(err_msg) - 1, nullptr);
         if (len > 0) {
-            // Remove trailing newlines
             while (len > 0 && (err_msg[len-1] == '\r' || err_msg[len-1] == '\n')) {
                 err_msg[--len] = '\0';
             }
-            POMAI_LOG_ERROR("PallocWritableFile::Create FAILED for '{}': Windows error={}, message='{}'", path, err, err_msg);
+            POMAI_LOG_ERROR("PallocWritableFile::Create FAILED for '{}': Windows error={}, message='{}'", norm_path, err, err_msg);
         } else {
-            POMAI_LOG_ERROR("PallocWritableFile::Create FAILED for '{}': Windows error={}", path, err);
+            POMAI_LOG_ERROR("PallocWritableFile::Create FAILED for '{}': Windows error={}", norm_path, err);
         }
         return Status::IOError("Failed to create file");
     }
 
-    POMAI_LOG_INFO("PallocWritableFile::Create SUCCESS for '{}'", path);
+    POMAI_LOG_INFO("PallocWritableFile::Create SUCCESS for '{}'", norm_path);
     auto file = alloc::UniquePtr<PallocWritableFile>::Adopt(new WindowsPallocWritableFile(handle));
     *out = std::move(file);
     return Status::Ok();
 }
 
 Status PallocWritableFile::OpenAppend(const char* path, alloc::UniquePtr<PallocWritableFile>* out) {
-    POMAI_LOG_INFO("PallocWritableFile::OpenAppend: path='{}'", path);
+    char norm_path[MAX_PATH];
+    NormalizeWinPath(path, norm_path, sizeof(norm_path));
+    POMAI_LOG_INFO("PallocWritableFile::OpenAppend: path='{}'", norm_path);
     
-    HANDLE handle = ::CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                                   OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE handle = ::CreateFileA(norm_path, GENERIC_WRITE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                  OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         DWORD err = ::GetLastError();
         char err_msg[256];
         DWORD len = ::FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, 
                                       nullptr, err, 0, err_msg, sizeof(err_msg) - 1, nullptr);
         if (len > 0) {
-            // Remove trailing newlines
             while (len > 0 && (err_msg[len-1] == '\r' || err_msg[len-1] == '\n')) {
                 err_msg[--len] = '\0';
             }
-            POMAI_LOG_ERROR("PallocWritableFile::OpenAppend FAILED for '{}': Windows error={}, message='{}'", path, err, err_msg);
+            POMAI_LOG_ERROR("PallocWritableFile::OpenAppend FAILED for '{}': Windows error={}, message='{}'", norm_path, err, err_msg);
         } else {
-            POMAI_LOG_ERROR("PallocWritableFile::OpenAppend FAILED for '{}': Windows error={}", path, err);
+            POMAI_LOG_ERROR("PallocWritableFile::OpenAppend FAILED for '{}': Windows error={}", norm_path, err);
         }
         return Status::IOError("Failed to open file for append");
     }
 
-    POMAI_LOG_INFO("PallocWritableFile::OpenAppend SUCCESS for '{}'", path);
+    POMAI_LOG_INFO("PallocWritableFile::OpenAppend SUCCESS for '{}'", norm_path);
 
     // Seek to end
     LARGE_INTEGER distance;
     distance.QuadPart = 0;
     if (!::SetFilePointerEx(handle, distance, nullptr, FILE_END)) {
         DWORD err = ::GetLastError();
-        POMAI_LOG_ERROR("PallocWritableFile::OpenAppend SetFilePointerEx FAILED for '{}': Windows error={}", path, err);
+        POMAI_LOG_ERROR("PallocWritableFile::OpenAppend SetFilePointerEx FAILED for '{}': Windows error={}", norm_path, err);
         ::CloseHandle(handle);
         return Status::IOError("Seek to end failed");
     }
@@ -349,7 +409,11 @@ Status PallocWritableFile::OpenAppend(const char* path, alloc::UniquePtr<PallocW
 class WindowsPallocFileMapping : public PallocFileMapping {
 public:
     static Status Map(const char* path, alloc::UniquePtr<PallocFileMapping>* out) {
-        HANDLE file_handle = ::CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
+        char norm_path[MAX_PATH];
+        NormalizeWinPath(path, norm_path, sizeof(norm_path));
+
+        HANDLE file_handle = ::CreateFileA(norm_path, GENERIC_READ,
+                                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file_handle == INVALID_HANDLE_VALUE) {
             return Status::IOError("Failed to open file for mapping");
@@ -568,6 +632,18 @@ public:
         return Status::Ok();
     }
 
+    Status Pwrite(uint64_t offset, Slice data) override {
+        if (fd_ < 0) return Status::IOError("File closed");
+        auto st = Flush();
+        if (!st.ok()) return st;
+
+        ssize_t written = ::pwrite(fd_, data.data(), data.size(), static_cast<off_t>(offset));
+        if (written < 0 || static_cast<size_t>(written) != data.size()) {
+            return Status::IOError("Pwrite failed");
+        }
+        return Status::Ok();
+    }
+
     uint64_t BytesWritten() const override {
         return bytes_written_ + buffer_pos_;
     }
@@ -697,14 +773,8 @@ PallocFileMapping::~PallocFileMapping() = default;
 #ifdef _WIN32
 
 Status PallocFilesystem::FileExists(const char* path) {
-    // Normalize path separators on Windows
     char normalized_path[MAX_PATH];
-    ::strncpy(normalized_path, path, MAX_PATH - 1);
-    normalized_path[MAX_PATH - 1] = '\0';
-    
-    for (char* p = normalized_path; *p; ++p) {
-        if (*p == '/') *p = '\\';
-    }
+    NormalizeWinPath(path, normalized_path, sizeof(normalized_path));
     
     DWORD attrs = ::GetFileAttributesA(normalized_path);
     if (attrs == INVALID_FILE_ATTRIBUTES) {
@@ -718,8 +788,11 @@ Status PallocFilesystem::FileExists(const char* path) {
 }
 
 Status PallocFilesystem::GetFileSize(const char* path, uint64_t* size) {
+    char normalized_path[MAX_PATH];
+    NormalizeWinPath(path, normalized_path, sizeof(normalized_path));
+
     WIN32_FILE_ATTRIBUTE_DATA attrs;
-    if (!::GetFileAttributesExA(path, GetFileExInfoStandard, &attrs)) {
+    if (!::GetFileAttributesExA(normalized_path, GetFileExInfoStandard, &attrs)) {
         return Status::IOError("GetFileAttributesEx failed");
     }
     LARGE_INTEGER file_size;
@@ -730,9 +803,12 @@ Status PallocFilesystem::GetFileSize(const char* path, uint64_t* size) {
 }
 
 Status PallocFilesystem::RemoveFile(const char* path) {
-    if (!::DeleteFileA(path)) {
+    char normalized_path[MAX_PATH];
+    NormalizeWinPath(path, normalized_path, sizeof(normalized_path));
+
+    if (!::DeleteFileA(normalized_path)) {
         DWORD err = ::GetLastError();
-        if (err == ERROR_FILE_NOT_FOUND) {
+        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) {
             return Status::Ok(); // Delete succeeded, file already gone
         }
         return Status::IOError("DeleteFile failed");
@@ -740,17 +816,21 @@ Status PallocFilesystem::RemoveFile(const char* path) {
     return Status::Ok();
 }
 
-Status PallocFilesystem::CreateDir(const char* path) {
-    // Create directory recursively
-    // Convert forward slashes to backslashes on Windows
+Status PallocFilesystem::RemoveDirRecursive(const char* path) {
+    if (!path || path[0] == '\0') return Status::InvalidArgument("empty path");
     char normalized_path[MAX_PATH];
-    ::strncpy(normalized_path, path, MAX_PATH - 1);
-    normalized_path[MAX_PATH - 1] = '\0';
-    
-    // Normalize path separators
-    for (char* p = normalized_path; *p; ++p) {
-        if (*p == '/') *p = '\\';
+    NormalizeWinPath(path, normalized_path, sizeof(normalized_path));
+    std::error_code ec;
+    std::filesystem::remove_all(normalized_path, ec);
+    if (ec) {
+        return Status::IOError(std::string("remove_all failed: ") + ec.message());
     }
+    return Status::Ok();
+}
+
+Status PallocFilesystem::CreateDir(const char* path) {
+    char normalized_path[MAX_PATH];
+    NormalizeWinPath(path, normalized_path, sizeof(normalized_path));
 
     POMAI_LOG_INFO("PallocFilesystem::CreateDir: path='{}'", normalized_path);
 
@@ -764,10 +844,15 @@ Status PallocFilesystem::CreateDir(const char* path) {
     // Try to create parent directories first
     char* last_slash = ::strrchr(normalized_path, '\\');
     if (last_slash && last_slash != normalized_path) {
-        *last_slash = '\0';
-        auto st = CreateDir(normalized_path);
-        if (!st.ok()) return st;
-        *last_slash = '\\';
+        // If parent is drive root (e.g. C:\ or D:\) do not recurse
+        if (last_slash - normalized_path == 2 && normalized_path[1] == ':') {
+            // Drive root already exists
+        } else {
+            *last_slash = '\0';
+            auto st = CreateDir(normalized_path);
+            if (!st.ok()) return st;
+            *last_slash = '\\';
+        }
     }
 
     if (!::CreateDirectoryA(normalized_path, nullptr)) {
@@ -828,6 +913,16 @@ Status PallocFilesystem::RemoveFile(const char* path) {
             return Status::Ok(); // Delete succeeded, file already gone
         }
         return Status::IOError("unlink failed");
+    }
+    return Status::Ok();
+}
+
+Status PallocFilesystem::RemoveDirRecursive(const char* path) {
+    if (!path || path[0] == '\0') return Status::InvalidArgument("empty path");
+    std::error_code ec;
+    std::filesystem::remove_all(path, ec);
+    if (ec) {
+        return Status::IOError(std::string("remove_all failed: ") + ec.message());
     }
     return Status::Ok();
 }

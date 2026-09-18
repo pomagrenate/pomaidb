@@ -16,7 +16,7 @@ Compass::Compass(MetricType metric) : metric_(metric) {}
 
 Compass::~Compass() = default;
 
-void Compass::UpdateLocules(std::vector<std::shared_ptr<storage::Locule>> locules) {
+void Compass::UpdateLocules(std::vector<alloc::SharedPtr<storage::Locule>> locules) {
     locules_ = std::move(locules);
 }
 

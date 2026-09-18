@@ -18,6 +18,7 @@
 
 #include "pomegranate_engine.h"
 #include "locule.h"
+#include "utils/palloc_smart_ptr.h"
 #include "aril.h"
 #include "options.h"
 #include "pomai_format.h"
@@ -129,8 +130,8 @@ POMAI_TEST(Extinction_10000_PersistenceMutations) {
         auto mem_copy = std::make_unique<uint8_t[]>(test_buf.size());
         std::memcpy(mem_copy.get(), test_buf.data(), test_buf.size());
 
-        std::shared_ptr<storage::Locule> loc;
-        Status st = storage::Locule::OpenFromMemory(std::move(mem_copy), test_buf.size(), &loc);
+        alloc::SharedPtr<storage::Locule> loc;
+        Status st = storage::Locule::OpenFromMemory(mem_copy.get(), test_buf.size(), &loc);
 
         if (!st.ok() || loc == nullptr) {
             rejected_corruptions++;

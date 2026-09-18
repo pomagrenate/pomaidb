@@ -243,9 +243,12 @@ RindTombstoneSnapshot Rind::CaptureTombstoneSnapshot() const {
     std::shared_lock<std::shared_mutex> lock(mu_);
     if (!opened_) return RindTombstoneSnapshot{};
 
-    if (tombstones_dirty_ || !cached_tombstones_) {
-        cached_tombstones_ = std::make_shared<const std::unordered_set<VectorId>>(tombstones_);
-        tombstones_dirty_ = false;
+    if (tombstones_dirty_.load(std::memory_order_acquire) || !cached_tombstones_) {
+        std::lock_guard<std::mutex> snap_lock(snapshot_mu_);
+        if (tombstones_dirty_.load(std::memory_order_relaxed) || !cached_tombstones_) {
+            cached_tombstones_ = std::make_shared<const std::unordered_set<VectorId>>(tombstones_);
+            tombstones_dirty_.store(false, std::memory_order_release);
+        }
     }
     return RindTombstoneSnapshot(cached_tombstones_);
 }

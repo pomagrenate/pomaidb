@@ -17,6 +17,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <filesystem>
 
 #include "rind.h"
 #include "status.h"
@@ -28,7 +29,8 @@ namespace {
 POMAI_TEST(RindConcurrency_MultiThreadedSnapshotConsistency) {
     auto* env = pomai::Env::Default();
     std::string test_dir = "test_rind_concurrency_db";
-    (void)env->DeleteFile(test_dir);
+    std::error_code ec;
+    std::filesystem::remove_all(test_dir, ec);
 
     const uint32_t dim = 8;
     pomai::ingest::Rind rind(env, test_dir, dim, pomai::MetricType::kL2,
@@ -108,7 +110,7 @@ POMAI_TEST(RindConcurrency_MultiThreadedSnapshotConsistency) {
     }
 
     POMAI_EXPECT_OK(rind.Close());
-    (void)env->DeleteFile(test_dir);
+    std::filesystem::remove_all(test_dir, ec);
 }
 
 } // namespace

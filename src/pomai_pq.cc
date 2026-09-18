@@ -9,7 +9,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstring>
-#include <fstream>
+#include "storage/palloc_io.h"
 #include <limits>
 #include <memory>
 #include <random>
@@ -213,37 +213,65 @@ pomai::Status ProductQuantizer::Save(const std::string& path) const
 {
     if (invalid_)
         return pomai::Status::InvalidArgument("ProductQuantizer: invalid configuration (dim % M != 0 or nbits != 8)");
-    std::ofstream f(path, std::ios::binary);
-    if (!f) return pomai::Status::IOError("Cannot open PQ file for write: " + path);
+    alloc::UniquePtr<storage::PallocWritableFile> f;
+    auto st = storage::PallocWritableFile::Create(path.c_str(), &f);
+    if (!st.ok()) return st;
+
     const uint32_t magic = 0x504D4151; // 'PMAQ'
-    f.write(reinterpret_cast<const char*>(&magic),   sizeof(magic));
-    f.write(reinterpret_cast<const char*>(&dim_),    sizeof(dim_));
-    f.write(reinterpret_cast<const char*>(&M_),      sizeof(M_));
-    f.write(reinterpret_cast<const char*>(&nbits_),  sizeof(nbits_));
+    st = f->Append(Slice(reinterpret_cast<const char*>(&magic),   sizeof(magic)));
+    if (!st.ok()) return st;
+    st = f->Append(Slice(reinterpret_cast<const char*>(&dim_),    sizeof(dim_)));
+    if (!st.ok()) return st;
+    st = f->Append(Slice(reinterpret_cast<const char*>(&M_),      sizeof(M_)));
+    if (!st.ok()) return st;
+    st = f->Append(Slice(reinterpret_cast<const char*>(&nbits_),  sizeof(nbits_)));
+    if (!st.ok()) return st;
     const std::size_t cent_sz = centroids_.size() * sizeof(float);
-    f.write(reinterpret_cast<const char*>(centroids_.data()), cent_sz);
-    if (!f) return pomai::Status::IOError("Write failed: " + path);
-    return pomai::Status::Ok();
+    st = f->Append(Slice(reinterpret_cast<const char*>(centroids_.data()), cent_sz));
+    if (!st.ok()) return st;
+    st = f->Flush();
+    if (!st.ok()) return st;
+    return f->Close();
 }
 
 pomai::Status ProductQuantizer::Load(const std::string& path,
                                       std::unique_ptr<ProductQuantizer>* out)
 {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return pomai::Status::IOError("Cannot open PQ file: " + path);
-    uint32_t magic, dim, M, nbits;
-    f.read(reinterpret_cast<char*>(&magic),  sizeof(magic));
-    f.read(reinterpret_cast<char*>(&dim),    sizeof(dim));
-    f.read(reinterpret_cast<char*>(&M),      sizeof(M));
-    f.read(reinterpret_cast<char*>(&nbits),  sizeof(nbits));
+    alloc::UniquePtr<storage::PallocSequentialFile> f;
+    auto st = storage::PallocSequentialFile::Open(path.c_str(), &f);
+    if (!st.ok()) return st;
+
+    Slice s;
+    st = f->Read(sizeof(uint32_t) * 4, &s);
+    if (!st.ok() || s.size() < sizeof(uint32_t) * 4) {
+        return pomai::Status::IOError("Failed to read header from PQ file: " + path);
+    }
+    const uint32_t* u32_ptr = reinterpret_cast<const uint32_t*>(s.data());
+    uint32_t magic = u32_ptr[0];
+    uint32_t dim   = u32_ptr[1];
+    uint32_t M     = u32_ptr[2];
+    uint32_t nbits = u32_ptr[3];
+
     if (magic != 0x504D4151u)
         return pomai::Status::Corruption("Bad PQ magic in " + path);
     if (dim == 0 || M == 0 || (dim % M) != 0 || nbits != 8)
         return pomai::Status::Corruption("Invalid PQ parameters in file (dim % M != 0 or nbits != 8)");
     auto pq = std::make_unique<ProductQuantizer>(dim, M, nbits);
     const std::size_t cent_sz = pq->centroids_.size() * sizeof(float);
-    f.read(reinterpret_cast<char*>(pq->centroids_.data()), cent_sz);
-    if (!f) return pomai::Status::IOError("Read failed: " + path);
+    
+    char* dst = reinterpret_cast<char*>(pq->centroids_.data());
+    size_t remaining = cent_sz;
+    while (remaining > 0) {
+        size_t to_read = std::min(remaining, static_cast<size_t>(64 * 1024));
+        st = f->Read(to_read, &s);
+        if (!st.ok() || s.size() != to_read) {
+            return pomai::Status::IOError("Read centroids failed: " + path);
+        }
+        std::memcpy(dst, s.data(), to_read);
+        dst += to_read;
+        remaining -= to_read;
+    }
+
     pq->trained_ = true;
     *out = std::move(pq);
     return pomai::Status::Ok();

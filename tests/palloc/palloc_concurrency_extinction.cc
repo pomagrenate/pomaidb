@@ -1,4 +1,4 @@
-﻿#include "tests/common/test_main.h"
+#include "tests/common/test_main.h"
 #include "palloc_oracle.h"
 
 #include <palloc.h>
@@ -20,9 +20,11 @@ namespace pomai::palloc_qa {
 POMAI_TEST(PallocConcurrency_ThreadMigration_CrossThreadFree) {
     // Thread A allocates -> Thread B frees
     // Thread B allocates -> Thread C frees
-    // Thread C allocates -> Thread A frees
+    // Thread C allocates -> Thread D frees
+    // Thread D allocates -> Thread A frees
     constexpr int kNumThreads = 4;
     constexpr int kOperationsPerThread = 10000;
+    constexpr size_t kMaxQueueCapacity = 128;
 
     struct WorkItem {
         void* ptr;
@@ -32,8 +34,8 @@ POMAI_TEST(PallocConcurrency_ThreadMigration_CrossThreadFree) {
 
     std::vector<std::queue<WorkItem>> queues(kNumThreads);
     std::vector<std::mutex> mutexes(kNumThreads);
-    std::vector<std::condition_variable> cvs(kNumThreads);
-    std::atomic<bool> done{false};
+    std::vector<std::condition_variable> cv_items(kNumThreads);
+    std::atomic<int> threads_finished{0};
 
     std::vector<std::thread> threads;
     threads.reserve(kNumThreads);
@@ -44,68 +46,79 @@ POMAI_TEST(PallocConcurrency_ThreadMigration_CrossThreadFree) {
             std::mt19937 rng(42 + t);
             std::uniform_int_distribution<size_t> size_dist(16, 4096);
 
-            for (int i = 0; i < kOperationsPerThread; ++i) {
-                // 1. Allocate block
-                size_t sz = size_dist(rng);
-                void* p = pa_malloc_aligned(sz, 16);
-                POMAI_EXPECT_TRUE(p != nullptr);
-                uint32_t marker = static_cast<uint32_t>((t << 24) | (i & 0xFFFFFF));
-                std::memset(p, static_cast<uint8_t>(marker & 0xFF), sz);
+            int sent = 0;
+            int received = 0;
 
-                // 2. Enqueue to next thread
-                {
-                    std::lock_guard<std::mutex> lock(mutexes[next_t]);
-                    queues[next_t].push({p, sz, marker});
+            while (sent < kOperationsPerThread || received < kOperationsPerThread) {
+                // 1. Send if under target and downstream queue has capacity
+                if (sent < kOperationsPerThread) {
+                    bool can_send = false;
+                    {
+                        std::lock_guard<std::mutex> lock(mutexes[next_t]);
+                        if (queues[next_t].size() < kMaxQueueCapacity) {
+                            can_send = true;
+                        }
+                    }
+
+                    if (can_send) {
+                        size_t sz = size_dist(rng);
+                        void* p = pa_malloc_aligned(sz, 16);
+                        POMAI_EXPECT_TRUE(p != nullptr);
+
+                        uint32_t marker = static_cast<uint32_t>((t << 24) | (sent & 0xFFFFFF));
+                        std::memset(p, static_cast<uint8_t>(marker & 0xFF), sz);
+
+                        {
+                            std::lock_guard<std::mutex> lock(mutexes[next_t]);
+                            queues[next_t].push({p, sz, marker});
+                        }
+                        cv_items[next_t].notify_one();
+                        sent++;
+                    }
                 }
-                cvs[next_t].notify_one();
 
-                // 3. Dequeue and free from our queue
+                // 2. Receive and free from our queue
                 WorkItem item{nullptr, 0, 0};
                 {
                     std::unique_lock<std::mutex> lock(mutexes[t]);
-                    if (cvs[t].wait_for(lock, std::chrono::milliseconds(5), [&]() { return !queues[t].empty(); })) {
-                        item = queues[t].front();
-                        queues[t].pop();
+                    if (sent < kOperationsPerThread) {
+                        if (!queues[t].empty()) {
+                            item = queues[t].front();
+                            queues[t].pop();
+                        }
+                    } else if (received < kOperationsPerThread) {
+                        cv_items[t].wait(lock, [&]() { return !queues[t].empty(); });
+                        if (!queues[t].empty()) {
+                            item = queues[t].front();
+                            queues[t].pop();
+                        }
                     }
                 }
+
                 if (item.ptr) {
-                    // Verify marker
                     uint8_t exp = static_cast<uint8_t>(item.marker & 0xFF);
-                    POMAI_EXPECT_EQ(static_cast<uint8_t*>(item.ptr)[0], exp);
-                    POMAI_EXPECT_EQ(static_cast<uint8_t*>(item.ptr)[item.size - 1], exp);
+                    uint8_t actual0 = static_cast<uint8_t*>(item.ptr)[0];
+                    uint8_t actualN = static_cast<uint8_t*>(item.ptr)[item.size - 1];
+                    POMAI_EXPECT_EQ(actual0, exp);
+                    POMAI_EXPECT_EQ(actualN, exp);
                     pa_free(item.ptr);
+                    received++;
+                } else if (sent < kOperationsPerThread) {
+                    std::this_thread::yield();
                 }
             }
 
-            // Drain remaining
-            while (true) {
-                WorkItem item{nullptr, 0, 0};
-                {
-                    std::unique_lock<std::mutex> lock(mutexes[t]);
-                    if (queues[t].empty()) break;
-                    item = queues[t].front();
-                    queues[t].pop();
-                }
-                if (item.ptr) {
-                    uint8_t exp = static_cast<uint8_t>(item.marker & 0xFF);
-                    POMAI_EXPECT_EQ(static_cast<uint8_t*>(item.ptr)[0], exp);
-                    pa_free(item.ptr);
-                }
+            // Barrier: synchronize thread completion. Peer threads must not terminate
+            // and abandon their heaps while other threads are still in-flight.
+            threads_finished.fetch_add(1, std::memory_order_acq_rel);
+            while (threads_finished.load(std::memory_order_acquire) < kNumThreads) {
+                std::this_thread::yield();
             }
         });
     }
 
     for (auto& th : threads) {
         th.join();
-    }
-
-    // Drain any remaining across all queues
-    for (int t = 0; t < kNumThreads; ++t) {
-        while (!queues[t].empty()) {
-            WorkItem item = queues[t].front();
-            queues[t].pop();
-            pa_free(item.ptr);
-        }
     }
 }
 

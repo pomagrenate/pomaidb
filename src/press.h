@@ -12,7 +12,6 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -22,7 +21,6 @@
 #include "options.h"
 #include "rind.h"
 #include "status.h"
-#include "utils/env.h"
 
 namespace pomai::compact {
 
@@ -41,8 +39,7 @@ struct PressOptions {
 
 class Press {
 public:
-    Press(Env* env,
-          std::string db_dir,
+    Press(std::string db_dir,
           uint32_t dim,
           MetricType metric,
           PressOptions options = {});
@@ -62,7 +59,6 @@ public:
     Status PressFrozenRindOnly(ingest::Rind* rind, manifest::FruitMap* fruit_map);
 
 private:
-    Env* env_;
     std::string db_dir_;
     uint32_t dim_;
     MetricType metric_;

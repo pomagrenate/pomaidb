@@ -18,6 +18,7 @@
 
 #include "pomegranate_engine.h"
 #include "locule.h"
+#include "utils/palloc_smart_ptr.h"
 #include "aril.h"
 #include "options.h"
 #include "pomai_format.h"
@@ -108,8 +109,8 @@ POMAI_TEST(Corruption_Truncation_NeverCrashes) {
         trunc_file.close();
 
         // Attempt reopening Locule directly
-        std::shared_ptr<storage::Locule> loc;
-        auto st = storage::Locule::Open(Env::Default(), locule_file, &loc);
+        alloc::SharedPtr<storage::Locule> loc;
+        auto st = storage::Locule::Open(locule_file, &loc);
         // If truncated before all declared data/footer structures, MUST return corruption or error
         if (trunc_sz < min_required) {
             POMAI_EXPECT_TRUE(!st.ok() || loc == nullptr);
@@ -167,8 +168,8 @@ POMAI_TEST(Corruption_IntegerOverflowOffsets_NeverCrashes) {
             f.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
             f.close();
 
-            std::shared_ptr<storage::Locule> loc;
-            auto st = storage::Locule::Open(Env::Default(), locule_file, &loc);
+            alloc::SharedPtr<storage::Locule> loc;
+            auto st = storage::Locule::Open(locule_file, &loc);
             POMAI_EXPECT_TRUE(!st.ok() || loc == nullptr);
         }
 
@@ -184,8 +185,8 @@ POMAI_TEST(Corruption_IntegerOverflowOffsets_NeverCrashes) {
                 f.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
                 f.close();
 
-                std::shared_ptr<storage::Locule> loc;
-                auto st = storage::Locule::Open(Env::Default(), locule_file, &loc);
+                alloc::SharedPtr<storage::Locule> loc;
+                auto st = storage::Locule::Open(locule_file, &loc);
                 POMAI_EXPECT_TRUE(!st.ok() || loc == nullptr);
             }
         }
@@ -217,8 +218,8 @@ POMAI_TEST(Corruption_UnderallocatedSections_RejectsGracefully) {
     f.write(reinterpret_cast<const char*>(valid_bytes.data()), valid_bytes.size());
     f.close();
 
-    std::shared_ptr<storage::Locule> loc;
-    auto st = storage::Locule::Open(Env::Default(), locule_file, &loc);
+    alloc::SharedPtr<storage::Locule> loc;
+    auto st = storage::Locule::Open(locule_file, &loc);
     // Must reject, or if opened, GetVector must never read out of bounds
     if (st.ok() && loc && loc->aril_count() > 0) {
         std::vector<float> out_vec;
@@ -259,8 +260,8 @@ POMAI_TEST(Corruption_MutationalFuzzing_NeverSegfaults) {
         f.close();
 
         // Must open/fail gracefully without crashing
-        std::shared_ptr<storage::Locule> loc;
-        (void)storage::Locule::Open(Env::Default(), locule_file, &loc);
+        alloc::SharedPtr<storage::Locule> loc;
+        (void)storage::Locule::Open(locule_file, &loc);
     }
 }
 

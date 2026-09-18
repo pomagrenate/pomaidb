@@ -5,7 +5,7 @@
 #include <vector>
 
 #ifndef M_PI
-#define M_PI 3.14159265358979323846
+#define M_PI 3.1415926535897932384626433832795028841971693993751058209749445923078164062862089986280348253421170679821480865132823066470938446095505822317253594081284811174502841027019385211055596446229489549303819644288109756659334461284756482337867831652712019091456485669234603486104543266482133936072602491412737245870066063155881748815209209628292540917153643678925903600113305305488204665213841469519415116094330572703657595919530921861173819326117931051185480744623799627495673518857527248912279381830119491298336733624406566430860213949463952247371907021798609437027705392171762931767523846748184676694051320005681271452635608277857713427577896091736371787214684409012249534301465495853710507922796892589235420199561121290219608640344181598136297747713099605187072113499999983729780499510597317328160963185950244594553469083026425223082533446850352619311881710100031378387528865875332083814206171776691473035982534904287554687311595628638823537875937519577818577805321712268066130019278766111959092164201989380952572010654858632788659361533
 #endif
 
 namespace pomai::core::simd {
@@ -14,15 +14,41 @@ namespace {
 constexpr double kEarthRadiusMeters = 6371000.0;
 
 // Internal AVX2 implementation for L2 distance (used by RMSD)
+// CRITICAL FIX: Use aligned loads and add prefetching
 __attribute__((target("avx2,fma")))
 float MeshL2Avx2(const float* a, const float* b, std::size_t n) {
     __m256 sum = _mm256_setzero_ps();
     std::size_t i = 0;
+    
+    // Main loop with aligned loads and prefetching
+    for (; i + 15 < n; i += 16) {
+        // Prefetch next cache line
+        _mm_prefetch((const char*)(a + i + 16), _MM_HINT_T0);
+        _mm_prefetch((const char*)(b + i + 16), _MM_HINT_T0);
+        
+        // Process 16 elements (2 AVX2 vectors)
+        __m256 va0 = _mm256_load_ps(a + i);       // Aligned load
+        __m256 vb0 = _mm256_load_ps(b + i);       // Aligned load
+        __m256 diff0 = _mm256_sub_ps(va0, vb0);
+        
+        __m256 va1 = _mm256_load_ps(a + i + 8);   // Aligned load
+        __m256 vb1 = _mm256_load_ps(b + i + 8);   // Aligned load
+        __m256 diff1 = _mm256_sub_ps(va1, vb1);
+        
+#ifdef __FMA__
+        sum = _mm256_fmadd_ps(diff0, diff0, sum);
+        sum = _mm256_fmadd_ps(diff1, diff1, sum);
+#else
+        sum = _mm256_add_ps(sum, _mm256_mul_ps(diff0, diff0));
+        sum = _mm256_add_ps(sum, _mm256_mul_ps(diff1, diff1));
+#endif
+    }
+    
+    // Handle remaining elements with unaligned loads
     for (; i + 7 < n; i += 8) {
         __m256 va = _mm256_loadu_ps(a + i);
         __m256 vb = _mm256_loadu_ps(b + i);
         __m256 diff = _mm256_sub_ps(va, vb);
-        // sum = sum + diff * diff
 #ifdef __FMA__
         sum = _mm256_fmadd_ps(diff, diff, sum);
 #else

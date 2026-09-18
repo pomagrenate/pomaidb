@@ -4,8 +4,9 @@ pdb_status_t pdb_segment_flush(pdb_t* db, const pdb_memtable_t* memtable, const 
     if (!db || !memtable || !out_filepath) return PDB_ERR_INVALID_ARGUMENT;
     if (memtable->count == 0) return PDB_SUCCESS;
 
-    FILE* f = fopen(out_filepath, "w+b");
-    if (!f) return PDB_ERR_IO_FAILURE;
+    pdb_file_t f;
+    pdb_status_t st = pdb_file_create(out_filepath, &f);
+    if (st != PDB_SUCCESS) return PDB_ERR_IO_FAILURE;
 
     size_t dim = db->options.dim;
     size_t count = memtable->count;
@@ -41,14 +42,14 @@ pdb_status_t pdb_segment_flush(pdb_t* db, const pdb_memtable_t* memtable, const 
     hdr.header_crc32c = pdb_crc32c(&hdr, offsetof(pdb_seg_header_t, header_crc32c), 0);
 
     /* 1. Write Header (4096 Bytes) */
-    if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) {
-        fclose(f);
+    if (pdb_file_write(&f, &hdr, sizeof(hdr)) != PDB_SUCCESS) {
+        pdb_file_close(&f);
         return PDB_ERR_IO_FAILURE;
     }
 
     /* 2. Write 64-Byte Aligned Vector Payload */
-    if (fwrite(memtable->vectors, vec_bytes, 1, f) != 1) {
-        fclose(f);
+    if (pdb_file_write(&f, memtable->vectors, vec_bytes) != PDB_SUCCESS) {
+        pdb_file_close(&f);
         return PDB_ERR_IO_FAILURE;
     }
 
@@ -57,16 +58,16 @@ pdb_status_t pdb_segment_flush(pdb_t* db, const pdb_memtable_t* memtable, const 
     if (written_so_far < hdr.id_data_offset) {
         size_t pad_len = (size_t)(hdr.id_data_offset - written_so_far);
         char pad[64] = {0};
-        if (fwrite(pad, pad_len, 1, f) != 1) {
-            fclose(f);
+        if (pdb_file_write(&f, pad, pad_len) != PDB_SUCCESS) {
+            pdb_file_close(&f);
             return PDB_ERR_IO_FAILURE;
         }
         written_so_far += pad_len;
     }
 
     /* 3. Write ID array */
-    if (fwrite(memtable->ids, id_bytes, 1, f) != 1) {
-        fclose(f);
+    if (pdb_file_write(&f, memtable->ids, id_bytes) != PDB_SUCCESS) {
+        pdb_file_close(&f);
         return PDB_ERR_IO_FAILURE;
     }
     written_so_far += id_bytes;
@@ -75,21 +76,21 @@ pdb_status_t pdb_segment_flush(pdb_t* db, const pdb_memtable_t* memtable, const 
     if (written_so_far < hdr.tombstone_offset) {
         size_t pad_len = (size_t)(hdr.tombstone_offset - written_so_far);
         char pad[64] = {0};
-        if (fwrite(pad, pad_len, 1, f) != 1) {
-            fclose(f);
+        if (pdb_file_write(&f, pad, pad_len) != PDB_SUCCESS) {
+            pdb_file_close(&f);
             return PDB_ERR_IO_FAILURE;
         }
         written_so_far += pad_len;
     }
 
     /* 4. Write Tombstone bitset */
-    if (fwrite(memtable->tombstones, tomb_bytes, 1, f) != 1) {
-        fclose(f);
+    if (pdb_file_write(&f, memtable->tombstones, tomb_bytes) != PDB_SUCCESS) {
+        pdb_file_close(&f);
         return PDB_ERR_IO_FAILURE;
     }
 
-    fflush(f);
-    fclose(f);
+    pdb_file_flush(&f);
+    pdb_file_close(&f);
 
     return PDB_SUCCESS;
 }
@@ -103,10 +104,12 @@ pdb_status_t pdb_segment_open(const char* filepath, pdb_segment_t** out_seg) {
     snprintf(seg->filepath, sizeof(seg->filepath), "%s", filepath);
 
 #if defined(_WIN32) || defined(_WIN64)
+    char norm_path[MAX_PATH];
+    pdb_normalize_win_path(filepath, norm_path, sizeof(norm_path));
     seg->file_handle = CreateFileA(
-        filepath,
+        norm_path,
         GENERIC_READ,
-        FILE_SHARE_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL,
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,

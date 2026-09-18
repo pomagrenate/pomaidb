@@ -247,11 +247,304 @@ typedef struct __attribute__((packed)) {
 _Static_assert(sizeof(pdb_wal_footer_t) == 64, "pdb_wal_footer_t must be 64 bytes");
 #pragma pack(pop)
 
+/* --------------------------------------------------------------------------
+ * Direct OS I/O Runtime (pdb_file_t) with palloc-backed 4096-byte buffers
+ * Zero-libc file streaming for C11 runtime.
+ * ----------------------------------------------------------------------- */
+typedef struct {
+#if defined(_WIN32) || defined(_WIN64)
+    HANDLE   handle;
+#else
+    int      fd;
+#endif
+    uint8_t* buf;
+    size_t   buf_cap;
+    size_t   buf_pos;
+    size_t   buf_valid;
+    uint64_t file_offset;
+    bool     is_write;
+    bool     is_open;
+} pdb_file_t;
+
+static inline void pdb_normalize_win_path(const char* in, char* out, size_t max_len) {
+    if (!in || !out || max_len == 0) return;
+    size_t r = 0, w = 0;
+    while (in[r] != '\0' && w + 1 < max_len) {
+        char c = (in[r] == '/') ? '\\' : in[r];
+        if (c == '\\' && w > 0 && out[w - 1] == '\\') {
+            if (!(w == 1 && out[0] == '\\')) {
+                r++;
+                continue;
+            }
+        }
+        out[w++] = c;
+        r++;
+    }
+    out[w] = '\0';
+}
+
+static inline pdb_status_t pdb_file_flush(pdb_file_t* f) {
+    if (!f || !f->is_open) return PDB_ERR_INVALID_ARGUMENT;
+    if (f->is_write && f->buf_pos > 0) {
+#if defined(_WIN32) || defined(_WIN64)
+        DWORD written = 0;
+        if (!WriteFile(f->handle, f->buf, (DWORD)f->buf_pos, &written, NULL) || written != f->buf_pos) {
+            return PDB_ERR_IO_FAILURE;
+        }
+#else
+        ssize_t written = write(f->fd, f->buf, f->buf_pos);
+        if (written < 0 || (size_t)written != f->buf_pos) {
+            return PDB_ERR_IO_FAILURE;
+        }
+#endif
+        f->file_offset += f->buf_pos;
+        f->buf_pos = 0;
+    }
+    return PDB_SUCCESS;
+}
+
+static inline pdb_status_t pdb_file_sync(pdb_file_t* f) {
+    if (!f || !f->is_open) return PDB_ERR_INVALID_ARGUMENT;
+    pdb_status_t st = pdb_file_flush(f);
+    if (st != PDB_SUCCESS) return st;
+#if defined(_WIN32) || defined(_WIN64)
+    if (!FlushFileBuffers(f->handle)) return PDB_ERR_IO_FAILURE;
+#else
+    if (fsync(f->fd) < 0) return PDB_ERR_IO_FAILURE;
+#endif
+    return PDB_SUCCESS;
+}
+
+static inline pdb_status_t pdb_file_create(const char* path, pdb_file_t* out) {
+    if (!path || !out) return PDB_ERR_INVALID_ARGUMENT;
+    memset(out, 0, sizeof(pdb_file_t));
+    out->buf_cap = 65536;
+    out->buf = (uint8_t*)pa_malloc_aligned(out->buf_cap, 4096);
+    if (!out->buf) return PDB_ERR_OUT_OF_MEMORY;
+
+#if defined(_WIN32) || defined(_WIN64)
+    char norm[512];
+    pdb_normalize_win_path(path, norm, sizeof(norm));
+    out->handle = CreateFileA(norm, GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (out->handle == INVALID_HANDLE_VALUE) {
+        pa_free(out->buf);
+        out->buf = NULL;
+        return PDB_ERR_IO_FAILURE;
+    }
+#else
+    out->fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (out->fd < 0) {
+        pa_free(out->buf);
+        out->buf = NULL;
+        return PDB_ERR_IO_FAILURE;
+    }
+#endif
+    out->is_write = true;
+    out->is_open = true;
+    return PDB_SUCCESS;
+}
+
+static inline pdb_status_t pdb_file_open_append(const char* path, pdb_file_t* out) {
+    if (!path || !out) return PDB_ERR_INVALID_ARGUMENT;
+    memset(out, 0, sizeof(pdb_file_t));
+    out->buf_cap = 65536;
+    out->buf = (uint8_t*)pa_malloc_aligned(out->buf_cap, 4096);
+    if (!out->buf) return PDB_ERR_OUT_OF_MEMORY;
+
+#if defined(_WIN32) || defined(_WIN64)
+    char norm[512];
+    pdb_normalize_win_path(path, norm, sizeof(norm));
+    out->handle = CreateFileA(norm, GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (out->handle == INVALID_HANDLE_VALUE) {
+        pa_free(out->buf);
+        out->buf = NULL;
+        return PDB_ERR_IO_FAILURE;
+    }
+    LARGE_INTEGER zero;
+    zero.QuadPart = 0;
+    LARGE_INTEGER end_pos;
+    if (!SetFilePointerEx(out->handle, zero, &end_pos, FILE_END)) {
+        CloseHandle(out->handle);
+        pa_free(out->buf);
+        out->buf = NULL;
+        return PDB_ERR_IO_FAILURE;
+    }
+    out->file_offset = (uint64_t)end_pos.QuadPart;
+#else
+    out->fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (out->fd < 0) {
+        pa_free(out->buf);
+        out->buf = NULL;
+        return PDB_ERR_IO_FAILURE;
+    }
+    out->file_offset = (uint64_t)lseek(out->fd, 0, SEEK_END);
+#endif
+    out->is_write = true;
+    out->is_open = true;
+    return PDB_SUCCESS;
+}
+
+static inline pdb_status_t pdb_file_open_read(const char* path, pdb_file_t* out) {
+    if (!path || !out) return PDB_ERR_INVALID_ARGUMENT;
+    memset(out, 0, sizeof(pdb_file_t));
+    out->buf_cap = 65536;
+    out->buf = (uint8_t*)pa_malloc_aligned(out->buf_cap, 4096);
+    if (!out->buf) return PDB_ERR_OUT_OF_MEMORY;
+
+#if defined(_WIN32) || defined(_WIN64)
+    char norm[512];
+    pdb_normalize_win_path(path, norm, sizeof(norm));
+    out->handle = CreateFileA(norm, GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (out->handle == INVALID_HANDLE_VALUE) {
+        pa_free(out->buf);
+        out->buf = NULL;
+        return PDB_ERR_IO_FAILURE;
+    }
+#else
+    out->fd = open(path, O_RDONLY);
+    if (out->fd < 0) {
+        pa_free(out->buf);
+        out->buf = NULL;
+        return PDB_ERR_IO_FAILURE;
+    }
+#endif
+    out->is_write = false;
+    out->is_open = true;
+    return PDB_SUCCESS;
+}
+
+static inline pdb_status_t pdb_file_write(pdb_file_t* f, const void* data, size_t len) {
+    if (!f || !f->is_open || !f->is_write || !data) return PDB_ERR_INVALID_ARGUMENT;
+    if (len == 0) return PDB_SUCCESS;
+
+    if (f->buf_pos + len > f->buf_cap) {
+        pdb_status_t st = pdb_file_flush(f);
+        if (st != PDB_SUCCESS) return st;
+    }
+
+    if (len > f->buf_cap) {
+#if defined(_WIN32) || defined(_WIN64)
+        DWORD written = 0;
+        if (!WriteFile(f->handle, data, (DWORD)len, &written, NULL) || written != len) {
+            return PDB_ERR_IO_FAILURE;
+        }
+#else
+        ssize_t written = write(f->fd, data, len);
+        if (written < 0 || (size_t)written != len) {
+            return PDB_ERR_IO_FAILURE;
+        }
+#endif
+        f->file_offset += len;
+    } else {
+        memcpy(f->buf + f->buf_pos, data, len);
+        f->buf_pos += len;
+    }
+    return PDB_SUCCESS;
+}
+
+static inline pdb_status_t pdb_file_read_exact(pdb_file_t* f, void* dest, size_t len) {
+    if (!f || !f->is_open || !dest) return PDB_ERR_INVALID_ARGUMENT;
+    if (len == 0) return PDB_SUCCESS;
+
+    uint8_t* p = (uint8_t*)dest;
+    size_t remaining = len;
+
+    while (remaining > 0) {
+        if (f->buf_pos < f->buf_valid) {
+            size_t avail = f->buf_valid - f->buf_pos;
+            size_t to_copy = (remaining < avail) ? remaining : avail;
+            memcpy(p, f->buf + f->buf_pos, to_copy);
+            f->buf_pos += to_copy;
+            p += to_copy;
+            remaining -= to_copy;
+        } else {
+            f->buf_pos = 0;
+            f->buf_valid = 0;
+            if (remaining >= f->buf_cap) {
+#if defined(_WIN32) || defined(_WIN64)
+                DWORD bytes_read = 0;
+                if (!ReadFile(f->handle, p, (DWORD)remaining, &bytes_read, NULL) || bytes_read != remaining) {
+                    return PDB_ERR_IO_FAILURE;
+                }
+#else
+                ssize_t bytes_read = read(f->fd, p, remaining);
+                if (bytes_read != (ssize_t)remaining) return PDB_ERR_IO_FAILURE;
+#endif
+                f->file_offset += remaining;
+                return PDB_SUCCESS;
+            } else {
+#if defined(_WIN32) || defined(_WIN64)
+                DWORD bytes_read = 0;
+                if (!ReadFile(f->handle, f->buf, (DWORD)f->buf_cap, &bytes_read, NULL) || bytes_read == 0) {
+                    return PDB_ERR_IO_FAILURE;
+                }
+                f->buf_valid = bytes_read;
+#else
+                ssize_t bytes_read = read(f->fd, f->buf, f->buf_cap);
+                if (bytes_read <= 0) return PDB_ERR_IO_FAILURE;
+                f->buf_valid = (size_t)bytes_read;
+#endif
+                f->file_offset += f->buf_valid;
+            }
+        }
+    }
+    return PDB_SUCCESS;
+}
+
+static inline pdb_status_t pdb_file_seek(pdb_file_t* f, uint64_t offset) {
+    if (!f || !f->is_open) return PDB_ERR_INVALID_ARGUMENT;
+    if (f->is_write) {
+        pdb_status_t st = pdb_file_flush(f);
+        if (st != PDB_SUCCESS) return st;
+    }
+    f->buf_pos = 0;
+    f->buf_valid = 0;
+
+#if defined(_WIN32) || defined(_WIN64)
+    LARGE_INTEGER li;
+    li.QuadPart = (LONGLONG)offset;
+    if (!SetFilePointerEx(f->handle, li, NULL, FILE_BEGIN)) return PDB_ERR_IO_FAILURE;
+#else
+    if (lseek(f->fd, (off_t)offset, SEEK_SET) < 0) return PDB_ERR_IO_FAILURE;
+#endif
+    f->file_offset = offset;
+    return PDB_SUCCESS;
+}
+
+static inline void pdb_file_close(pdb_file_t* f) {
+    if (!f || !f->is_open) return;
+    if (f->is_write) {
+        pdb_file_sync(f);
+    }
+#if defined(_WIN32) || defined(_WIN64)
+    if (f->handle != INVALID_HANDLE_VALUE && f->handle != NULL) {
+        CloseHandle(f->handle);
+        f->handle = INVALID_HANDLE_VALUE;
+    }
+#else
+    if (f->fd >= 0) {
+        close(f->fd);
+        f->fd = -1;
+    }
+#endif
+    if (f->buf) {
+        pa_free(f->buf);
+        f->buf = NULL;
+    }
+    f->is_open = false;
+}
+
 typedef struct pdb_wal_s {
-    char     filepath[512];
-    FILE*    file_handle;
-    uint64_t current_lsn;
-    bool     direct_io;
+    char        filepath[512];
+    pdb_file_t  file;
+    uint64_t    current_lsn;
+    bool        direct_io;
 } pdb_wal_t;
 
 /* --------------------------------------------------------------------------

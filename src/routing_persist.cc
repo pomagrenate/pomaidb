@@ -2,11 +2,11 @@
 
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <vector>
 
 #include "crc32c.h"
-#include "posix_file.h"
+#include "storage/palloc_io.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::core::routing {
 namespace fs = std::filesystem;
@@ -70,50 +70,61 @@ bool Deserialize(const std::string& payload, RoutingTable* t) {
 
 pomai::Status AtomicWriteFileWithCrc(const std::string& final_path, const std::string& payload) {
     const std::string tmp = final_path + ".tmp";
-    pomai::util::PosixFile pf;
-    auto st = pomai::util::PosixFile::CreateTrunc(tmp, &pf);
+    alloc::UniquePtr<storage::PallocWritableFile> wf;
+    auto st = storage::PallocWritableFile::Create(tmp.c_str(), &wf);
+    if (!st.ok() || !wf) return st;
+
+    st = wf->Append(Slice(payload.data(), payload.size()));
     if (!st.ok()) return st;
 
-    st = pf.PWrite(0, payload.data(), payload.size());
-    if (!st.ok()) return st;
     const std::uint32_t crc = pomai::util::Crc32c(payload.data(), payload.size());
     char crc_buf[4];
     crc_buf[0] = static_cast<char>(crc & 0xFFu);
     crc_buf[1] = static_cast<char>((crc >> 8) & 0xFFu);
     crc_buf[2] = static_cast<char>((crc >> 16) & 0xFFu);
     crc_buf[3] = static_cast<char>((crc >> 24) & 0xFFu);
-    st = pf.PWrite(payload.size(), crc_buf, 4);
+
+    st = wf->Append(Slice(crc_buf, 4));
     if (!st.ok()) return st;
-    st = pf.SyncData();
+
+    st = wf->Sync();
     if (!st.ok()) return st;
-    st = pf.Close();
+
+    st = wf->Close();
     if (!st.ok()) return st;
 
     std::error_code ec;
     fs::rename(tmp, final_path, ec);
     if (ec) return pomai::Status::IOError("rename failed");
-    return pomai::util::FsyncDir(fs::path(final_path).parent_path().string());
+
+    return storage::PallocFilesystem::SyncDir(fs::path(final_path).parent_path().string().c_str());
 }
 
 std::optional<RoutingTable> LoadPath(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in.is_open()) return std::nullopt;
-    in.seekg(0, std::ios::end);
-    const std::streamoff n = in.tellg();
-    in.seekg(0, std::ios::beg);
-    if (n < 4) return std::nullopt;
-    std::string buf(static_cast<std::size_t>(n), '\0');
-    in.read(buf.data(), n);
-    if (!in.good()) return std::nullopt;
-    const std::size_t payload_len = static_cast<std::size_t>(n) - 4;
+    uint64_t file_size = 0;
+    auto st = storage::PallocFilesystem::GetFileSize(path.c_str(), &file_size);
+    if (!st.ok() || file_size < 4) return std::nullopt;
+
+    alloc::UniquePtr<storage::PallocRandomAccessFile> raf;
+    st = storage::PallocRandomAccessFile::Open(path.c_str(), &raf);
+    if (!st.ok() || !raf) return std::nullopt;
+
+    Slice read_res;
+    st = raf->Read(0, static_cast<size_t>(file_size), &read_res);
+    if (!st.ok() || read_res.size() != file_size) return std::nullopt;
+
+    const std::size_t payload_len = static_cast<std::size_t>(file_size) - 4;
+    const char* data = reinterpret_cast<const char*>(read_res.data());
     std::uint32_t stored_crc = 0;
     for (int i = 0; i < 4; ++i) {
-        stored_crc |= static_cast<std::uint32_t>(static_cast<unsigned char>(buf[payload_len + i])) << (8 * i);
+        stored_crc |= static_cast<std::uint32_t>(static_cast<unsigned char>(data[payload_len + i])) << (8 * i);
     }
-    const std::uint32_t computed = pomai::util::Crc32c(buf.data(), payload_len);
+    const std::uint32_t computed = pomai::util::Crc32c(data, payload_len);
     if (stored_crc != computed) return std::nullopt;
+
     RoutingTable table;
-    if (!Deserialize(buf.substr(0, payload_len), &table)) return std::nullopt;
+    std::string payload(data, payload_len);
+    if (!Deserialize(payload, &table)) return std::nullopt;
     return table;
 }
 

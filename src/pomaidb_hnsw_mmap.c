@@ -1,4 +1,5 @@
 #include "pomai/pomaidb_hnsw_mmap.h"
+#include "pomaidb_internal.h"
 
 #include <palloc.h>
 #include <palloc_vector.h>
@@ -355,8 +356,9 @@ int pdb_hnsw_builder_add(pdb_hnsw_builder_t* b, uint64_t external_id, const floa
 int pdb_hnsw_builder_freeze_file(pdb_hnsw_builder_t* b, const char* out_filepath) {
     if (!b || !out_filepath) return EINVAL;
 
-    FILE* f = fopen(out_filepath, "w+b");
-    if (!f) return EIO;
+    pdb_file_t f;
+    pdb_status_t st = pdb_file_create(out_filepath, &f);
+    if (st != PDB_SUCCESS) return EIO;
 
     size_t dim = b->dim;
     size_t count = b->count;
@@ -398,15 +400,15 @@ int pdb_hnsw_builder_freeze_file(pdb_hnsw_builder_t* b, const char* out_filepath
     hdr.header_crc32c = pdb_hnsw_crc32c(&hdr, offsetof(pdb_hnsw_mmap_header_t, header_crc32c), 0);
 
     /* 1. Write 4096-byte Page-Aligned Header */
-    if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) {
-        fclose(f);
+    if (pdb_file_write(&f, &hdr, sizeof(hdr)) != PDB_SUCCESS) {
+        pdb_file_close(&f);
         return EIO;
     }
 
     /* 2. Write Interleaved Node Records */
     uint8_t* rec_buf = (uint8_t*)pa_malloc(node_record_stride);
     if (!rec_buf) {
-        fclose(f);
+        pdb_file_close(&f);
         return ENOMEM;
     }
 
@@ -446,16 +448,16 @@ int pdb_hnsw_builder_freeze_file(pdb_hnsw_builder_t* b, const char* out_filepath
         float* vec_dest = (float*)(rec_buf + vector_rel_offset);
         memcpy(vec_dest, n->vector, dim * sizeof(float));
 
-        if (fwrite(rec_buf, node_record_stride, 1, f) != 1) {
+        if (pdb_file_write(&f, rec_buf, node_record_stride) != PDB_SUCCESS) {
             pa_free(rec_buf);
-            fclose(f);
+            pdb_file_close(&f);
             return EIO;
         }
     }
 
     pa_free(rec_buf);
-    fflush(f);
-    fclose(f);
+    pdb_file_flush(&f);
+    pdb_file_close(&f);
 
     return 0;
 }
@@ -515,10 +517,12 @@ int pdb_hnsw_mmap_open(const char* filepath, pdb_hnsw_mmap_t* out_graph) {
     memset(out_graph, 0, sizeof(pdb_hnsw_mmap_t));
 
 #if defined(_WIN32) || defined(_WIN64)
+    char norm_path[MAX_PATH];
+    pdb_normalize_win_path(filepath, norm_path, sizeof(norm_path));
     out_graph->file_handle = CreateFileA(
-        filepath,
+        norm_path,
         GENERIC_READ,
-        FILE_SHARE_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL,
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,

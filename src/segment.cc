@@ -3,6 +3,7 @@
 #include "ivf_flat.h"
 #include "hnsw_index.h"
 #include "palloc_compat.h"
+#include "utils/palloc_smart_ptr.h"
 
 #include "bit_quantizer.h"
 #include "scalar_quantizer.h"
@@ -76,8 +77,8 @@ namespace pomai::table
 
         // Open tmp file for streaming writes
         std::string tmp_path = path_ + ".tmp";
-        std::unique_ptr<storage::WritableFile> file;
-        auto st = storage::PosixIOProvider::NewWritableFile(tmp_path, &file);
+        alloc::UniquePtr<storage::PallocWritableFile> file;
+        auto st = storage::PallocWritableFile::Create(tmp_path.c_str(), &file);
         if (!st.ok()) return st;
 
         // Prepare header
@@ -91,7 +92,7 @@ namespace pomai::table
         const pomai::QuantizationType quant_type = index_params_.quant_type;
         h.quant_type = static_cast<uint8_t>(quant_type);
         
-        // Train Quantizer
+        // Train Quantizer - Keep std::unique_ptr for builder (internal temp)
         std::unique_ptr<core::VectorQuantizer<float>> quantizer;
         if (quant_type == pomai::QuantizationType::kSq8) {
             quantizer = std::make_unique<pomai::core::ScalarQuantizer8Bit>(dim_);
@@ -124,6 +125,7 @@ namespace pomai::table
         }
 
         // PQ8: train ProductQuantizer, store sub-quantizer count in reserved1[0]
+        // Keep std::unique_ptr for builder (internal temp)
         std::unique_ptr<core::ProductQuantizer> pq_quantizer;
         if (quant_type == pomai::QuantizationType::kPq8) {
             const uint32_t M = index_params_.pq_m > 0 ? index_params_.pq_m : 8u;
@@ -137,8 +139,8 @@ namespace pomai::table
                     pq_train.insert(pq_train.end(), e.vec.data, e.vec.data + dim_);
             }
             if (!pq_train.empty()) {
-                auto st = pq_quantizer->Train(pq_train.data(), pq_train.size() / dim_);
-                if (!st.ok()) return st;
+                auto train_st = pq_quantizer->Train(pq_train.data(), pq_train.size() / dim_);
+                if (!train_st.ok()) return train_st;
             }
             h.reserved1[0] = static_cast<uint8_t>(pq_quantizer->M()); // store M for reader
         }
@@ -198,14 +200,16 @@ namespace pomai::table
         }
 
         // Stream entries to disk
-        std::vector<uint8_t> entry_buffer(entry_size, 0);
+        void* raw_entry_buf = palloc_malloc_aligned(entry_size, 64);
+        if (!raw_entry_buf) return pomai::Status::ResourceExhausted("Failed to allocate entry buffer");
+        uint8_t* entry_buffer = static_cast<uint8_t*>(raw_entry_buf);
 
         for (const auto& e : entries_) {
-            std::memset(entry_buffer.data(), 0, entry_size);
+            std::memset(entry_buffer, 0, entry_size);
             size_t cursor = 0;
             
             // ID (8 bytes)
-            std::memcpy(entry_buffer.data() + cursor, &e.id, sizeof(e.id));
+            std::memcpy(entry_buffer + cursor, &e.id, sizeof(e.id));
             cursor += sizeof(e.id);
             
             // Flags + Padding (4 bytes)
@@ -226,19 +230,23 @@ namespace pomai::table
                 } else {
                     encoded.assign(vec_bytes, 0);
                 }
-                std::memcpy(entry_buffer.data() + cursor, encoded.data(), encoded.size());
+                std::memcpy(entry_buffer + cursor, encoded.data(), encoded.size());
             } else {
                 if (e.is_deleted) {
-                    std::memcpy(entry_buffer.data() + cursor, zero_buffer_.data(), dim_ * sizeof(float));
+                    std::memcpy(entry_buffer + cursor, zero_buffer_.data(), dim_ * sizeof(float));
                 } else {
-                    std::memcpy(entry_buffer.data() + cursor, e.vec.data, dim_ * sizeof(float));
+                    std::memcpy(entry_buffer + cursor, e.vec.data, dim_ * sizeof(float));
                 }
             }
 
-            st = file->Append(Slice(entry_buffer.data(), entry_size));
-            if (!st.ok()) return st;
-            crc = pomai::util::Crc32c(entry_buffer.data(), entry_size, crc);
+            st = file->Append(Slice(entry_buffer, entry_size));
+            if (!st.ok()) {
+                palloc_free(raw_entry_buf);
+                return st;
+            }
+            crc = pomai::util::Crc32c(entry_buffer, entry_size, crc);
         }
+        palloc_free(raw_entry_buf);
 
         // Prepare Metadata Block (Structured)
         std::vector<uint64_t> offsets;
@@ -431,13 +439,13 @@ namespace pomai::table
         SegmentReader* reader = new (raw) SegmentReader();
         reader->path_ = path;
 
-        auto st = storage::PosixIOProvider::NewMemoryMappedFile(path, &reader->mmap_file_);
+        auto st = storage::PallocFileMapping::Map(path.c_str(), &reader->mmap_file_);
         if (!st.ok()) {
             PallocDeleter(reader);
             return st;
         }
 
-        const uint8_t* data = reader->mmap_file_->Data();
+        const uint8_t* data = static_cast<const uint8_t*>(reader->mmap_file_->Data());
         size_t size = reader->mmap_file_->Size();
 
         if (size < sizeof(SegmentHeader)) {
@@ -489,13 +497,15 @@ namespace pomai::table
             }
             
             if (reader->quant_type_ == pomai::QuantizationType::kSq8) {
-                auto sq8 = std::make_unique<pomai::core::ScalarQuantizer8Bit>(h->dim);
+                auto sq8 = alloc::UniquePtr<core::ScalarQuantizer8Bit>::MakeAligned(nullptr, 64, h->dim);
                 sq8->LoadState(h->quant_min, h->quant_inv_scale);
                 reader->quantizer_ = std::move(sq8);
             } else if (reader->quant_type_ == pomai::QuantizationType::kFp16) {
-                reader->quantizer_ = std::make_unique<pomai::core::HalfFloatQuantizer>(h->dim);
+                auto fp16 = alloc::UniquePtr<core::HalfFloatQuantizer>::MakeAligned(nullptr, 64, h->dim);
+                reader->quantizer_ = std::move(fp16);
             } else if (reader->quant_type_ == pomai::QuantizationType::kBit) {
-                reader->quantizer_ = std::make_unique<pomai::core::BitQuantizer>(h->dim);
+                auto bit = alloc::UniquePtr<core::BitQuantizer>::MakeAligned(nullptr, 64, h->dim);
+                reader->quantizer_ = std::move(bit);
             }
         } else {
             if (h->version < 5) {
@@ -526,13 +536,24 @@ namespace pomai::table
         }
         std::string hnsw_path = idx_path + ".hnsw";
         idx_path += ".idx";
-        
+
         // Try HNSW first
-        st = pomai::index::HnswIndex::Load(hnsw_path, &reader->hnsw_index_);
-        if (!st.ok()) {
+        // NOTE: HNSW library allocates with new during Load; we use Adopt() to wrap
+        // the external allocation in alloc::UniquePtr for consistent ownership
+        std::unique_ptr<pomai::index::HnswIndex> hnsw_std;
+        st = pomai::index::HnswIndex::Load(hnsw_path, &hnsw_std);
+        if (st.ok()) {
+            reader->hnsw_index_ = alloc::UniquePtr<pomai::index::HnswIndex>::Adopt(hnsw_std.release());
+        } else {
             // Ignore error if not found (fallback to scan)
-            (void)pomai::index::IvfFlatIndex::Load(idx_path, &reader->index_);
-        } else if (reader->hnsw_index_ && reader->hnsw_index_->IsNoVectorPool()) {
+            std::unique_ptr<pomai::index::IvfFlatIndex> idx_std;
+            (void)pomai::index::IvfFlatIndex::Load(idx_path, &idx_std);
+            if (idx_std) {
+                reader->index_ = alloc::UniquePtr<pomai::index::IvfFlatIndex>::Adopt(idx_std.release());
+            }
+        }
+
+        if (reader->hnsw_index_ && reader->hnsw_index_->IsNoVectorPool()) {
             // No-pool mode: inject mmap-based vector resolver.
             // Layout per entry: [id:8][flags+pad:4][vector data starts at byte 12]
             const uint8_t* base      = reader->base_addr_;
@@ -546,6 +567,7 @@ namespace pomai::table
         }
 
         // kPq8: load ProductQuantizer sidecar for ADC scoring (best-effort)
+        // Note: ProductQuantizer::Load API uses std::unique_ptr (API boundary - keep as-is)
         if (reader->quant_type_ == pomai::QuantizationType::kPq8) {
             std::string pq_path = path;
             if (pq_path.size() > 4 && pq_path.substr(pq_path.size() - 4) == ".dat")
@@ -553,7 +575,7 @@ namespace pomai::table
             pq_path += ".pq";
             std::unique_ptr<core::ProductQuantizer> pq;
             if (core::ProductQuantizer::Load(pq_path, &pq).ok())
-                reader->pq_ = std::move(pq);
+                reader->pq_ = alloc::UniquePtr<core::ProductQuantizer>::Adopt(pq.release());
         }
 
         *out = Ptr(reader, PallocDeleter);

@@ -84,6 +84,11 @@ set(PA_BUILD_OBJECT OFF)
 set(PA_OVERRIDE OFF)
 add_subdirectory(third_party/palloc)
 
+# Hardcoded First-Class Native Synchronization: psync
+set(PSYNC_BUILD_TESTS OFF)
+set(PSYNC_BUILD_EXAMPLES OFF)
+add_subdirectory(third_party/psync)
+
 find_package(Threads REQUIRED)
 
 # =========================
@@ -167,6 +172,7 @@ target_include_directories(pomai
     ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
     ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
     ${POMAI_VULKAN_HEADERS_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/psync/include
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
   SYSTEM PRIVATE

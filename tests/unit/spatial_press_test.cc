@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <random>
 #include <span>
@@ -31,7 +32,8 @@ namespace {
 POMAI_TEST(SpatialPress_ClustersSeparatedCorrectly) {
     auto* env = pomai::Env::Default();
     std::string test_dir = "test_spatial_press_db";
-    (void)env->DeleteFile(test_dir);
+    std::error_code ec;
+    std::filesystem::remove_all(test_dir, ec);
 
     const uint32_t dim = 4;
     pomai::ingest::Rind rind(env, test_dir, dim, pomai::MetricType::kL2,
@@ -61,14 +63,14 @@ POMAI_TEST(SpatialPress_ClustersSeparatedCorrectly) {
     // Freeze memtable to make it eligible for compaction
     POMAI_EXPECT_OK(rind.Freeze());
 
-    pomai::manifest::FruitMap fruit_map(env, test_dir, dim, pomai::MetricType::kL2);
+    pomai::manifest::FruitMap fruit_map(test_dir, dim, pomai::MetricType::kL2);
     POMAI_EXPECT_OK(fruit_map.Open());
 
     pomai::compact::PressOptions press_opts;
     press_opts.target_aril_vector_count = 100;
     press_opts.target_locule_aril_count = 1; // 1 aril per locule -> 100 vectors per locule -> 3 locules
 
-    pomai::compact::Press press(env, test_dir, dim, pomai::MetricType::kL2, press_opts);
+    pomai::compact::Press press(test_dir, dim, pomai::MetricType::kL2, press_opts);
     POMAI_EXPECT_OK(press.Compact(&rind, &fruit_map));
 
     auto snapshot = fruit_map.CurrentSnapshot();
@@ -122,7 +124,7 @@ POMAI_TEST(SpatialPress_ClustersSeparatedCorrectly) {
     POMAI_EXPECT_EQ(peeled[0].locule->anchor().id, oriented[0].locule->anchor().id);
 
     POMAI_EXPECT_OK(rind.Close());
-    (void)env->DeleteFile(test_dir);
+    std::filesystem::remove_all(test_dir, ec);
 }
 
 } // namespace

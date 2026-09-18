@@ -39,9 +39,15 @@ class FlatHashMemMap {
   static constexpr uint64_t kEmpty         = uint64_t(-1);
   static constexpr size_t   kInitialCap    = 64; // must be power-of-2
 
-  struct Slot {
+  // CRITICAL FIX: Add cache-line padding to prevent false sharing
+  // On systems with 64-byte cache lines, concurrent access to adjacent slots
+  // can cause false sharing. We pad each slot to a full cache line.
+  static constexpr size_t kCacheLineSize = 64;
+  
+  struct alignas(kCacheLineSize) Slot {
     K key;
     V value;
+    char padding[kCacheLineSize - sizeof(K) - sizeof(V)];
   };
 
   // Unifying sentinel: a key == kEmpty marks an empty slot.

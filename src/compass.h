@@ -11,17 +11,17 @@
 
 #include <cmath>
 #include <cstdint>
-#include <memory>
 #include <span>
 #include <vector>
 
 #include "locule.h"
 #include "types.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::routing {
 
 struct OrientedLocule {
-    std::shared_ptr<storage::Locule> locule;
+    alloc::SharedPtr<storage::Locule> locule;
     float distance_to_centroid{0.0f};
     float min_possible_distance{0.0f}; // lower bound for query to any point in the locule
 };
@@ -31,7 +31,7 @@ public:
     explicit Compass(MetricType metric = MetricType::kL2);
     ~Compass();
 
-    void UpdateLocules(std::vector<std::shared_ptr<storage::Locule>> locules);
+    void UpdateLocules(std::vector<alloc::SharedPtr<storage::Locule>> locules);
 
     /**
      * Orient: Evaluates query proximity against all active Locule centroids.
@@ -54,7 +54,7 @@ public:
 
 private:
     MetricType metric_{MetricType::kL2};
-    std::vector<std::shared_ptr<storage::Locule>> locules_;
+    std::vector<alloc::SharedPtr<storage::Locule>> locules_;
 };
 
 } // namespace pomai::routing

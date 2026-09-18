@@ -25,8 +25,8 @@ pdb_status_t pdb_wal_init(pdb_wal_t* wal, const char* dir_path, bool direct_io) 
     snprintf(wal->filepath, sizeof(wal->filepath), "%s/pomaidb.wal", dir_path);
 
     /* Open append-binary mode */
-    wal->file_handle = fopen(wal->filepath, "a+b");
-    if (!wal->file_handle) {
+    pdb_status_t st = pdb_file_open_append(wal->filepath, &wal->file);
+    if (st != PDB_SUCCESS) {
         return PDB_ERR_IO_FAILURE;
     }
 
@@ -35,7 +35,7 @@ pdb_status_t pdb_wal_init(pdb_wal_t* wal, const char* dir_path, bool direct_io) 
 
 pdb_status_t pdb_wal_append(pdb_wal_t* wal, const pdb_vector_batch_t* batch, uint64_t* out_lsn) {
     if (!wal || !batch) return PDB_ERR_INVALID_ARGUMENT;
-    if (!wal->file_handle) {
+    if (!wal->file.is_open) {
         /* In-memory WAL bypass */
         if (out_lsn) *out_lsn = ++wal->current_lsn;
         return PDB_SUCCESS;
@@ -81,12 +81,12 @@ pdb_status_t pdb_wal_append(pdb_wal_t* wal, const pdb_vector_batch_t* batch, uin
     ftr.composite_crc32c = pdb_crc32c(&hdr, sizeof(hdr), payload_crc);
 
     /* Sequential write: Header -> Vectors -> IDs -> Footer */
-    if (fwrite(&hdr, sizeof(hdr), 1, wal->file_handle) != 1) return PDB_ERR_IO_FAILURE;
-    if (fwrite(batch->vectors, batch->count * batch->dim * sizeof(float), 1, wal->file_handle) != 1) return PDB_ERR_IO_FAILURE;
-    if (fwrite(batch->ids, batch->count * sizeof(uint64_t), 1, wal->file_handle) != 1) return PDB_ERR_IO_FAILURE;
-    if (fwrite(&ftr, sizeof(ftr), 1, wal->file_handle) != 1) return PDB_ERR_IO_FAILURE;
+    if (pdb_file_write(&wal->file, &hdr, sizeof(hdr)) != PDB_SUCCESS) return PDB_ERR_IO_FAILURE;
+    if (pdb_file_write(&wal->file, batch->vectors, batch->count * batch->dim * sizeof(float)) != PDB_SUCCESS) return PDB_ERR_IO_FAILURE;
+    if (pdb_file_write(&wal->file, batch->ids, batch->count * sizeof(uint64_t)) != PDB_SUCCESS) return PDB_ERR_IO_FAILURE;
+    if (pdb_file_write(&wal->file, &ftr, sizeof(ftr)) != PDB_SUCCESS) return PDB_ERR_IO_FAILURE;
 
-    fflush(wal->file_handle);
+    pdb_file_flush(&wal->file);
 
     if (out_lsn) *out_lsn = lsn;
     return PDB_SUCCESS;
@@ -94,14 +94,21 @@ pdb_status_t pdb_wal_append(pdb_wal_t* wal, const pdb_vector_batch_t* batch, uin
 
 pdb_status_t pdb_wal_recover(pdb_wal_t* wal, pdb_t* db) {
     if (!wal || !db) return PDB_ERR_INVALID_ARGUMENT;
-    if (!wal->file_handle) return PDB_SUCCESS;
+    if (!wal->file.is_open) return PDB_SUCCESS;
 
-    fseek(wal->file_handle, 0, SEEK_SET);
+    pdb_file_close(&wal->file);
+
+    pdb_file_t reader;
+    pdb_status_t st = pdb_file_open_read(wal->filepath, &reader);
+    if (st != PDB_SUCCESS) {
+        pdb_file_open_append(wal->filepath, &wal->file);
+        return PDB_SUCCESS;
+    }
 
     pdb_wal_header_t hdr;
     pdb_wal_footer_t ftr;
 
-    while (fread(&hdr, sizeof(hdr), 1, wal->file_handle) == 1) {
+    while (pdb_file_read_exact(&reader, &hdr, sizeof(hdr)) == PDB_SUCCESS) {
         if (memcmp(hdr.magic, "POMAIWAL", 8) != 0) {
             /* Corruption or end of valid WAL */
             break;
@@ -122,12 +129,14 @@ pdb_status_t pdb_wal_recover(pdb_wal_t* wal, pdb_t* db) {
         if (!vec_buf || !id_buf) {
             if (vec_buf) pa_free(vec_buf);
             if (id_buf) pa_free(id_buf);
+            pdb_file_close(&reader);
+            pdb_file_open_append(wal->filepath, &wal->file);
             return PDB_ERR_OUT_OF_MEMORY;
         }
 
-        if (fread(vec_buf, vec_bytes, 1, wal->file_handle) != 1 ||
-            fread(id_buf, id_bytes, 1, wal->file_handle) != 1 ||
-            fread(&ftr, sizeof(ftr), 1, wal->file_handle) != 1) {
+        if (pdb_file_read_exact(&reader, vec_buf, vec_bytes) != PDB_SUCCESS ||
+            pdb_file_read_exact(&reader, id_buf, id_bytes) != PDB_SUCCESS ||
+            pdb_file_read_exact(&reader, &ftr, sizeof(ftr)) != PDB_SUCCESS) {
             /* Torn write at tail; discard partial write */
             pa_free(vec_buf);
             pa_free(id_buf);
@@ -172,14 +181,14 @@ pdb_status_t pdb_wal_recover(pdb_wal_t* wal, pdb_t* db) {
         pa_free(id_buf);
     }
 
+    pdb_file_close(&reader);
+    pdb_file_open_append(wal->filepath, &wal->file);
+
     db->current_lsn = wal->current_lsn;
     return PDB_SUCCESS;
 }
 
 void pdb_wal_close(pdb_wal_t* wal) {
     if (!wal) return;
-    if (wal->file_handle) {
-        fclose(wal->file_handle);
-        wal->file_handle = NULL;
-    }
+    pdb_file_close(&wal->file);
 }

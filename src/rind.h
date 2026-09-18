@@ -9,9 +9,11 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <span>
 #include <string>
@@ -123,8 +125,9 @@ private:
 
     // Fast Point-in-time tombstone snapshot tracking
     std::unordered_set<VectorId> tombstones_;
+    mutable std::mutex snapshot_mu_;
     mutable std::shared_ptr<const std::unordered_set<VectorId>> cached_tombstones_;
-    mutable bool tombstones_dirty_{true};
+    mutable std::atomic<bool> tombstones_dirty_{true};
 };
 
 } // namespace pomai::ingest

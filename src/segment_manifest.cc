@@ -6,7 +6,7 @@
 #include <unistd.h>
 #include <vector>
 
-#include "io_provider.h"
+#include "storage/palloc_io.h"
 #include "crc32c.h"
 
 namespace pomai::core {
@@ -18,17 +18,17 @@ namespace {
     constexpr std::string_view kManifestHeader = "pomai.manifest.v2";
     constexpr std::string_view kManifestHeaderAlt = "pomai.shard_manifest.v2";
     constexpr size_t kCrcSize = 4;
+    constexpr size_t kStreamReadChunkSize = 64 * 1024;
 
-    // Read file into string in 1MB chunks (streaming) to bound memory on embedded.
+    // Read file into string in 64KB chunks (streaming) to bound memory on embedded.
     static bool ReadFileStreaming(const fs::path& path, std::string* out) {
-        std::unique_ptr<SequentialFile> file;
-        if (!PosixIOProvider::NewSequentialFile(path, &file).ok()) return false;
+        alloc::UniquePtr<PallocSequentialFile> file;
+        std::string path_str = path.string();
+        if (!PallocSequentialFile::Open(path_str.c_str(), &file).ok()) return false;
         out->clear();
-        std::string chunk;
-        chunk.resize(kStreamReadChunkSize);
         for (;;) {
             Slice result;
-            pomai::Status s = file->Read(chunk.size(), &result, chunk.data());
+            pomai::Status s = file->Read(kStreamReadChunkSize, &result);
             if (!s.ok()) return false;
             if (result.empty()) break;
             out->append(reinterpret_cast<const char*>(result.data()), result.size());
@@ -135,8 +135,8 @@ pomai::Status SegmentManifest::Commit(const std::string& data_dir, const std::ve
     buffer.push_back(static_cast<char>((crc >> 16) & 0xFF));
     buffer.push_back(static_cast<char>((crc >> 24) & 0xFF));
 
-    std::unique_ptr<WritableFile> file;
-    pomai::Status st = PosixIOProvider::NewWritableFile(tmp, &file);
+    alloc::UniquePtr<PallocWritableFile> file;
+    pomai::Status st = PallocWritableFile::Create(tmp.string().c_str(), &file);
     if (!st.ok()) return st;
 
     st = file->Append(pomai::Slice(buffer));

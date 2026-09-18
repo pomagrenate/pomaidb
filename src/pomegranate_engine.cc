@@ -3,11 +3,14 @@
 // Copyright 2026 PomaiDB authors. MIT License.
 
 #include "pomegranate_engine.h"
+#include "utils/memtable_sizing.h"
 
 #include <algorithm>
 #include <map>
 
 namespace pomai::core {
+
+using pomai::utils::CalculateDynamicMemtableThreshold;
 
 namespace {
 
@@ -80,13 +83,12 @@ PomegranateEngine::~PomegranateEngine() {
 Status PomegranateEngine::Open() {
     if (opened_) return Status::Ok();
 
-    fruit_map_ = std::make_unique<manifest::FruitMap>(env_, opt_.path, opt_.dim, metric_);
+    fruit_map_ = std::make_unique<manifest::FruitMap>(opt_.path, opt_.dim, metric_);
     Status s = fruit_map_->Open();
     if (!s.ok()) return s;
 
-    size_t mem_threshold = (opt_.memtable_flush_threshold_mb > 0)
-                               ? static_cast<size_t>(opt_.memtable_flush_threshold_mb) * 1024 * 1024
-                               : 64 * 1024 * 1024;
+    // Calculate dynamic memtable threshold based on system resources and dimension
+    uint64_t mem_threshold = CalculateDynamicMemtableThreshold(opt_, opt_.dim);
     rind_ = std::make_unique<ingest::Rind>(env_, opt_.path, opt_.dim, metric_, opt_.fsync, mem_threshold);
     s = rind_->Open();
     if (!s.ok()) return s;
@@ -100,7 +102,7 @@ Status PomegranateEngine::Open() {
         if (press_opts.index_params.hnsw_ef_construction == 0) press_opts.index_params.hnsw_ef_construction = 200;
         if (press_opts.index_params.hnsw_ef_search == 0) press_opts.index_params.hnsw_ef_search = 64;
     }
-    press_ = std::make_unique<compact::Press>(env_, opt_.path, opt_.dim, metric_, press_opts);
+    press_ = std::make_unique<compact::Press>(opt_.path, opt_.dim, metric_, press_opts);
 
     opened_ = true;
     return Status::Ok();

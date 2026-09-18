@@ -9,11 +9,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <sstream>
 #include <streambuf>
+#include "storage/palloc_io.h"
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>  // For _mm_prefetch
+#endif
 
 #include "distance.h"
 
@@ -205,6 +209,15 @@ public:
             return pomai::Status::Ok();
         }
 
+        // CRITICAL FIX: Add prefetching for query vector to improve cache performance
+        // Prefetch the query vector into L1 cache before search
+        const float* query_ptr = query.data();
+#if defined(__x86_64__) || defined(_M_X64)
+        for (size_t i = 0; i < dim_; i += 64 / sizeof(float)) {
+            _mm_prefetch((const char*)(query_ptr + i), _MM_HINT_T0);
+        }
+#endif
+
         // Hard Invariant: ef_search >= topk
         size_t eff_ef = (ef_search > 0) ? static_cast<size_t>(ef_search) : opts_.ef_search;
         eff_ef = std::max<size_t>(eff_ef, topk);
@@ -386,32 +399,43 @@ pomai::Status HnswIndex::Save(const std::string& path) const {
     std::vector<uint8_t> buf;
     auto st = SaveToBuffer(&buf);
     if (!st.ok()) return st;
-    std::ofstream out(path, std::ios::binary);
-    if (!out.is_open()) {
-        return pomai::Status::IOError("Failed to open file for writing: " + path);
-    }
-    out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
-    return pomai::Status::Ok();
+
+    alloc::UniquePtr<storage::PallocWritableFile> file;
+    st = storage::PallocWritableFile::Create(path.c_str(), &file);
+    if (!st.ok()) return st;
+
+    st = file->Append(Slice(reinterpret_cast<const char*>(buf.data()), buf.size()));
+    if (!st.ok()) return st;
+    st = file->Flush();
+    if (!st.ok()) return st;
+    return file->Close();
 }
 
 pomai::Status HnswIndex::Load(const std::string& path,
                              std::unique_ptr<HnswIndex>* out) {
     if (!out) return pomai::Status::InvalidArgument("out pointer is null");
 
-    std::ifstream in(path, std::ios::binary | std::ios::ate);
-    if (!in.is_open()) {
-        return pomai::Status::IOError("Failed to open file for reading: " + path);
-    }
-    std::streamsize sz = in.tellg();
-    if (sz < static_cast<std::streamsize>(sizeof(PomaiHnswHeader))) {
+    uint64_t file_size = 0;
+    auto st = storage::PallocFilesystem::GetFileSize(path.c_str(), &file_size);
+    if (!st.ok()) return st;
+
+    if (file_size < sizeof(PomaiHnswHeader)) {
         return pomai::Status::Corruption("file too small for HNSW index");
     }
-    std::vector<uint8_t> buf(static_cast<size_t>(sz));
-    in.seekg(0, std::ios::beg);
-    in.read(reinterpret_cast<char*>(buf.data()), sz);
+
+    alloc::UniquePtr<storage::PallocRandomAccessFile> raf;
+    st = storage::PallocRandomAccessFile::Open(path.c_str(), &raf);
+    if (!st.ok()) return st;
+
+    Slice read_slice;
+    st = raf->Read(0, file_size, &read_slice);
+    if (!st.ok()) return st;
+    if (read_slice.size() != file_size) {
+        return pomai::Status::IOError("short read in HnswIndex::Load");
+    }
 
     PomaiHnswHeader hdr;
-    std::memcpy(&hdr, buf.data(), sizeof(hdr));
+    std::memcpy(&hdr, read_slice.data(), sizeof(hdr));
     if (hdr.magic != kPomaiHnswMagic || hdr.version != kPomaiHnswVersion) {
         return pomai::Status::Corruption("Invalid Pomai HNSW magic or version");
     }
@@ -422,7 +446,7 @@ pomai::Status HnswIndex::Load(const std::string& path,
     opts.ef_search = hdr.ef_search;
 
     auto index = std::make_unique<HnswIndex>(hdr.dim, opts, static_cast<pomai::MetricType>(hdr.metric));
-    auto st = index->LoadFromBuffer(buf.data(), buf.size());
+    st = index->LoadFromBuffer(reinterpret_cast<const uint8_t*>(read_slice.data()), read_slice.size());
     if (!st.ok()) return st;
 
     *out = std::move(index);

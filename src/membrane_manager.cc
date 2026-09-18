@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cstdlib>
 #include <chrono>
-#include <mutex>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -13,13 +12,14 @@
 #include "pomai.h"
 #include "iterator.h"
 #include "manifest.h"
-#include "env.h"
 #include "utils/logging.h"
 #include "storage/palloc_io.h"
 #include "utils/palloc_compat.h"
+#include "psync/psync_shared.h"
 
 namespace pomai::core
 {
+    using namespace psync; // Bring psync primitives into scope
 
 using pomai::utils::CalculateDynamicMemtableThreshold;
     MembraneManager::MembraneManager(pomai::DBOptions base) : base_(std::move(base)) {}
@@ -69,10 +69,6 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
         POMAI_LOG_INFO("Membranes directory created/verified: {}", membranes_dir);
 
         st = CreateMembrane(spec);
-        if (!st.ok()) {
-            POMAI_LOG_ERROR("Failed to create membrane: {} (code={})", st.message(), static_cast<int>(st.code()));
-            return st;
-        }
         if (st.code() == pomai::ErrorCode::kAlreadyExists)
         {
             pomai::MembraneSpec loaded_spec;
@@ -169,7 +165,7 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
         // CRITICAL FIX: Snapshot membrane pointers under minimal lock, then Flush outside lock
         std::vector<alloc::SharedPtr<MembraneState>> membranes_snapshot;
         {
-            std::shared_lock<std::shared_mutex> lock(membranes_mu_);
+            SharedLockGuard lock(membranes_mu_);
             membranes_snapshot.reserve(membranes_.size());
             for (auto &kv : membranes_) {
                 membranes_snapshot.push_back(kv.second);
@@ -190,7 +186,7 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
 
     Status MembraneManager::CloseAll()
     {
-        std::unique_lock<std::shared_mutex> lock(membranes_mu_);
+        UniqueLockGuard lock(membranes_mu_);
         for (auto &kv : membranes_) {
             if (kv.second && kv.second->vector_engine) {
                 (void)kv.second->vector_engine->Close();
@@ -203,7 +199,7 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
 
     alloc::SharedPtr<MembraneManager::MembraneState> MembraneManager::GetMembrane(std::string_view name) const
     {
-        std::shared_lock<std::shared_mutex> lock(membranes_mu_);
+        SharedLockGuard lock(membranes_mu_);
         auto it = membranes_.find(std::string(name));
         if (it == membranes_.end())
             return nullptr;
@@ -212,7 +208,7 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
 
     MembraneManager::MembraneState *MembraneManager::GetMembraneOrNull(std::string_view name)
     {
-        std::shared_lock<std::shared_mutex> lock(membranes_mu_);
+        SharedLockGuard lock(membranes_mu_);
         auto it = membranes_.find(std::string(name));
         if (it == membranes_.end())
             return nullptr;
@@ -221,7 +217,7 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
 
     const MembraneManager::MembraneState *MembraneManager::GetMembraneOrNull(std::string_view name) const
     {
-        std::shared_lock<std::shared_mutex> lock(membranes_mu_);
+        SharedLockGuard lock(membranes_mu_);
         auto it = membranes_.find(std::string(name));
         if (it == membranes_.end())
             return nullptr;
@@ -239,7 +235,7 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
         if (spec.shard_count == 0)
             return Status::InvalidArgument("membrane shard_count must be > 0");
 
-        std::unique_lock<std::shared_mutex> lock(membranes_mu_);
+        UniqueLockGuard lock(membranes_mu_);
         if (membranes_.find(spec.name) != membranes_.end())
             return Status::AlreadyExists("membrane already exists");
 
@@ -275,7 +271,7 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
     {
         alloc::SharedPtr<MembraneState> to_close;
         {
-            std::unique_lock<std::shared_mutex> lock(membranes_mu_);
+            UniqueLockGuard lock(membranes_mu_);
             auto it = membranes_.find(std::string(name));
             if (it == membranes_.end())
                 return Status::NotFound("membrane not found");
@@ -283,14 +279,16 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
             membranes_.erase(it);
         }
 
-        // 1. Persist to Manifest
-        auto st = storage::Manifest::DropMembrane(base_.path, name);
-        if (!st.ok()) return st;
-
-        // 2. Remove from Memory
+        // 1. Close and release resources before deleting on-disk files
         if (to_close && to_close->vector_engine) {
             (void)to_close->vector_engine->Close();
         }
+        to_close.reset();
+
+        // 2. Persist to Manifest and remove on-disk directory
+        auto st = storage::Manifest::DropMembrane(base_.path, name);
+        if (!st.ok()) return st;
+
         return Status::Ok();
     }
 
@@ -346,7 +344,7 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
     {
         if (!out)
             return Status::InvalidArgument("out is null");
-        std::shared_lock<std::shared_mutex> lock(membranes_mu_);
+        SharedLockGuard lock(membranes_mu_);
         out->clear();
         out->reserve(membranes_.size());
         for (const auto &kv : membranes_)

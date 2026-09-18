@@ -20,7 +20,11 @@ POMAI_TEST(EdgeProfile_LowRamDoesNotOverrideIndexParams) {
     POMAI_EXPECT_EQ(opt.index_params.hnsw_ef_construction, 256u);
     POMAI_EXPECT_EQ(opt.index_params.hnsw_ef_search, 96u);
     POMAI_EXPECT_EQ(opt.index_params.adaptive_threshold, 777u);
-    POMAI_EXPECT_EQ(opt.memtable_flush_threshold_mb, 16u);
+    // Dynamic sizing is now enabled by default (memtable_flush_threshold_mb = 0)
+    POMAI_EXPECT_EQ(opt.memtable_flush_threshold_mb, 0u);
+    POMAI_EXPECT_EQ(opt.memtable_budget_pct, 0.10f);  // 10% for memory-constrained
+    POMAI_EXPECT_EQ(opt.memtable_min_threshold_mb, 8u);
+    POMAI_EXPECT_EQ(opt.memtable_max_threshold_mb, 32u);
     POMAI_EXPECT_EQ(opt.max_memtable_mb, 64u);
     POMAI_EXPECT_EQ(static_cast<int>(opt.fsync), static_cast<int>(FsyncPolicy::kAlways));
 }

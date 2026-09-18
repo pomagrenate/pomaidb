@@ -10,7 +10,6 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <mutex>
 #include <span>
 #include <string>
@@ -21,7 +20,7 @@
 #include "status.h"
 #include "types.h"
 #include "metadata.h"
-#include "utils/env.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::manifest {
 
@@ -30,13 +29,13 @@ public:
     FruitSnapshot(uint64_t generation,
                   uint32_t dimension,
                   MetricType metric,
-                  std::vector<std::shared_ptr<storage::Locule>> locules);
+                  std::vector<alloc::SharedPtr<storage::Locule>> locules);
 
     [[nodiscard]] uint64_t generation() const noexcept { return generation_; }
     [[nodiscard]] uint32_t dimension() const noexcept { return dimension_; }
     [[nodiscard]] MetricType metric() const noexcept { return metric_; }
 
-    [[nodiscard]] const std::vector<std::shared_ptr<storage::Locule>>& locules() const noexcept { return locules_; }
+    [[nodiscard]] const std::vector<alloc::SharedPtr<storage::Locule>>& locules() const noexcept { return locules_; }
     [[nodiscard]] const routing::Compass& compass() const noexcept { return compass_; }
 
     [[nodiscard]] size_t TotalVectorCount() const noexcept;
@@ -50,27 +49,26 @@ private:
     uint64_t generation_{0};
     uint32_t dimension_{0};
     MetricType metric_{MetricType::kL2};
-    std::vector<std::shared_ptr<storage::Locule>> locules_;
+    std::vector<alloc::SharedPtr<storage::Locule>> locules_;
     routing::Compass compass_;
 };
 
 class FruitMap {
 public:
-    FruitMap(Env* env, std::string db_dir, uint32_t dim, MetricType metric);
+    FruitMap(std::string db_dir, uint32_t dim, MetricType metric);
     ~FruitMap();
 
     Status Open();
     Status SaveManifest(uint64_t generation, const std::vector<std::string>& locule_files);
-    Status InstallSnapshot(std::shared_ptr<const FruitSnapshot> snapshot);
+    Status InstallSnapshot(alloc::SharedPtr<FruitSnapshot> snapshot);
 
-    [[nodiscard]] std::shared_ptr<const FruitSnapshot> CurrentSnapshot() const;
+    [[nodiscard]] alloc::SharedPtr<FruitSnapshot> CurrentSnapshot() const;
 
     [[nodiscard]] uint64_t NextGeneration() noexcept {
         return ++current_generation_;
     }
 
 private:
-    Env* env_;
     std::string db_dir_;
     std::string manifest_path_;
     uint32_t dimension_{0};
@@ -78,7 +76,7 @@ private:
 
     uint64_t current_generation_{0};
     mutable std::mutex snapshot_mu_;
-    std::shared_ptr<const FruitSnapshot> current_snapshot_;
+    alloc::SharedPtr<FruitSnapshot> current_snapshot_;
 };
 
 } // namespace pomai::manifest

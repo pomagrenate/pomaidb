@@ -180,7 +180,7 @@ POMAI_TEST(Crash_ManifestChecksumMismatch_RejectsCorruptManifest) {
     out.close();
 
     // Reopen FruitMap directly — MUST return corruption due to CRC mismatch!
-    manifest::FruitMap fruit_map(Env::Default(), db_dir, dim, MetricType::kL2);
+    manifest::FruitMap fruit_map(db_dir, dim, MetricType::kL2);
     Status st = fruit_map.Open();
     POMAI_EXPECT_TRUE(!st.ok());
     POMAI_EXPECT_TRUE(st.code() == ErrorCode::kCorruption);

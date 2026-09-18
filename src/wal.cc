@@ -153,6 +153,15 @@ namespace pomai::storage {
                 impl_ = nullptr;
                 return st;
             }
+            st = impl_->file->Flush();
+            if (!st.ok())
+            {
+                (void)impl_->file->Close();
+                impl_->~Impl();
+                palloc_free(impl_);
+                impl_ = nullptr;
+                return st;
+            }
             file_off_ = sizeof(WalFileHeader);
             bytes_in_seg_ = sizeof(WalFileHeader);
         }
@@ -212,6 +221,8 @@ namespace pomai::storage {
         std::memcpy(hdr.magic, kWalMagic, sizeof(hdr.magic));
         hdr.version = kWalVersion;
         st = impl_->file->Append(pomai::Slice(&hdr, sizeof(hdr)));
+        if (!st.ok()) return st;
+        st = impl_->file->Flush();
         if (!st.ok()) return st;
         file_off_ = sizeof(WalFileHeader);
         bytes_in_seg_ = sizeof(WalFileHeader);
