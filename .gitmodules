@@ -4,3 +4,7 @@
 [submodule "third_party/psync"]
 	path = third_party/psync
 	url = https://github.com/pomagrenate/psync.git
+[submodule "third_party/ptask"]
+	path = third_party/ptask
+	url = https://github.com/pomagrenate/ptask.git
+

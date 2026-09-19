@@ -89,6 +89,11 @@ set(PSYNC_BUILD_TESTS OFF)
 set(PSYNC_BUILD_EXAMPLES OFF)
 add_subdirectory(third_party/psync)
 
+# Hardcoded First-Class Work-Stealing Task Scheduler: ptask
+set(PTASK_BUILD_TESTS OFF)
+set(PTASK_BUILD_BENCHMARKS OFF)
+add_subdirectory(third_party/ptask)
+
 find_package(Threads REQUIRED)
 
 # =========================
@@ -173,6 +178,7 @@ target_include_directories(pomai
     ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
     ${POMAI_VULKAN_HEADERS_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/psync/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ptask/include
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
   SYSTEM PRIVATE
@@ -198,7 +204,7 @@ endif()
 
 find_package(OpenSSL QUIET)
 # PUBLIC: static lib pomai leaves unresolved pa_* until consumers link palloc-static too.
-target_link_libraries(pomai PUBLIC palloc-static psync Threads::Threads)
+target_link_libraries(pomai PUBLIC palloc-static psync ptask Threads::Threads)
 target_compile_definitions(pomai PUBLIC PA_VECTOR=1)
 if (OPENSSL_FOUND)
   target_link_libraries(pomai PRIVATE OpenSSL::Crypto)
@@ -491,6 +497,10 @@ if (POMAI_BUILD_TESTS)
   add_executable(db_batch_test tests/integ/db_batch_test.cc)
   pomai_setup_test(db_batch_test)
   pomai_add_labeled_test(db_batch_test "integ")
+
+  add_executable(ptask_batch_search_test tests/integ/ptask_batch_search_test.cc)
+  pomai_setup_test(ptask_batch_search_test)
+  pomai_add_labeled_test(ptask_batch_search_test "integ")
 
   add_executable(db_persistence_test tests/integ/db_persistence_test.cc)
   pomai_setup_test(db_persistence_test)

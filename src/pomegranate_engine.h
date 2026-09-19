@@ -32,6 +32,7 @@
 #include "status.h"
 #include "types.h"
 #include "utils/env.h"
+#include <ptask/ptask.h>
 
 namespace pomai::core {
 
@@ -106,6 +107,7 @@ private:
     std::unique_ptr<ingest::Rind> rind_;
     std::unique_ptr<manifest::FruitMap> fruit_map_;
     std::unique_ptr<compact::Press> press_;
+    std::unique_ptr<ptask::ThreadPool> thread_pool_;
     bool opened_{false};
 };
 

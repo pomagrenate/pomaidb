@@ -6,7 +6,9 @@
 #include "utils/memtable_sizing.h"
 
 #include <algorithm>
+#include <atomic>
 #include <map>
+#include <mutex>
 
 namespace pomai::core {
 
@@ -104,12 +106,19 @@ Status PomegranateEngine::Open() {
     }
     press_ = std::make_unique<compact::Press>(opt_.path, opt_.dim, metric_, press_opts);
 
+    thread_pool_ = std::make_unique<ptask::ThreadPool>(opt_.search_threads);
+
     opened_ = true;
     return Status::Ok();
 }
 
 Status PomegranateEngine::Close() {
     if (!opened_) return Status::Ok();
+
+    if (thread_pool_) {
+        thread_pool_->shutdown();
+        thread_pool_.reset();
+    }
 
     if (rind_) {
         (void)rind_->Flush();
@@ -272,15 +281,40 @@ Status PomegranateEngine::SearchBatch(std::span<const float> queries,
     if (!out) return Status::InvalidArgument("null out vector");
 
     uint32_t dim = opt_.dim;
-    if (queries.size() != num_queries * dim) {
+    if (queries.size() != static_cast<size_t>(num_queries) * dim) {
         return Status::InvalidArgument("queries size does not match num_queries * dim");
     }
 
     out->resize(num_queries);
-    for (uint32_t q = 0; q < num_queries; ++q) {
-        std::span<const float> query(queries.data() + q * dim, dim);
-        Status s = Search(query, topk, opts, &(*out)[q]);
-        if (!s.ok()) return s;
+    if (num_queries == 0) return Status::Ok();
+
+    if (num_queries == 1 || !thread_pool_ || thread_pool_->worker_count() == 1) {
+        for (uint32_t q = 0; q < num_queries; ++q) {
+            std::span<const float> query(queries.data() + q * dim, dim);
+            Status s = Search(query, topk, opts, &(*out)[q]);
+            if (!s.ok()) return s;
+        }
+    } else {
+        std::atomic<bool> has_error{false};
+        std::mutex err_mu;
+        Status first_err = Status::Ok();
+
+        auto snap = fruit_map_->CurrentSnapshot();
+
+        ptask::parallel_for(*thread_pool_, uint32_t{0}, num_queries, [&](uint32_t q) {
+            if (has_error.load(std::memory_order_relaxed)) return;
+            std::span<const float> query(queries.data() + q * dim, dim);
+            Status s = query::PomegranateQuery::Execute(query, topk, opts, metric_, snap.get(), rind_.get(), &(*out)[q]);
+            if (!s.ok()) {
+                has_error.store(true, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(err_mu);
+                if (first_err.ok()) first_err = s;
+            }
+        });
+
+        if (has_error.load(std::memory_order_relaxed)) {
+            return first_err;
+        }
     }
     return Status::Ok();
 }
