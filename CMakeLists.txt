@@ -84,23 +84,51 @@ set(PA_BUILD_OBJECT OFF)
 set(PA_OVERRIDE OFF)
 add_subdirectory(third_party/palloc)
 
-# Hardcoded First-Class Native Synchronization: psync
-set(PSYNC_BUILD_TESTS OFF)
-set(PSYNC_BUILD_EXAMPLES OFF)
-add_subdirectory(third_party/psync)
+find_package(Threads REQUIRED)
 
-# Hardcoded First-Class Work-Stealing Task Scheduler: ptask
-set(PTASK_BUILD_TESTS OFF)
-set(PTASK_BUILD_BENCHMARKS OFF)
-add_subdirectory(third_party/ptask)
+# ==============================================================================
+# Native Core Libraries (Integrated Directly into PomaiDB Core — Zero Submodules)
+# ==============================================================================
 
-# Hardcoded First-Class SIMD Vector Mathematics & Quantization: pvec
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pvec/CMakeLists.txt")
-  set(PVEC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  add_subdirectory(third_party/pvec)
+# Core Native Synchronization: psync
+add_library(psync INTERFACE)
+add_library(psync::psync ALIAS psync)
+target_include_directories(psync INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(psync INTERFACE PSYNC_PLATFORM_LINUX)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_compile_definitions(psync INTERFACE PSYNC_PLATFORM_WINDOWS)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_compile_definitions(psync INTERFACE PSYNC_PLATFORM_DARWIN)
 endif()
 
-find_package(Threads REQUIRED)
+# Core Native Work-Stealing Task Scheduler: ptask
+add_library(ptask INTERFACE)
+add_library(ptask::ptask ALIAS ptask)
+target_include_directories(ptask INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(ptask INTERFACE Threads::Threads)
+
+# Core Native SIMD Vector Mathematics & Quantization: pvec
+add_library(pvec INTERFACE)
+add_library(pvec::pvec ALIAS pvec)
+target_include_directories(pvec INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+# Core Native Crash-Safe Storage & Hardware-Direct I/O: pio
+add_library(pio INTERFACE)
+add_library(pio::pio ALIAS pio)
+target_include_directories(pio INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
 
 # =========================
 # Library: pomai
@@ -211,7 +239,7 @@ endif()
 
 find_package(OpenSSL QUIET)
 # PUBLIC: static lib pomai leaves unresolved pa_* until consumers link palloc-static too.
-target_link_libraries(pomai PUBLIC palloc-static psync ptask pvec Threads::Threads)
+target_link_libraries(pomai PUBLIC palloc-static psync ptask pvec pio Threads::Threads)
 target_compile_definitions(pomai PUBLIC PA_VECTOR=1)
 if (OPENSSL_FOUND)
   target_link_libraries(pomai PRIVATE OpenSSL::Crypto)
@@ -975,6 +1003,23 @@ if (POMAI_BUILD_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
   )
   add_test(NAME accuracy_test COMMAND accuracy_test)
+
+  # Core component unit test suites
+  add_executable(psync_core_test tests/unit/test_psync.cc)
+  target_link_libraries(psync_core_test PRIVATE psync Threads::Threads)
+  add_test(NAME psync_core_test COMMAND psync_core_test)
+
+  add_executable(ptask_core_test tests/unit/test_ptask.cc)
+  target_link_libraries(ptask_core_test PRIVATE ptask Threads::Threads)
+  add_test(NAME ptask_core_test COMMAND ptask_core_test)
+
+  add_executable(pvec_core_test tests/unit/test_pvec.cc)
+  target_link_libraries(pvec_core_test PRIVATE pvec)
+  add_test(NAME pvec_core_test COMMAND pvec_core_test)
+
+  add_executable(pio_core_test tests/unit/test_pio.cc)
+  target_link_libraries(pio_core_test PRIVATE pio)
+  add_test(NAME pio_core_test COMMAND pio_core_test)
 endif()
 
 install(TARGETS pomai pomai_c pomai_c_static
@@ -988,3 +1033,7 @@ install(FILES
   src/capi/c_version.h
   src/database.h
   DESTINATION include/pomai)
+install(DIRECTORY include/psync DESTINATION include)
+install(DIRECTORY include/ptask DESTINATION include)
+install(DIRECTORY include/pvec DESTINATION include)
+install(DIRECTORY include/pio DESTINATION include)
