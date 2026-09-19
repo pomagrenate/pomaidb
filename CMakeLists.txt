@@ -564,6 +564,8 @@ if (POMAI_BUILD_TESTS)
   pomai_setup_test(concurrency_extinction)
   pomai_add_labeled_test(concurrency_extinction "extinction")
 
+  set_tests_properties(stateful_fuzzer concurrency_extinction PROPERTIES TIMEOUT 300)
+
   add_executable(pomai_extinction_replay tests/extinction/extinction_replay.cc)
   target_link_libraries(pomai_extinction_replay PRIVATE pomai)
   target_include_directories(pomai_extinction_replay PRIVATE

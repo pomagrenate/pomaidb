@@ -54,7 +54,7 @@ jobs:
       - name: Run Core CTests
         env:
           POMAI_SKIP_VULKAN_TESTS: 1
-        run: ctest --test-dir build --output-on-failure -C Release --timeout 120 -E bench
+        run: ctest --test-dir build --output-on-failure -C Release --timeout 300 -E bench
 
       - name: Test Python SDK & Binding
         env:

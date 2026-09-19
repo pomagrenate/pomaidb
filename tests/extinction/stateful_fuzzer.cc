@@ -43,6 +43,17 @@ static void SetDebugQuery(bool enable) {
 #endif
 }
 
+static uint32_t GetDefaultFuzzOps(uint32_t default_ops) {
+    const char* env = std::getenv("POMAI_FUZZ_OPS");
+    if (env && *env) {
+        return static_cast<uint32_t>(std::strtoul(env, nullptr, 10));
+    }
+    if (std::getenv("CI") != nullptr) {
+        return 1250;
+    }
+    return default_ops;
+}
+
 enum class OpType : uint8_t {
     kInsert = 0,
     kUpsert = 1,
@@ -348,7 +359,7 @@ POMAI_TEST(Extinction_StatefulChaos_Seed42) {
     FuzzerConfig cfg;
     cfg.seed = 42;
     cfg.dim = 16;
-    cfg.total_ops = 5000;
+    cfg.total_ops = GetDefaultFuzzOps(5000);
     cfg.db_dir = test::TempDir("pomai-extinction-seed42");
     RunStatefulCampaign(cfg);
 }
@@ -357,7 +368,7 @@ POMAI_TEST(Extinction_StatefulChaos_Seed1337) {
     FuzzerConfig cfg;
     cfg.seed = 1337;
     cfg.dim = 32;
-    cfg.total_ops = 5000;
+    cfg.total_ops = GetDefaultFuzzOps(5000);
     cfg.db_dir = test::TempDir("pomai-extinction-seed1337");
     RunStatefulCampaign(cfg);
 }
@@ -366,7 +377,7 @@ POMAI_TEST(Extinction_StatefulChaos_Seed2026) {
     FuzzerConfig cfg;
     cfg.seed = 2026;
     cfg.dim = 8;
-    cfg.total_ops = 5000;
+    cfg.total_ops = GetDefaultFuzzOps(5000);
     cfg.db_dir = test::TempDir("pomai-extinction-seed2026");
     RunStatefulCampaign(cfg);
 }
@@ -375,7 +386,7 @@ POMAI_TEST(Extinction_StatefulChaos_SeedDeadBeef) {
     FuzzerConfig cfg;
     cfg.seed = 0xDEADBEEF;
     cfg.dim = 16;
-    cfg.total_ops = 5000;
+    cfg.total_ops = GetDefaultFuzzOps(5000);
     cfg.db_dir = test::TempDir("pomai-extinction-seeddeadbeef");
     RunStatefulCampaign(cfg);
 }

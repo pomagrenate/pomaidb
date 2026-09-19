@@ -135,7 +135,11 @@ Status PallocSequentialFile::Open(const char* path, alloc::UniquePtr<PallocSeque
     }
 
     POMAI_LOG_INFO("PallocSequentialFile::Open SUCCESS for '{}'", norm_path);
-    auto file = alloc::UniquePtr<PallocSequentialFile>::Adopt(new WindowsPallocSequentialFile(handle));
+    auto file = alloc::UniquePtr<WindowsPallocSequentialFile>::Make(nullptr, handle);
+    if (!file) {
+        ::CloseHandle(handle);
+        return Status::IOError("Failed to allocate WindowsPallocSequentialFile");
+    }
     *out = std::move(file);
     return Status::Ok();
 }
@@ -216,7 +220,11 @@ Status PallocRandomAccessFile::Open(const char* path, alloc::UniquePtr<PallocRan
     }
 
     POMAI_LOG_INFO("PallocRandomAccessFile::Open SUCCESS for '{}'", norm_path);
-    auto file = alloc::UniquePtr<PallocRandomAccessFile>::Adopt(new WindowsPallocRandomAccessFile(handle));
+    auto file = alloc::UniquePtr<WindowsPallocRandomAccessFile>::Make(nullptr, handle);
+    if (!file) {
+        ::CloseHandle(handle);
+        return Status::IOError("Failed to allocate WindowsPallocRandomAccessFile");
+    }
     *out = std::move(file);
     return Status::Ok();
 }
@@ -360,7 +368,11 @@ Status PallocWritableFile::Create(const char* path, alloc::UniquePtr<PallocWrita
     }
 
     POMAI_LOG_INFO("PallocWritableFile::Create SUCCESS for '{}'", norm_path);
-    auto file = alloc::UniquePtr<PallocWritableFile>::Adopt(new WindowsPallocWritableFile(handle));
+    auto file = alloc::UniquePtr<WindowsPallocWritableFile>::Make(nullptr, handle);
+    if (!file) {
+        ::CloseHandle(handle);
+        return Status::IOError("Failed to allocate WindowsPallocWritableFile");
+    }
     *out = std::move(file);
     return Status::Ok();
 }
@@ -401,7 +413,11 @@ Status PallocWritableFile::OpenAppend(const char* path, alloc::UniquePtr<PallocW
         return Status::IOError("Seek to end failed");
     }
 
-    auto file = alloc::UniquePtr<PallocWritableFile>::Adopt(new WindowsPallocWritableFile(handle));
+    auto file = alloc::UniquePtr<WindowsPallocWritableFile>::Make(nullptr, handle);
+    if (!file) {
+        ::CloseHandle(handle);
+        return Status::IOError("Failed to allocate WindowsPallocWritableFile");
+    }
     *out = std::move(file);
     return Status::Ok();
 }
@@ -441,10 +457,17 @@ public:
             return Status::IOError("MapViewOfFile failed");
         }
 
-        auto mapping = alloc::UniquePtr<PallocFileMapping>::Adopt(new WindowsPallocFileMapping(mapped, size));
+        auto mapping = alloc::UniquePtr<WindowsPallocFileMapping>::Make(nullptr, mapped, size);
+        if (!mapping) {
+            ::UnmapViewOfFile(mapped);
+            return Status::IOError("Failed to allocate WindowsPallocFileMapping");
+        }
         *out = std::move(mapping);
         return Status::Ok();
     }
+
+    WindowsPallocFileMapping(void* data, size_t size)
+        : mapped_data_(data), mapped_size_(size) {}
 
     ~WindowsPallocFileMapping() override {
         if (mapped_data_ && mapped_size_ > 0) {
@@ -456,9 +479,6 @@ public:
     size_t Size() const override { return mapped_size_; }
 
 private:
-    WindowsPallocFileMapping(void* data, size_t size)
-        : mapped_data_(data), mapped_size_(size) {}
-
     void* mapped_data_{nullptr};
     size_t mapped_size_{0};
 };
@@ -536,7 +556,11 @@ Status PallocSequentialFile::Open(const char* path, alloc::UniquePtr<PallocSeque
         return Status::IOError("Failed to open file");
     }
 
-    auto file = alloc::UniquePtr<PallocSequentialFile>::Adopt(new PosixPallocSequentialFile(fd));
+    auto file = alloc::UniquePtr<PosixPallocSequentialFile>::Make(nullptr, fd);
+    if (!file) {
+        ::close(fd);
+        return Status::IOError("Failed to allocate PosixPallocSequentialFile");
+    }
     *out = std::move(file);
     return Status::Ok();
 }
@@ -591,7 +615,11 @@ Status PallocRandomAccessFile::Open(const char* path, alloc::UniquePtr<PallocRan
         return Status::IOError("Failed to open file");
     }
 
-    auto file = alloc::UniquePtr<PallocRandomAccessFile>::Adopt(new PosixPallocRandomAccessFile(fd));
+    auto file = alloc::UniquePtr<PosixPallocRandomAccessFile>::Make(nullptr, fd);
+    if (!file) {
+        ::close(fd);
+        return Status::IOError("Failed to allocate PosixPallocRandomAccessFile");
+    }
     *out = std::move(file);
     return Status::Ok();
 }
@@ -694,7 +722,11 @@ Status PallocWritableFile::Create(const char* path, alloc::UniquePtr<PallocWrita
         return Status::IOError("Failed to create file");
     }
 
-    auto file = alloc::UniquePtr<PallocWritableFile>::Adopt(new PosixPallocWritableFile(fd));
+    auto file = alloc::UniquePtr<PosixPallocWritableFile>::Make(nullptr, fd);
+    if (!file) {
+        ::close(fd);
+        return Status::IOError("Failed to allocate PosixPallocWritableFile");
+    }
     *out = std::move(file);
     return Status::Ok();
 }
@@ -705,7 +737,11 @@ Status PallocWritableFile::OpenAppend(const char* path, alloc::UniquePtr<PallocW
         return Status::IOError("Failed to open file for append");
     }
 
-    auto file = alloc::UniquePtr<PallocWritableFile>::Adopt(new PosixPallocWritableFile(fd));
+    auto file = alloc::UniquePtr<PosixPallocWritableFile>::Make(nullptr, fd);
+    if (!file) {
+        ::close(fd);
+        return Status::IOError("Failed to allocate PosixPallocWritableFile");
+    }
     *out = std::move(file);
     return Status::Ok();
 }
@@ -732,10 +768,17 @@ public:
             return Status::IOError("mmap failed");
         }
 
-        auto mapping = alloc::UniquePtr<PallocFileMapping>::Adopt(new PosixPallocFileMapping(mapped, size));
+        auto mapping = alloc::UniquePtr<PosixPallocFileMapping>::Make(nullptr, mapped, size);
+        if (!mapping) {
+            ::munmap(mapped, size);
+            return Status::IOError("Failed to allocate PosixPallocFileMapping");
+        }
         *out = std::move(mapping);
         return Status::Ok();
     }
+
+    PosixPallocFileMapping(void* data, size_t size)
+        : mapped_data_(data), mapped_size_(size) {}
 
     ~PosixPallocFileMapping() override {
         if (mapped_data_ && mapped_size_ > 0) {
@@ -747,9 +790,6 @@ public:
     size_t Size() const override { return mapped_size_; }
 
 private:
-    PosixPallocFileMapping(void* data, size_t size)
-        : mapped_data_(data), mapped_size_(size) {}
-
     void* mapped_data_{nullptr};
     size_t mapped_size_{0};
 };
