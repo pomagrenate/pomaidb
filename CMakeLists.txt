@@ -178,10 +178,11 @@ target_include_directories(pomai
     ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/psync/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ptask/include
+  SYSTEM PUBLIC
+    ${POMAI_VULKAN_HEADERS_DIR}
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
   SYSTEM PRIVATE
-    ${POMAI_VULKAN_HEADERS_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
@@ -838,6 +839,7 @@ target_include_directories(low_ram_profile_bench PRIVATE ${CMAKE_CURRENT_SOURCE_
 
 add_executable(vulkan_transfer_bench benchmarks/vulkan_transfer_bench.cc)
 target_link_libraries(vulkan_transfer_bench PRIVATE ${POMAI_EXE_DEPS})
+target_include_directories(vulkan_transfer_bench SYSTEM PRIVATE ${POMAI_VULKAN_HEADERS_DIR})
 target_include_directories(vulkan_transfer_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
 add_executable(kernel_dispatch_bench benchmarks/kernel_dispatch_bench.cc)
