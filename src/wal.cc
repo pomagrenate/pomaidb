@@ -111,9 +111,19 @@ namespace pomai::storage {
             WalFileHeader hdr{};
             st = raf->Read(0, sizeof(hdr), &hs);
             if (!st.ok()) return st;
-            if (hs.size() != sizeof(hdr)) return pomai::Status::Aborted("wal header short");
+            if (hs.size() != sizeof(hdr)) {
+                if (g + 1 == gen_) {
+                    gen_ = g;
+                    break;
+                }
+                return pomai::Status::Aborted("wal header short");
+            }
             std::memcpy(&hdr, hs.data(), sizeof(hdr));
             if (std::memcmp(hdr.magic, kWalMagic, sizeof(hdr.magic)) != 0 || hdr.version != kWalVersion) {
+                if (g + 1 == gen_) {
+                    gen_ = g;
+                    break;
+                }
                 return pomai::Status::Aborted("wal compatibility check failed");
             }
         }
@@ -125,22 +135,20 @@ namespace pomai::storage {
         impl_ = new (raw) Impl();
         impl_->path = SegmentPath(gen_);
 
-        st = storage::PallocWritableFile::OpenAppend(impl_->path.c_str(), &impl_->file);
-        if (!st.ok() || !impl_->file)
-        {
-            impl_->~Impl();
-            palloc_free(impl_);
-            impl_ = nullptr;
-            return st.ok() ? pomai::Status::IOError("NewAppendableFile returned null") : st;
-        }
-
-        // Get file size using palloc filesystem
         std::uint64_t sz = 0;
         st = storage::PallocFilesystem::GetFileSize(impl_->path.c_str(), &sz);
         if (!st.ok()) sz = 0;
 
-        if (sz == 0)
+        if (sz < sizeof(WalFileHeader))
         {
+            st = storage::PallocWritableFile::Create(impl_->path.c_str(), &impl_->file);
+            if (!st.ok() || !impl_->file)
+            {
+                impl_->~Impl();
+                palloc_free(impl_);
+                impl_ = nullptr;
+                return st.ok() ? pomai::Status::IOError("NewWritableFile returned null") : st;
+            }
             WalFileHeader hdr{};
             std::memcpy(hdr.magic, kWalMagic, sizeof(hdr.magic));
             hdr.version = kWalVersion;
@@ -167,6 +175,14 @@ namespace pomai::storage {
         }
         else
         {
+            st = storage::PallocWritableFile::OpenAppend(impl_->path.c_str(), &impl_->file);
+            if (!st.ok() || !impl_->file)
+            {
+                impl_->~Impl();
+                palloc_free(impl_);
+                impl_ = nullptr;
+                return st.ok() ? pomai::Status::IOError("NewAppendableFile returned null") : st;
+            }
             file_off_ = sz;
             bytes_in_seg_ = static_cast<std::size_t>(sz);
         }

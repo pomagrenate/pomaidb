@@ -238,6 +238,7 @@ Status PomegranateEngine::Freeze() {
 
 Status PomegranateEngine::Compact() {
     if (!opened_) return Status::Corruption("engine not open");
+    psync::LockGuard<psync::Mutex> lock(compact_mu_);
     Status s = rind_->Freeze();
     if (!s.ok()) return s;
     return press_->Compact(rind_.get(), fruit_map_.get());

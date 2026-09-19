@@ -17,6 +17,7 @@
 #include <span>
 #include <string>
 #include <vector>
+#include <psync/psync.h>
 
 #include "compass.h"
 #include "fruit_map.h"
@@ -108,6 +109,7 @@ private:
     std::unique_ptr<manifest::FruitMap> fruit_map_;
     std::unique_ptr<compact::Press> press_;
     std::unique_ptr<ptask::ThreadPool> thread_pool_;
+    mutable psync::Mutex compact_mu_;
     bool opened_{false};
 };
 
