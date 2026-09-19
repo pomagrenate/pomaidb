@@ -1,6 +1,6 @@
 {
   "name": "pomaidb",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Embedded vector database for Edge AI - official Node.js bindings",
   "main": "index.js",
   "types": "index.d.ts",
