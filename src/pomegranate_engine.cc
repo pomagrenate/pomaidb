@@ -297,7 +297,7 @@ Status PomegranateEngine::SearchBatch(std::span<const float> queries,
         }
     } else {
         std::atomic<bool> has_error{false};
-        std::mutex err_mu;
+        psync::Mutex err_mu;
         Status first_err = Status::Ok();
 
         auto snap = fruit_map_->CurrentSnapshot();
@@ -308,7 +308,7 @@ Status PomegranateEngine::SearchBatch(std::span<const float> queries,
             Status s = query::PomegranateQuery::Execute(query, topk, opts, metric_, snap.get(), rind_.get(), &(*out)[q]);
             if (!s.ok()) {
                 has_error.store(true, std::memory_order_relaxed);
-                std::lock_guard<std::mutex> lock(err_mu);
+                psync::LockGuard<psync::Mutex> lock(err_mu);
                 if (first_err.ok()) first_err = s;
             }
         });
