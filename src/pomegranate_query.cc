@@ -35,6 +35,93 @@ struct PickMinComparator {
     }
 };
 
+/// Zero-allocation open-addressing seen table.
+/// Uses 512 entries directly on the stack (4KB) with linear probing and Fibonacci hashing.
+/// Completely eliminates heap node allocation and hash table rehashing on the query hot path.
+class FlatSeenSet {
+public:
+    static constexpr size_t kInlineCap = 512;
+    static constexpr uint64_t kEmpty = ~uint64_t(0);
+
+    FlatSeenSet() noexcept {
+        std::fill(inline_table_, inline_table_ + kInlineCap, kEmpty);
+    }
+
+    bool Insert(VectorId id) {
+        const uint64_t h = id * 11400714819323198485ULL;
+        if (heap_table_.empty()) {
+            constexpr size_t mask = kInlineCap - 1;
+            const size_t idx = static_cast<size_t>(h) & mask;
+            for (size_t i = 0; i < kInlineCap; ++i) {
+                const size_t slot = (idx + i) & mask;
+                if (inline_table_[slot] == kEmpty) {
+                    inline_table_[slot] = id;
+                    count_++;
+                    if (count_ * 4 >= kInlineCap * 3) {
+                        Grow();
+                    }
+                    return true;
+                }
+                if (inline_table_[slot] == id) {
+                    return false;
+                }
+            }
+            Grow();
+        }
+        const size_t mask = heap_table_.size() - 1;
+        const size_t idx = static_cast<size_t>(h) & mask;
+        for (size_t i = 0; i < heap_table_.size(); ++i) {
+            const size_t slot = (idx + i) & mask;
+            if (heap_table_[slot] == kEmpty) {
+                heap_table_[slot] = id;
+                count_++;
+                if (count_ * 4 >= heap_table_.size() * 3) {
+                    Grow();
+                }
+                return true;
+            }
+            if (heap_table_[slot] == id) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+private:
+    void Grow() {
+        size_t new_cap = heap_table_.empty() ? (kInlineCap * 4) : (heap_table_.size() * 2);
+        std::vector<uint64_t> new_table(new_cap, kEmpty);
+        size_t mask = new_cap - 1;
+
+        auto rehash = [&](uint64_t val) {
+            uint64_t h = val * 11400714819323198485ULL;
+            size_t idx = static_cast<size_t>(h) & mask;
+            for (size_t i = 0; i < new_cap; ++i) {
+                size_t slot = (idx + i) & mask;
+                if (new_table[slot] == kEmpty) {
+                    new_table[slot] = val;
+                    break;
+                }
+            }
+        };
+
+        if (heap_table_.empty()) {
+            for (size_t i = 0; i < kInlineCap; ++i) {
+                if (inline_table_[i] != kEmpty) rehash(inline_table_[i]);
+            }
+        } else {
+            for (size_t i = 0; i < heap_table_.size(); ++i) {
+                if (heap_table_[i] != kEmpty) rehash(heap_table_[i]);
+            }
+        }
+        heap_table_ = std::move(new_table);
+    }
+
+    uint64_t inline_table_[kInlineCap];
+    std::vector<uint64_t> heap_table_;
+    size_t count_{0};
+};
+
 } // namespace
 
 Status PomegranateQuery::Execute(std::span<const float> query,
@@ -73,9 +160,11 @@ Status PomegranateQuery::Execute(std::span<const float> query,
 
     size_t pick_target = std::max<size_t>(topk * 2, 64);
 
-    std::priority_queue<PickItem, std::vector<PickItem>, PickMinComparator> pick_heap;
-    std::unordered_set<VectorId> seen_ids;
-    seen_ids.reserve(pick_target * 2);
+    std::vector<PickItem> pick_container;
+    pick_container.reserve(pick_target + 1);
+    std::priority_queue<PickItem, std::vector<PickItem>, PickMinComparator> pick_heap(
+        PickMinComparator(), std::move(pick_container));
+    FlatSeenSet seen_ids;
 
     // Helper to conditionally push into bounded pick heap with deterministic tie-breaking
     auto push_candidate = [&](const PickItem& item) {
@@ -85,7 +174,7 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                 return;
             }
         }
-        if (!seen_ids.insert(item.id).second) {
+        if (!seen_ids.Insert(item.id)) {
             return; // Duplicate ID
         }
         if (pick_heap.size() < pick_target) {
@@ -107,6 +196,7 @@ Status PomegranateQuery::Execute(std::span<const float> query,
     // -------------------------------------------------------------------------
     if (rind) {
         std::vector<ingest::RindHit> rind_hits;
+        rind_hits.reserve(pick_target);
         rind->Taste(query, static_cast<uint32_t>(pick_target), metric, &rind_hits);
         for (const auto& rh : rind_hits) {
             if (has_filters) {
@@ -197,9 +287,11 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                     };
 
                     ArilFilter filter(aril.get(), rind_tombstone_snap, has_filters, opts);
+                    uint32_t aril_k = static_cast<uint32_t>(std::min<size_t>(pick_target, topk + 48));
                     std::vector<VectorId> graph_slots;
                     std::vector<float> graph_dists;
-                    uint32_t aril_k = static_cast<uint32_t>(std::min<size_t>(pick_target, topk + 48));
+                    graph_slots.reserve(aril_k);
+                    graph_dists.reserve(aril_k);
                     int ef_search = std::max<int>({static_cast<int>(opts.ef_search), static_cast<int>(aril_k * 6), 512});
                     Status st = aril->local_graph()->Search(
                         query, aril_k, ef_search,

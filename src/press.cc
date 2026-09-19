@@ -409,10 +409,16 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
 
     // 6. Purge old locules
     if (snapshot) {
+        std::vector<std::string> old_paths;
         for (const auto& old_loc : snapshot->locules()) {
             if (old_loc) {
-                (void)storage::PallocFilesystem::RemoveFile(old_loc->filepath().c_str());
+                old_paths.push_back(old_loc->filepath());
             }
+        }
+        // Release snapshot and active locule memory mappings before deleting files (required on Windows)
+        snapshot.reset();
+        for (const auto& p : old_paths) {
+            (void)storage::PallocFilesystem::RemoveFile(p.c_str());
         }
     }
 
