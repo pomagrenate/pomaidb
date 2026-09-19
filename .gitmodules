@@ -8,3 +8,6 @@
 	path = third_party/ptask
 	url = https://github.com/pomagrenate/ptask.git
 
+[submodule "third_party/pvec"]
+	path = third_party/pvec
+	url = https://github.com/pomagrenate/pvec.git

@@ -94,6 +94,12 @@ set(PTASK_BUILD_TESTS OFF)
 set(PTASK_BUILD_BENCHMARKS OFF)
 add_subdirectory(third_party/ptask)
 
+# Hardcoded First-Class SIMD Vector Mathematics & Quantization: pvec
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pvec/CMakeLists.txt")
+  set(PVEC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  add_subdirectory(third_party/pvec)
+endif()
+
 find_package(Threads REQUIRED)
 
 # =========================
@@ -205,7 +211,7 @@ endif()
 
 find_package(OpenSSL QUIET)
 # PUBLIC: static lib pomai leaves unresolved pa_* until consumers link palloc-static too.
-target_link_libraries(pomai PUBLIC palloc-static psync ptask Threads::Threads)
+target_link_libraries(pomai PUBLIC palloc-static psync ptask pvec Threads::Threads)
 target_compile_definitions(pomai PUBLIC PA_VECTOR=1)
 if (OPENSSL_FOUND)
   target_link_libraries(pomai PRIVATE OpenSSL::Crypto)
