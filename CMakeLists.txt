@@ -176,12 +176,12 @@ target_include_directories(pomai
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
     ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
-    ${POMAI_VULKAN_HEADERS_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/psync/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ptask/include
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
   SYSTEM PRIVATE
+    ${POMAI_VULKAN_HEADERS_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
@@ -615,20 +615,26 @@ if (POMAI_BUILD_TESTS)
     tests/palloc/palloc_forensic_bug_regression.cc)
   pomai_setup_test(palloc_forensic_bug_regression)
   pomai_add_labeled_test(palloc_forensic_bug_regression "palloc_forensic")
-  target_link_libraries(palloc_forensic_bug_regression PRIVATE psapi)
+  if (WIN32)
+    target_link_libraries(palloc_forensic_bug_regression PRIVATE psapi)
+  endif()
 
   add_executable(palloc_forensic_fuzzer
     tests/palloc/palloc_forensic_fuzzer.cc)
   pomai_setup_test(palloc_forensic_fuzzer)
   pomai_add_labeled_test(palloc_forensic_fuzzer "palloc_forensic")
   set_tests_properties(palloc_forensic_fuzzer PROPERTIES TIMEOUT 600)
-  target_link_libraries(palloc_forensic_fuzzer PRIVATE psapi)
+  if (WIN32)
+    target_link_libraries(palloc_forensic_fuzzer PRIVATE psapi)
+  endif()
 
   add_executable(palloc_forensic_concurrency
     tests/palloc/palloc_forensic_concurrency.cc)
   pomai_setup_test(palloc_forensic_concurrency)
   pomai_add_labeled_test(palloc_forensic_concurrency "palloc_forensic")
-  target_link_libraries(palloc_forensic_concurrency PRIVATE psapi)
+  if (WIN32)
+    target_link_libraries(palloc_forensic_concurrency PRIVATE psapi)
+  endif()
 
   add_executable(db_partial_search_test tests/integ/db_partial_search_test.cc)
   pomai_setup_test(db_partial_search_test)

@@ -31,6 +31,18 @@ using namespace pomai;
 using namespace pomai::core;
 using namespace pomai::extinction;
 
+static void SetDebugQuery(bool enable) {
+#if defined(_WIN32)
+    _putenv(enable ? "POMAI_DEBUG_QUERY=1" : "POMAI_DEBUG_QUERY=");
+#else
+    if (enable) {
+        setenv("POMAI_DEBUG_QUERY", "1", 1);
+    } else {
+        unsetenv("POMAI_DEBUG_QUERY");
+    }
+#endif
+}
+
 enum class OpType : uint8_t {
     kInsert = 0,
     kUpsert = 1,
@@ -203,9 +215,9 @@ void RunStatefulCampaign(const FuzzerConfig& cfg) {
 
                 auto golden_hits = oracle.Search(q, topk);
                 SearchResult res;
-                if (op_i == 1978) _putenv("POMAI_DEBUG_QUERY=1");
+                if (op_i == 1978) SetDebugQuery(true);
                 POMAI_EXPECT_OK(engine->Search(q, topk, &res));
-                if (op_i == 1978) _putenv("POMAI_DEBUG_QUERY=");
+                if (op_i == 1978) SetDebugQuery(false);
 
                 // Verification 1: Returned hits must NEVER contain deleted vectors!
                 for (const auto& h : res.hits) {
