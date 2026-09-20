@@ -131,15 +131,15 @@ pomai::Status ArilReader::OpenFromMemory(const uint8_t* base_addr, size_t max_si
     }
 
     // Resolve Graph (with graceful fallback on corruption)
-    // HNSW library allocates with new during LoadFromBuffer; use Adopt() to wrap
     if (hdr.graph_size > 0) {
-        auto* graph_idx = new index::HnswIndex(hdr.dimension);
-        auto load_st = graph_idx->LoadFromBuffer(base_addr + hdr.graph_offset, hdr.graph_size);
-        if (load_st.ok()) {
-            reader->graph_ = alloc::UniquePtr<index::HnswIndex>::Adopt(graph_idx);
-        } else {
-            delete graph_idx;
-            reader->graph_ = nullptr; // Fallback to Pulp SQ8 flat scan
+        auto graph_idx = alloc::UniquePtr<index::HnswIndex>::Make(nullptr, hdr.dimension);
+        if (graph_idx) {
+            auto load_st = graph_idx->LoadFromBuffer(base_addr + hdr.graph_offset, hdr.graph_size);
+            if (load_st.ok()) {
+                reader->graph_ = std::move(graph_idx);
+            } else {
+                reader->graph_ = nullptr; // Fallback to Pulp SQ8 flat scan
+            }
         }
     }
 

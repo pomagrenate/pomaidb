@@ -7,6 +7,7 @@
 #include <functional>
 #include <vector>
 #include "mpsc_queue.h"
+#include "utils/palloc_compat.h"
 
 namespace pomai::core::concurrency {
 
@@ -55,7 +56,8 @@ public:
             if (!t) break;
             
             t->Invoke();
-            delete t; 
+            t->~Task();
+            palloc_free(t);
             executed++;
         }
         return executed;
