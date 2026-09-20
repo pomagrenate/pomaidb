@@ -28,7 +28,7 @@
 #include "reference_distance.h"
 #include "topk.h"
 #include "hnsw_index.h"
-#include "third_party/pomaidb_hnsw/hnsw.h"
+#include "hnsw/hnsw.h"
 
 namespace {
 

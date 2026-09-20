@@ -29,12 +29,6 @@ option(POMAI_PREFER_INTEGER_MATH "Prefer integer/SQ8/FP16 paths for distance (em
 # When enabled, we bias towards smaller binaries and lower memory/debug overhead.
 option(POMAI_EDGE_BUILD "Optimize PomaiDB build for edge devices (size/footprint)" OFF)
 
-# TFLite build options: minimize dependencies
-add_compile_definitions(TFLITE_WITH_RUY=0)
-add_compile_definitions(TFLITE_WITH_XNNPACK=0)
-add_compile_definitions(TFLITE_WITHOUT_XNNPACK=1)
-add_compile_definitions(TFLITE_USE_APPLE_ACCELERATE=0)
-add_compile_definitions(TFLITE_WITH_DELEGATES=0)
 
 # Strict build mode: treat project warnings as errors (useful for CI/hardening).
 # We keep a couple of warning categories non-fatal to tolerate intentional diagnostics
@@ -178,7 +172,7 @@ add_library(pomai STATIC
   src/bitset_mask.cc
 
   src/hnsw_index.cc
-  third_party/pomaidb_hnsw/hnsw.cc
+  src/hnsw/hnsw.cc
 
   # Pomegranate Engine Architecture
   src/pulp.cc
@@ -211,8 +205,6 @@ target_include_directories(pomai
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
     ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/psync/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ptask/include
   SYSTEM PUBLIC
     ${POMAI_VULKAN_HEADERS_DIR}
   PRIVATE
@@ -225,17 +217,10 @@ if (WIN32)
   target_compile_definitions(pomai PRIVATE VK_USE_PLATFORM_WIN32_KHR)
 endif()
 
-# Vendored code: keep strict warnings for PomaiDB, but avoid breaking builds on
-# third_party sources when POMAI_STRICT is enabled.
+# Native HNSW source compilation properties under strict mode
 if (POMAI_STRICT AND NOT MSVC)
-  set_source_files_properties(third_party/pomaidb_hnsw/hnsw.cc PROPERTIES COMPILE_OPTIONS
+  set_source_files_properties(src/hnsw/hnsw.cc PROPERTIES COMPILE_OPTIONS
     "-Wno-error;-Wno-shadow;-Wno-unused-parameter;-Wno-unused-but-set-variable")
-endif()
-
-# OpenMP for parallel builds if needed
-find_package(OpenMP QUIET)
-if (OpenMP_CXX_FOUND)
-  target_link_libraries(pomai PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
 find_package(OpenSSL QUIET)
@@ -253,8 +238,7 @@ endif()
 if (MSVC)
   target_compile_options(pomai PRIVATE /W4 /permissive-)
 else()
-  # Strict warnings for pomaidb code; then suppress vendored third_party (simd) warnings.
-  # We do not use / -Werror globally because some third_party headers intentionally emit #warning.
+  # Strict warnings for pomaidb code.
   target_compile_options(pomai PRIVATE
     -Wall -Wextra -Wpedantic -Wconversion -Wshadow
     -Wunused-parameter -Wunused-variable
@@ -268,12 +252,8 @@ if (POMAI_STRICT)
   else()
     target_compile_options(pomai PRIVATE
       -Werror
-      # Some vendored headers use extensions that trigger pedantic/cpp warnings.
       -Wno-error=pedantic
       -Wno-error=cpp
-      # third_party/simd uses #warning; pre-C++23 this triggers -Wc++23-extensions.
-      # We disable that warning category entirely to keep strict builds usable.
-      -Wno-c++23-extensions
     )
   endif()
 endif()

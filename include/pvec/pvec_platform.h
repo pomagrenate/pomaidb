@@ -75,6 +75,7 @@ inline void aligned_free(void* ptr) noexcept {
 struct CpuFeatures {
     bool has_avx2{false};
     bool has_avx512{false};
+    bool has_f16c{false};
     bool has_neon{false};
     bool has_sve{false};
 
@@ -90,8 +91,10 @@ private:
         __builtin_cpu_init();
         f.has_avx2 = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
         f.has_avx512 = __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512vl");
+        f.has_f16c = __builtin_cpu_supports("f16c");
 #elif defined(PVEC_ARCH_X86_64) && defined(_MSC_VER)
         f.has_avx2 = true; // Assumed supported on modern x86_64 targets
+        f.has_f16c = true;
 #elif defined(PVEC_ARCH_ARM64)
         f.has_neon = true; // Mandatory on AArch64
 #endif

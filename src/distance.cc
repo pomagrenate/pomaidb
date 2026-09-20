@@ -1,5 +1,6 @@
-// distance.cc — Standardized SIMD distance kernels with dynamic CPU dispatch
+// distance.cc — Native SIMD distance kernels with dynamic CPU dispatch
 //
+// Optimized for PomaiDB: zero external dependencies, native AVX2/F16C/FMA/NEON acceleration.
 // Copyright 2026 PomaiDB authors. MIT License.
 
 #include "distance.h"
@@ -7,65 +8,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <psync/psync.h>
 #include <vector>
 
+#include "pvec/pvec_distance.h"
+#include "pvec/pvec_quant_fp16.h"
 #include "utils/half_float.h"
-#include "utils/scratch_buffer.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 #endif
 
-// SimSIMD: by default uses compile-time dispatch.
-// For portable binaries with runtime dispatch, we query simsimd_capabilities()
-// and simsimd_find_kernel_punned at initialization.
-#if !((defined(__GNUC__) || defined(__clang__)) && (defined(__ARM_ARCH) || defined(__aarch64__)) && defined(__ARM_FP16_FORMAT_IEEE)) && \
-    !(((defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__)) && defined(__AVX512FP16__)))
-#ifndef SIMSIMD_NATIVE_F16
-#define SIMSIMD_NATIVE_F16 0
-#endif
-#endif
-
-#if !((defined(__GNUC__) || defined(__clang__)) && (defined(__ARM_ARCH) || defined(__aarch64__)) && defined(__ARM_BF16_FORMAT_ALTERNATIVE)) && \
-    !(((defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__)) && defined(__AVX512BF16__)))
-#ifndef SIMSIMD_NATIVE_BF16
-#define SIMSIMD_NATIVE_BF16 0
-#endif
-#endif
-#include "simd/simsimd.h"
-
 namespace pomai::core {
 namespace {
-
-simsimd_metric_dense_punned_t g_dot_f32 = nullptr;
-simsimd_metric_dense_punned_t g_l2sq_f32 = nullptr;
-psync::OnceFlag g_init_flag;
-
-void InitOnce() {
-    simsimd_capability_t cap = simsimd_capabilities();
-    simsimd_kernel_punned_t k_dot = nullptr;
-    simsimd_kernel_punned_t k_l2sq = nullptr;
-    simsimd_capability_t c_dot = simsimd_cap_serial_k;
-    simsimd_capability_t c_l2sq = simsimd_cap_serial_k;
-
-    simsimd_find_kernel_punned(simsimd_metric_dot_k, simsimd_datatype_f32_k, cap, simsimd_cap_any_k, &k_dot, &c_dot);
-    simsimd_find_kernel_punned(simsimd_metric_l2sq_k, simsimd_datatype_f32_k, cap, simsimd_cap_any_k, &k_l2sq, &c_l2sq);
-
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-function-type"
-#endif
-    g_dot_f32 = reinterpret_cast<simsimd_metric_dense_punned_t>(k_dot);
-    g_l2sq_f32 = reinterpret_cast<simsimd_metric_dense_punned_t>(k_l2sq);
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
-}
-
-inline void EnsureInit() {
-    psync::call_once(g_init_flag, InitOnce);
-}
 
 // ── Scalar fallback for DotSq8 ──
 float DotSq8Scalar(std::span<const float> q, std::span<const uint8_t> c,
@@ -180,15 +134,86 @@ float L2SqSq8Avx2(const float* q, const uint8_t* c, size_t n,
     }
     return sum_sq;
 }
-#endif
 
-static inline bool CpuHasAvx2() {
-#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
-    return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
-#else
-    return false;
-#endif
+__attribute__((target("avx2,f16c,fma")))
+float DotFp16Avx2(const float* q, const uint16_t* c, size_t n) {
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    size_t i = 0;
+    for (; i + 15 < n; i += 16) {
+        __m128i h0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c + i));
+        __m128i h1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c + i + 8));
+        __m256 f0 = _mm256_cvtph_ps(h0);
+        __m256 f1 = _mm256_cvtph_ps(h1);
+
+        __m256 q0 = _mm256_loadu_ps(q + i);
+        __m256 q1 = _mm256_loadu_ps(q + i + 8);
+
+        acc0 = _mm256_fmadd_ps(q0, f0, acc0);
+        acc1 = _mm256_fmadd_ps(q1, f1, acc1);
+    }
+    for (; i + 7 < n; i += 8) {
+        __m128i h0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c + i));
+        __m256 f0 = _mm256_cvtph_ps(h0);
+        __m256 q0 = _mm256_loadu_ps(q + i);
+        acc0 = _mm256_fmadd_ps(q0, f0, acc0);
+    }
+    __m256 total = _mm256_add_ps(acc0, acc1);
+    __m128 hi = _mm256_extractf128_ps(total, 1);
+    __m128 lo = _mm256_castps256_ps128(total);
+    __m128 sum128 = _mm_add_ps(lo, hi);
+    sum128 = _mm_hadd_ps(sum128, sum128);
+    sum128 = _mm_hadd_ps(sum128, sum128);
+    float sum = _mm_cvtss_f32(sum128);
+
+    for (; i < n; ++i) {
+        sum += q[i] * pvec::fp16_to_float(c[i]);
+    }
+    return sum;
 }
+
+__attribute__((target("avx2,f16c,fma")))
+float L2SqFp16Avx2(const float* q, const uint16_t* c, size_t n) {
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    size_t i = 0;
+    for (; i + 15 < n; i += 16) {
+        __m128i h0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c + i));
+        __m128i h1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c + i + 8));
+        __m256 f0 = _mm256_cvtph_ps(h0);
+        __m256 f1 = _mm256_cvtph_ps(h1);
+
+        __m256 q0 = _mm256_loadu_ps(q + i);
+        __m256 q1 = _mm256_loadu_ps(q + i + 8);
+
+        __m256 d0 = _mm256_sub_ps(q0, f0);
+        __m256 d1 = _mm256_sub_ps(q1, f1);
+
+        acc0 = _mm256_fmadd_ps(d0, d0, acc0);
+        acc1 = _mm256_fmadd_ps(d1, d1, acc1);
+    }
+    for (; i + 7 < n; i += 8) {
+        __m128i h0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c + i));
+        __m256 f0 = _mm256_cvtph_ps(h0);
+        __m256 q0 = _mm256_loadu_ps(q + i);
+        __m256 d = _mm256_sub_ps(q0, f0);
+        acc0 = _mm256_fmadd_ps(d, d, acc0);
+    }
+    __m256 total = _mm256_add_ps(acc0, acc1);
+    __m128 hi = _mm256_extractf128_ps(total, 1);
+    __m128 lo = _mm256_castps256_ps128(total);
+    __m128 sum128 = _mm_add_ps(lo, hi);
+    sum128 = _mm_hadd_ps(sum128, sum128);
+    sum128 = _mm_hadd_ps(sum128, sum128);
+    float sum_sq = _mm_cvtss_f32(sum128);
+
+    for (; i < n; ++i) {
+        float diff = q[i] - pvec::fp16_to_float(c[i]);
+        sum_sq += diff * diff;
+    }
+    return sum_sq;
+}
+#endif
 
 // ── Binary Quantization (1-bit; optimized specifically for edge memory reduction) ──
 void BitQuantizeImpl(std::span<const float> vec, uint8_t* out_codes) {
@@ -236,107 +261,30 @@ float DotBitImpl(std::span<const float> query, std::span<const uint8_t> codes) {
     return static_cast<float>(query.size()) - 2.0f * HammingDistImpl(std::span<const uint8_t>(q_codes, byte_count), codes);
 }
 
-// ── F32: use dynamically dispatched SimSIMD ──
-float DotSimSIMD(std::span<const float> a, std::span<const float> b) {
-    const std::size_t n = a.size();
-    if (n == 0 || b.size() != n) return 0.0f;
-    EnsureInit();
-    simsimd_distance_t d = 0.0;
-    if (g_dot_f32) {
-        g_dot_f32(a.data(), b.data(), static_cast<simsimd_size_t>(n), &d);
-    } else {
-        simsimd_dot_f32(a.data(), b.data(), static_cast<simsimd_size_t>(n), &d);
-    }
-    return static_cast<float>(d);
-}
-
-float L2SqSimSIMD(std::span<const float> a, std::span<const float> b) {
-    const std::size_t n = a.size();
-    if (n == 0 || b.size() != n) return 0.0f;
-    EnsureInit();
-    simsimd_distance_t d = 0.0;
-    if (g_l2sq_f32) {
-        g_l2sq_f32(a.data(), b.data(), static_cast<simsimd_size_t>(n), &d);
-    } else {
-        simsimd_l2sq_f32(a.data(), b.data(), static_cast<simsimd_size_t>(n), &d);
-    }
-    return static_cast<float>(d);
-}
-
-// FP16: SimSIMD f16 (query converted f32->f16).
-float DotFp16SimSIMD(std::span<const float> q, std::span<const uint16_t> c) {
-    const std::size_t n = q.size();
-    if (n == 0 || c.size() != n) return 0.0f;
-    
-    // CRITICAL FIX: Use thread-local scratch buffer instead of heap allocation
-    simsimd_f16_t* q_f16 = reinterpret_cast<simsimd_f16_t*>(
-        util::UInt16Scratch::Get(n));
-    
-    for (std::size_t i = 0; i < n; ++i)
-        simsimd_f32_to_f16(q[i], &q_f16[i]);
-    
-    simsimd_distance_t d = 0.0;
-    simsimd_dot_f16(q_f16, reinterpret_cast<const simsimd_f16_t*>(c.data()),
-                    static_cast<simsimd_size_t>(n), &d);
-    return static_cast<float>(d);
-}
-
-float L2SqFp16SimSIMD(std::span<const float> q, std::span<const uint16_t> c) {
-    const std::size_t n = q.size();
-    if (n == 0 || c.size() != n) return 0.0f;
-    // CRITICAL FIX: Use thread-local scratch buffer instead of heap allocation
-    simsimd_f16_t* q_f16 = reinterpret_cast<simsimd_f16_t*>(
-        util::UInt16Scratch::Get(n));
-    for (std::size_t i = 0; i < n; ++i)
-        simsimd_f32_to_f16(q[i], &q_f16[i]);
-    simsimd_distance_t d = 0.0;
-    simsimd_l2sq_f16(q_f16, reinterpret_cast<const simsimd_f16_t*>(c.data()),
-                     static_cast<simsimd_size_t>(n), &d);
-    return static_cast<float>(d);
-}
-
-constexpr std::size_t kSq8Chunk = 32u;
-
 }  // namespace
 
 void InitDistance() {
-    EnsureInit();
+    (void)pvec::CpuFeatures::Get();
 }
 
 float Dot(std::span<const float> a, std::span<const float> b) {
-    return DotSimSIMD(a, b);
+    return pvec::dot(a, b);
 }
 
 float L2Sq(std::span<const float> a, std::span<const float> b) {
-    return L2SqSimSIMD(a, b);
+    return pvec::l2_sq(a, b);
 }
 
 float L2(std::span<const float> a, std::span<const float> b) {
-    float sq = L2Sq(a, b);
-    return sq > 0.0f ? std::sqrt(sq) : 0.0f;
+    return pvec::l2(a, b);
 }
 
 float CosineSimilarity(std::span<const float> a, std::span<const float> b) {
-    if (a.empty() || b.empty() || a.size() != b.size()) return 0.0f;
-    double dot = 0.0;
-    double norm_a = 0.0;
-    double norm_b = 0.0;
-    const size_t n = a.size();
-    for (size_t i = 0; i < n; ++i) {
-        const double da = static_cast<double>(a[i]);
-        const double db = static_cast<double>(b[i]);
-        dot += da * db;
-        norm_a += da * da;
-        norm_b += db * db;
-    }
-    const double denom = std::sqrt(norm_a) * std::sqrt(norm_b);
-    if (denom <= 1e-12) return 0.0f;
-    float sim = static_cast<float>(dot / denom);
-    return std::clamp(sim, -1.0f, 1.0f);
+    return pvec::cosine_similarity(a, b);
 }
 
 float CosineDistance(std::span<const float> a, std::span<const float> b) {
-    return 1.0f - CosineSimilarity(a, b);
+    return pvec::cosine_distance(a, b);
 }
 
 float ComputeMetricScore(MetricType metric, std::span<const float> query, std::span<const float> vec) {
@@ -355,7 +303,7 @@ float DotSq8(std::span<const float> q, std::span<const uint8_t> c,
              float min_val, float inv_scale, float q_sum) {
     if (q.empty() || c.empty() || q.size() != c.size()) return 0.0f;
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
-    if (CpuHasAvx2()) {
+    if (pvec::CpuFeatures::Get().has_avx2) {
         return DotSq8Avx2(q.data(), c.data(), q.size(), min_val, inv_scale, q_sum);
     }
 #endif
@@ -368,7 +316,7 @@ float L2SqSq8(std::span<const float> query,
     const std::size_t n = query.size();
     if (n == 0 || data.size() != n) return 0.0f;
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
-    if (CpuHasAvx2()) {
+    if (pvec::CpuFeatures::Get().has_avx2) {
         return L2SqSq8Avx2(query.data(), data.data(), n, min_val, max_val);
     }
 #endif
@@ -376,29 +324,37 @@ float L2SqSq8(std::span<const float> query,
 }
 
 float DotFp16(std::span<const float> q, std::span<const uint16_t> c) {
-    return DotFp16SimSIMD(q, c);
+    const std::size_t n = q.size();
+    if (n == 0 || c.size() != n) return 0.0f;
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+    if (pvec::CpuFeatures::Get().has_f16c && pvec::CpuFeatures::Get().has_avx2) {
+        return DotFp16Avx2(q.data(), c.data(), n);
+    }
+#endif
+    return pvec::HalfFloatQuantizer::Dot(q, c);
 }
 
 float L2SqFp16(std::span<const float> q, std::span<const uint16_t> c) {
-    return L2SqFp16SimSIMD(q, c);
+    const std::size_t n = q.size();
+    if (n == 0 || c.size() != n) return 0.0f;
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+    if (pvec::CpuFeatures::Get().has_f16c && pvec::CpuFeatures::Get().has_avx2) {
+        return L2SqFp16Avx2(q.data(), c.data(), n);
+    }
+#endif
+    return pvec::HalfFloatQuantizer::L2Sq(q, c);
 }
 
 void DotBatch(std::span<const float> query,
               const float* db, std::size_t n, std::uint32_t dim,
               float* results) {
-    if (!db || !results || dim == 0) return;
-    for (std::size_t i = 0; i < n; ++i) {
-        results[i] = Dot(query, std::span<const float>(db + i * dim, dim));
-    }
+    pvec::dot_batch(query, db, n, dim, results);
 }
 
 void L2SqBatch(std::span<const float> query,
                const float* db, std::size_t n, std::uint32_t dim,
                float* results) {
-    if (!db || !results || dim == 0) return;
-    for (std::size_t i = 0; i < n; ++i) {
-        results[i] = L2Sq(query, std::span<const float>(db + i * dim, dim));
-    }
+    pvec::l2_sq_batch(query, db, n, dim, results);
 }
 
 void SearchBatch(std::span<const float> query, const FloatBatch& batch,

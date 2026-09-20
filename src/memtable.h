@@ -22,16 +22,20 @@
 
 #include "arena.h"
 #include "flat_hash_memmap.h"
-#include "third_party/hash/xxhash64.h"
 #include "utils/palloc_allocator.h"
 
 namespace pomai::table {
 
-/// Hash functor for VectorId using xxHash64 — better distribution than std::hash for sequential IDs.
-struct XxHash64ForVectorId {
-  std::size_t operator()(pomai::VectorId k) const noexcept {
-    return static_cast<std::size_t>(XXHash64::hash(&k, sizeof(k), 0));
-  }
+/// High-performance branchless 64-bit integer mixer (SplitMix64) for VectorId.
+/// Outperforms xxHash64 on 64-bit scalar keys: 0 memory reads, 0 function call overhead,
+/// perfect bit-avalanche distribution across hash buckets.
+struct PomaiHash64ForVectorId {
+    std::size_t operator()(pomai::VectorId k) const noexcept {
+        uint64_t z = static_cast<uint64_t>(k) + 0x9e3779b97f4a7c15ULL;
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+        return static_cast<std::size_t>(z ^ (z >> 31));
+    }
 };
 
 // Single-threaded: no concurrency needed.
@@ -223,8 +227,8 @@ private:
     Arena         arena_;
 
     // Primary map: VectorId -> float* (nullptr = tombstone)
-    // XxHash64 gives better distribution than std::hash for sequential VectorIds (fewer collisions).
-    mutable FlatHashMemMap<pomai::VectorId, float*, XxHash64ForVectorId> map_;
+    // PomaiHash64 gives optimal bit avalanche distribution for VectorIds with zero overhead.
+    mutable FlatHashMemMap<pomai::VectorId, float*, PomaiHash64ForVectorId> map_;
 
     // Use scoped allocator for metadata and temporal index to benefit from palloc
     // CRITICAL FIX: Use shared_mutex for temporal index to allow concurrent reads

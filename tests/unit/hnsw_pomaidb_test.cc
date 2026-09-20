@@ -1,5 +1,5 @@
 #include "tests/common/test_main.h"
-#include "third_party/pomaidb_hnsw/hnsw.h"
+#include "hnsw/hnsw.h"
 #include <vector>
 #include <cmath>
 #include <iostream>
