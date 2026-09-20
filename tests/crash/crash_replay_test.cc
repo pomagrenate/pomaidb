@@ -57,7 +57,6 @@ static void ChildWriter(const std::string &path)
 {
     pomai::DBOptions opt;
     opt.path = path;
-    opt.shard_count = 4;
     opt.dim = 16;
     opt.fsync = pomai::FsyncPolicy::kAlways; // Strict durability required for test
 
@@ -70,7 +69,6 @@ static void ChildWriter(const std::string &path)
     pomai::MembraneSpec mspec;
     mspec.name = "important_data";
     mspec.dim = 16;
-    mspec.shard_count = 2;
     st = db->CreateMembrane(mspec);
     if (!st.ok() && st.code() != pomai::ErrorCode::kAlreadyExists) Die(st.message());
     st = db->OpenMembrane("important_data"); 
@@ -126,7 +124,6 @@ static void VerifyConsistency(const std::string &path)
     // 2. Open DB
     pomai::DBOptions opt;
     opt.path = path;
-    opt.shard_count = 4;
     opt.dim = 16;
     opt.fsync = pomai::FsyncPolicy::kAlways;
 

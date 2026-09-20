@@ -80,7 +80,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   pomai::DBOptions opts;
   opts.path = db_path;
   opts.dim = fuzzed.ConsumeIntegralInRange<uint32_t>(1, 1024);
-  opts.shard_count = fuzzed.ConsumeIntegralInRange<uint32_t>(1, 8);
   
   std::unique_ptr<pomai::DB> db;
   auto st = pomai::DB::Open(opts, &db);

@@ -280,8 +280,6 @@ namespace pomai
             return Status::InvalidArgument("path empty");
         if (options.dim == 0)
             return Status::InvalidArgument("dim must be > 0");
-        if (options.shard_count == 0)
-            return Status::InvalidArgument("shard_count must be > 0");
         
         DBOptions effective = options;
         effective.ApplyEdgeProfile();

@@ -15,7 +15,6 @@ namespace
         pomai::DBOptions opt;
         opt.path = pomai::test::TempDir("pomai-manifest-corruption");
         opt.dim = 8;
-        opt.shard_count = 1;
 
         // 1. Create DB and write something to generate manifest
         {
@@ -25,7 +24,6 @@ namespace
             pomai::MembraneSpec spec;
             spec.name = "default";
             spec.dim = opt.dim;
-            spec.shard_count = 1;
             POMAI_EXPECT_OK(db->CreateMembrane(spec));
             POMAI_EXPECT_OK(db->OpenMembrane("default"));
 

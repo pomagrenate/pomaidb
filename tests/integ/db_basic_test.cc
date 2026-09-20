@@ -25,7 +25,6 @@ namespace
         pomai::DBOptions opt;
         opt.path = pomai::test::TempDir("pomai-db-basic");
         opt.dim = 8;
-        opt.shard_count = 4;
         opt.fsync = pomai::FsyncPolicy::kNever;
 
         std::unique_ptr<pomai::DB> db;
@@ -34,7 +33,6 @@ namespace
         pomai::MembraneSpec spec;
         spec.name = "default";
         spec.dim = opt.dim;
-        spec.shard_count = opt.shard_count;
         POMAI_EXPECT_OK(db->CreateMembrane(spec));
         POMAI_EXPECT_OK(db->OpenMembrane("default"));
 

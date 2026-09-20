@@ -264,7 +264,6 @@ public:
         pomai::DBOptions opts;
         opts.dim = config_.dim;
         // Legacy fan-out field; runtime is monolithic so this is fixed at 1.
-        opts.shard_count = 1;
         opts.path = "/tmp/pomai_bench_" + config_.dataset_size;
         opts.fsync = pomai::FsyncPolicy::kNever;  // Disable fsync for benchmark
         // Index params tuned for recall >= 95% (trade latency for accuracy)

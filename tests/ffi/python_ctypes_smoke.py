@@ -29,7 +29,7 @@ class PomaiOptions(ctypes.Structure):
     _fields_ = [
         ("struct_size", ctypes.c_uint32),
         ("path", ctypes.c_char_p),
-        ("shards", ctypes.c_uint32),
+        ("reserved0", ctypes.c_uint32),
         ("dim", ctypes.c_uint32),
         ("search_threads", ctypes.c_uint32),
         ("fsync_policy", ctypes.c_int),
@@ -45,6 +45,15 @@ class PomaiOptions(ctypes.Structure):
         ("tick_max_ops", ctypes.c_uint32),
         ("tick_max_ms", ctypes.c_uint32),
         ("strict_deterministic", ctypes.c_bool),
+        ("quant_type", ctypes.c_uint8),
+        ("pq_m", ctypes.c_uint32),
+        ("memtable_flush_threshold_mb", ctypes.c_uint32),
+        ("auto_freeze_on_pressure", ctypes.c_bool),
+        ("max_memtable_mb", ctypes.c_uint32),
+        ("write_coalesce_window_us", ctypes.c_uint32),
+        ("write_coalesce_batch_size", ctypes.c_uint32),
+        ("enable_encryption_at_rest", ctypes.c_bool),
+        ("encryption_key_hex", ctypes.c_char_p),
     ]
 
 class PomaiUpsert(ctypes.Structure):
@@ -55,6 +64,10 @@ class PomaiUpsert(ctypes.Structure):
         ('dim', ctypes.c_uint32),
         ('metadata', ctypes.POINTER(ctypes.c_uint8)),
         ('metadata_len', ctypes.c_uint32),
+        ('membrane', ctypes.c_char_p),
+        ('timestamp', ctypes.c_uint64),
+        ('payload', ctypes.POINTER(ctypes.c_uint8)),
+        ('payload_len', ctypes.c_uint32),
     ]
 
 class PomaiQuery(ctypes.Structure):
@@ -68,6 +81,9 @@ class PomaiQuery(ctypes.Structure):
         ("partition_location_id", ctypes.c_char_p),
         ("deadline_ms", ctypes.c_uint32),
         ("flags", ctypes.c_uint32),
+        ("membrane", ctypes.c_char_p),
+        ("as_of_ts", ctypes.c_uint64),
+        ("as_of_lsn", ctypes.c_uint64),
     ]
 
 class PomaiSearchResults(ctypes.Structure):
@@ -76,7 +92,8 @@ class PomaiSearchResults(ctypes.Structure):
         ('count', ctypes.c_size_t),
         ('ids', ctypes.POINTER(ctypes.c_uint64)),
         ('scores', ctypes.POINTER(ctypes.c_float)),
-        ('shard_ids', ctypes.POINTER(ctypes.c_uint32)),
+        ('total_locules_count', ctypes.c_uint32),
+        ('pruned_locules_count', ctypes.c_uint32),
         ('zero_copy_pointers', ctypes.c_void_p),  # pomai_semantic_pointer_t*; we ignore
     ]
 
@@ -115,7 +132,6 @@ def main():
         opts.struct_size = ctypes.sizeof(PomaiOptions)
         path_buf = ctypes.create_string_buffer(td.encode('utf-8') + b'\0')
         opts.path = ctypes.cast(path_buf, ctypes.c_char_p)
-        opts.shards = 1
         opts.dim = 8
 
         db = ctypes.c_void_p()
@@ -141,7 +157,6 @@ def main():
         query.dim = 8
         query.topk = 2
         query.filter_expression = None
-        query.alpha = 0.0
         query.deadline_ms = 0
         query.flags = 0
 

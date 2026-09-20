@@ -504,8 +504,8 @@ Status PomegranateQuery::Execute(std::span<const float> query,
     if (!s.ok()) return s;
 
     if (snapshot) {
-        out->total_shards_count = static_cast<uint32_t>(snapshot->locules().size());
-        out->routed_shards_count = out->total_shards_count;
+        out->total_locules_count = static_cast<uint32_t>(snapshot->locules().size());
+        out->routed_locules_count = out->total_locules_count;
     }
     return Status::Ok();
 }

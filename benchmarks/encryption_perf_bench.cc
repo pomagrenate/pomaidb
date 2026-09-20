@@ -43,7 +43,6 @@ Metrics OneRun(const std::string& path, std::uint32_t dim, std::uint32_t nvec, s
   pomai::DBOptions opts;
   opts.path = path;
   opts.dim = dim;
-  opts.shard_count = 1;
   opts.fsync = pomai::FsyncPolicy::kNever;
 
   if (encrypted_mode) {

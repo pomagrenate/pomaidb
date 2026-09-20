@@ -57,13 +57,11 @@ namespace
 
         pomai::MembraneSpec a;
         a.name = "alpha";
-        a.shard_count = 3;
         a.dim = 8;
         a.metric = pomai::MetricType::kInnerProduct;
 
         pomai::MembraneSpec b;
         b.name = "beta";
-        b.shard_count = 4;
         b.dim = 16;
         b.metric = pomai::MetricType::kCosine;
         b.index_params.nlist = 99;
@@ -82,7 +80,6 @@ namespace
         pomai::MembraneSpec got;
         POMAI_EXPECT_OK(pomai::storage::Manifest::GetMembrane(root, "beta", &got));
         POMAI_EXPECT_EQ(got.name, std::string("beta"));
-        POMAI_EXPECT_EQ(got.shard_count, static_cast<std::uint32_t>(4));
         POMAI_EXPECT_EQ(got.dim, static_cast<std::uint32_t>(16));
         POMAI_EXPECT_TRUE(got.metric == pomai::MetricType::kCosine);
         POMAI_EXPECT_EQ(got.index_params.nlist, static_cast<std::uint32_t>(99));
@@ -119,7 +116,6 @@ namespace
         pomai::MembraneSpec bad;
         bad.name = "../oops";
         bad.dim = 8;
-        bad.shard_count = 1;
         auto st = pomai::storage::Manifest::CreateMembrane(root, bad);
         POMAI_EXPECT_TRUE(!st.ok());
         POMAI_EXPECT_EQ(st.code(), pomai::ErrorCode::kInvalidArgument);
@@ -127,13 +123,6 @@ namespace
         pomai::MembraneSpec z;
         z.name = "ok";
         z.dim = 0;
-        z.shard_count = 1;
-        st = pomai::storage::Manifest::CreateMembrane(root, z);
-        POMAI_EXPECT_TRUE(!st.ok());
-        POMAI_EXPECT_EQ(st.code(), pomai::ErrorCode::kInvalidArgument);
-
-        z.dim = 8;
-        z.shard_count = 0;
         st = pomai::storage::Manifest::CreateMembrane(root, z);
         POMAI_EXPECT_TRUE(!st.ok());
         POMAI_EXPECT_EQ(st.code(), pomai::ErrorCode::kInvalidArgument);

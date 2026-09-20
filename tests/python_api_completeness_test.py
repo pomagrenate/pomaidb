@@ -6,7 +6,7 @@ import time
 dirpath = tempfile.mkdtemp()
 print("Starting DB...")
 try:
-    db = pomaidb.open_db(dirpath, dim=128, shards=1, metric="ip")
+    db = pomaidb.open_db(dirpath, dim=128, metric="ip")
     print("DB Opened.")
     pomaidb.put_batch(db, ids=[1, 2], vectors=[[0.1]*128, [0.2]*128])
     print("Put batch.")
@@ -27,7 +27,7 @@ try:
     print("Delete works.")
     
     # Test vector membrane creation and listing
-    pomaidb.create_membrane(db, "vec_memb", dim=128, shard_count=1)
+    pomaidb.create_membrane(db, "vec_memb", dim=128)
     membranes = pomaidb.list_membranes(db)
     assert "vec_memb" in membranes
     print("Membrane list works:", membranes)
@@ -78,7 +78,7 @@ try:
     # Test opening DB with quantization and memory budget
     dirpath2 = tempfile.mkdtemp()
     try:
-        db_quant = pomaidb.open_db(dirpath2, dim=64, shards=1, metric="cosine", quant_type=pomaidb.QUANT_SQ8, memory_budget_bytes=16*1024*1024)
+        db_quant = pomaidb.open_db(dirpath2, dim=64, metric="cosine", quant_type=pomaidb.QUANT_SQ8, memory_budget_bytes=16*1024*1024)
         pomaidb.put(db_quant, 100, [0.5]*64)
         assert pomaidb.exists(db_quant, 100)
         pomaidb.close(db_quant)

@@ -46,7 +46,7 @@ POMAI_API pomai_status_t* pomai_search_batch(
 POMAI_API void pomai_search_batch_free(pomai_search_results_t* results, size_t num_queries);
 
 // Named Vector Collections (Membranes) - Lifecycle & Retention
-POMAI_API pomai_status_t* pomai_create_membrane_kind(pomai_db_t* db, const char* name, uint32_t dim, uint32_t shard_count, uint32_t kind);
+POMAI_API pomai_status_t* pomai_create_membrane_kind(pomai_db_t* db, const char* name, uint32_t dim, uint32_t kind);
 POMAI_API pomai_status_t* pomai_drop_membrane(pomai_db_t* db, const char* membrane_name);
 POMAI_API pomai_status_t* pomai_open_membrane(pomai_db_t* db, const char* membrane_name);
 POMAI_API pomai_status_t* pomai_close_membrane(pomai_db_t* db, const char* membrane_name);

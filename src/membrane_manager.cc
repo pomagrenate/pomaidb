@@ -54,7 +54,6 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
         pomai::MembraneSpec spec;
         spec.name = std::string(kDefaultMembrane);
         spec.dim = base_.dim;
-        spec.shard_count = base_.shard_count;
         spec.index_params = base_.index_params;
         spec.metric = base_.metric;
 
@@ -77,7 +76,6 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
 
             pomai::DBOptions opt = base_;
             opt.dim = loaded_spec.dim;
-            opt.shard_count = loaded_spec.shard_count;
             opt.index_params = loaded_spec.index_params;
             opt.path = base_.path + "/membranes/" + spec.name;
 
@@ -126,7 +124,6 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
             if (membranes_.find(name) == membranes_.end()) {
                 pomai::DBOptions opt = base_;
                 opt.dim = mspec.dim;
-                opt.shard_count = mspec.shard_count;
                 opt.index_params = mspec.index_params;
                 opt.path = base_.path + "/membranes/" + name;
 
@@ -232,8 +229,6 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
             return Status::InvalidArgument("membrane name empty");
         if (spec.dim == 0)
             return Status::InvalidArgument("membrane dim must be > 0");
-        if (spec.shard_count == 0)
-            return Status::InvalidArgument("membrane shard_count must be > 0");
 
         UniqueLockGuard lock(membranes_mu_);
         if (membranes_.find(spec.name) != membranes_.end())
@@ -245,7 +240,6 @@ using pomai::utils::CalculateDynamicMemtableThreshold;
 
         pomai::DBOptions opt = base_;
         opt.dim = spec.dim;
-        opt.shard_count = spec.shard_count;
         opt.index_params = spec.index_params;
         opt.path = base_.path + "/membranes/" + spec.name;
 

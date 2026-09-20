@@ -31,7 +31,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   pomai::DBOptions opts;
   opts.path = fuzz_dir;
   opts.dim = 128; // fixed for this fuzzer
-  opts.shard_count = 1;
 
   std::unique_ptr<pomai::DB> db;
   // This might fail with Status error, which is GOOD. It should NOT segfault.

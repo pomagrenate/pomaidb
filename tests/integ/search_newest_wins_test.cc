@@ -25,7 +25,6 @@ POMAI_TEST(SearchNewestWins_DeterministicAndTombstone) {
     pomai::DBOptions opt;
     opt.path = root;
     opt.dim = dim;
-    opt.shard_count = 1;
 
     std::unique_ptr<pomai::DB> db;
     POMAI_EXPECT_OK(pomai::DB::Open(opt, &db));
@@ -33,7 +32,6 @@ POMAI_TEST(SearchNewestWins_DeterministicAndTombstone) {
     pomai::MembraneSpec spec;
     spec.name = membrane;
     spec.dim = dim;
-    spec.shard_count = 1;
     spec.metric = pomai::MetricType::kInnerProduct;  // exact match gives score 1.0; L2 would give 0
     POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane(membrane));

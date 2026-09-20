@@ -23,7 +23,6 @@ void TestAccuracy(pomai::QuantizationType qtype, const std::string& name) {
     pomai::DBOptions opts;
     opts.path = path;
     opts.dim = dim;
-    opts.shard_count = 1;
     opts.index_params.quant_type = qtype;
     opts.metric = pomai::MetricType::kInnerProduct;
 

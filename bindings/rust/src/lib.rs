@@ -369,14 +369,13 @@ impl Database {
         }
     }
 
-    pub fn create_membrane(&self, name: &str, dim: usize, shard_count: usize) -> Result<()> {
+    pub fn create_membrane(&self, name: &str, dim: usize) -> Result<()> {
         let name_c = CString::new(name)?;
         unsafe {
             check_status(sys::pomai_create_membrane_kind(
                 self.handle,
                 name_c.as_ptr(),
                 dim as u32,
-                shard_count as u32,
                 0,
             ))
         }

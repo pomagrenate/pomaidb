@@ -18,7 +18,6 @@ public:
         pomai_options_init(&opts_);
         dir_ = "test_db_capi_" + std::to_string(std::rand());
         opts_.path = dir_.c_str();
-        opts_.shards = 2;
         opts_.dim = 8;
         std::error_code ec;
         std::filesystem::remove_all(dir_, ec);
@@ -225,7 +224,7 @@ POMAI_TEST(CApiMembraneAndFeatures) {
     CApiFixture fx;
 
     // Test membrane creation
-    CAPI_EXPECT_OK(pomai_create_membrane_kind(fx.db(), "custom_memb", 8, 1, 0));
+    CAPI_EXPECT_OK(pomai_create_membrane_kind(fx.db(), "custom_memb", 8, 0));
 
     char* list_json = nullptr;
     size_t list_len = 0;

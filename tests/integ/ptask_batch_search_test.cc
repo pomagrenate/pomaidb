@@ -25,7 +25,6 @@ POMAI_TEST(PTask_BatchSearch_AccuracyAndParity) {
     pomai::DBOptions opt;
     opt.path = pomai::test::TempDir("ptask-batch-accuracy");
     opt.dim = 16;
-    opt.shard_count = 1;
     opt.search_threads = 4; // Use 4 work-stealing threads from ptask
     opt.fsync = pomai::FsyncPolicy::kNever;
 
@@ -35,7 +34,6 @@ POMAI_TEST(PTask_BatchSearch_AccuracyAndParity) {
     pomai::MembraneSpec spec;
     spec.name = "default";
     spec.dim = opt.dim;
-    spec.shard_count = opt.shard_count;
     POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane("default"));
 
@@ -87,7 +85,6 @@ POMAI_TEST(PTask_Oversubscription_Clamping) {
     pomai::DBOptions opt;
     opt.path = pomai::test::TempDir("ptask-oversubscription");
     opt.dim = 8;
-    opt.shard_count = 1;
     // Extreme thread count: 5000 threads requested on user device
     opt.search_threads = 5000;
     opt.fsync = pomai::FsyncPolicy::kNever;
@@ -98,7 +95,6 @@ POMAI_TEST(PTask_Oversubscription_Clamping) {
     pomai::MembraneSpec spec;
     spec.name = "default";
     spec.dim = opt.dim;
-    spec.shard_count = opt.shard_count;
     POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane("default"));
 

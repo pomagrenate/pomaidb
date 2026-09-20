@@ -57,7 +57,6 @@ namespace pomai::storage {
 
     Wal::Wal(pomai::Env* env,
              std::string db_path,
-             std::uint32_t shard_id,
              std::size_t segment_bytes,
              pomai::FsyncPolicy fsync,
              bool encryption_enabled,
@@ -65,7 +64,6 @@ namespace pomai::storage {
              palloc_heap_t* heap)
         : env_(env ? env : pomai::Env::Default()),
           db_path_(std::move(db_path)),
-          shard_id_(shard_id),
           segment_bytes_(segment_bytes),
           fsync_(fsync),
           heap_(heap),
@@ -91,7 +89,7 @@ namespace pomai::storage {
 
     std::string Wal::SegmentPath(std::uint64_t gen) const
     {
-        return db_path_ + "/wal_" + std::to_string(shard_id_) + "_" + std::to_string(gen) + ".log";
+        return db_path_ + "/wal_0_" + std::to_string(gen) + ".log";
     }
 
     pomai::Status Wal::Open()
@@ -270,10 +268,10 @@ namespace pomai::storage {
         return true;
     }
 
-    static std::array<std::uint8_t, 12> MakeNonce(std::uint32_t shard_id, std::uint64_t seq, std::uint64_t gen)
+    static std::array<std::uint8_t, 12> MakeNonce(std::uint64_t seq, std::uint64_t gen)
     {
         std::array<std::uint8_t, 12> nonce{};
-        std::memcpy(nonce.data(), &shard_id, sizeof(shard_id));
+        // First 4 bytes are 0 (preserves compatibility with legacy unified shard 0)
         std::memcpy(nonce.data() + 4, &seq, sizeof(seq));
         nonce[11] ^= static_cast<std::uint8_t>(gen & 0xFFu);
         return nonce;
@@ -353,7 +351,7 @@ namespace pomai::storage {
 
         std::vector<std::uint8_t> body;
         if (encryption_enabled_) {
-            const auto nonce = MakeNonce(shard_id_, rp.seq, gen_);
+            const auto nonce = MakeNonce(rp.seq, gen_);
             std::vector<std::uint8_t> cipher;
             std::array<std::uint8_t, 16> tag{};
             auto est = pomai::core::AesGcm::Encrypt(encryption_key_, nonce, plain, &cipher, &tag);
@@ -398,7 +396,7 @@ namespace pomai::storage {
         AppendBytes(&plain, &rp, sizeof(rp));
         std::vector<std::uint8_t> body;
         if (encryption_enabled_) {
-            const auto nonce = MakeNonce(shard_id_, rp.seq, gen_);
+            const auto nonce = MakeNonce(rp.seq, gen_);
             std::vector<std::uint8_t> cipher;
             std::array<std::uint8_t, 16> tag{};
             auto est = pomai::core::AesGcm::Encrypt(encryption_key_, nonce, plain, &cipher, &tag);
@@ -711,7 +709,7 @@ namespace pomai::storage {
         AppendBytes(&plain, &rp, sizeof(rp));
         std::vector<std::uint8_t> body;
         if (encryption_enabled_) {
-            const auto nonce = MakeNonce(shard_id_, rp.seq, gen_);
+            const auto nonce = MakeNonce(rp.seq, gen_);
             std::vector<std::uint8_t> cipher;
             std::array<std::uint8_t, 16> tag{};
             auto est = pomai::core::AesGcm::Encrypt(encryption_key_, nonce, plain, &cipher, &tag);

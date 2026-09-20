@@ -282,7 +282,7 @@ int CmdScan(const std::vector<std::string>& args) {
     pomai::DBOptions opt;
     opt.path = db_path;
     
-    // Read membrane metadata from manifest to get dim/shard_count
+    // Read membrane metadata from manifest to get dim
     pomai::MembraneSpec mspec;
     std::unique_ptr<pomai::DB> db;
     auto st = pomai::DB::Open(opt, &db);

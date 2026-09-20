@@ -37,7 +37,6 @@ int main() {
   pomai::DBOptions opt;
   opt.path = "/tmp/pomai_low_ram_profile";
   opt.dim = 32;
-  opt.shard_count = 1;
   opt.max_lifecycle_entries = 2000;
 
   std::unique_ptr<pomai::DB> db;

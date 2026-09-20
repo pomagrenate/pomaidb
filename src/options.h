@@ -110,7 +110,6 @@ namespace pomai
         std::string path;
         /** VFS for file I/O; nullptr = use Env::Default(). */
         Env* env = nullptr;
-        uint32_t shard_count = 4;
         uint32_t dim = 512;
         /** If true, use SQ8 scalar quantization in storage (4x compression). Default true for edge/memory-constrained builds. */
         bool enable_quantization = kDefaultEnableQuantization;
@@ -223,7 +222,6 @@ namespace pomai
     struct MembraneSpec
     {
         std::string name;
-        uint32_t shard_count = 0; // 0 => inherit DBOptions.shard_count
         uint32_t dim = 0;         // 0 => inherit DBOptions.dim
         MetricType metric = MetricType::kL2;
         IndexParams index_params;

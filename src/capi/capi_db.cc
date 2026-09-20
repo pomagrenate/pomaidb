@@ -55,7 +55,6 @@ struct SearchResultsWrapper {
     pomai_search_results_t pub{};
     std::vector<uint64_t> ids;
     std::vector<float> scores;
-    std::vector<uint32_t> shard_ids;
 };
 
 constexpr uint32_t MinOptionsStructSize() {
@@ -197,7 +196,6 @@ void pomai_options_init(pomai_options_t* opts) {
     }
     std::memset(opts, 0, sizeof(pomai_options_t));
     opts->struct_size = sizeof(pomai_options_t);
-    opts->shards = 1;
     opts->dim = 128;
     opts->search_threads = 0;
     opts->fsync_policy = POMAI_FSYNC_POLICY_NEVER;
@@ -243,7 +241,6 @@ void pomai_options_apply_preset(pomai_options_t* opts, pomai_embedded_preset_t p
 
     switch (preset) {
         case POMAI_EMBEDDED_PRESET_ESP32_S3:
-            opts->shards = 1;
             opts->search_threads = 1;
             opts->fsync_policy = POMAI_FSYNC_POLICY_NEVER;
             opts->memory_budget_bytes = 4ULL * 1024 * 1024; // 4MB PSRAM limit
@@ -257,7 +254,6 @@ void pomai_options_apply_preset(pomai_options_t* opts, pomai_embedded_preset_t p
             break;
 
         case POMAI_EMBEDDED_PRESET_ARM_CORTEX_M85:
-            opts->shards = 1;
             opts->search_threads = 1;
             opts->fsync_policy = POMAI_FSYNC_POLICY_NEVER;
             opts->memory_budget_bytes = 2ULL * 1024 * 1024; // 2MB SRAM
@@ -271,7 +267,6 @@ void pomai_options_apply_preset(pomai_options_t* opts, pomai_embedded_preset_t p
             break;
 
         case POMAI_EMBEDDED_PRESET_RPI_ZERO_2W:
-            opts->shards = 2;
             opts->search_threads = 4;
             opts->fsync_policy = POMAI_FSYNC_POLICY_NEVER;
             opts->memory_budget_bytes = 256ULL * 1024 * 1024; // 256MB
@@ -286,7 +281,6 @@ void pomai_options_apply_preset(pomai_options_t* opts, pomai_embedded_preset_t p
 
         case POMAI_EMBEDDED_PRESET_GENERIC:
         default:
-            opts->shards = 1;
             opts->search_threads = 0;
             opts->fsync_policy = POMAI_FSYNC_POLICY_NEVER;
             opts->memory_budget_bytes = 64ULL * 1024 * 1024;
@@ -307,7 +301,6 @@ pomai_status_t* pomai_options_resolve_json(const pomai_options_t* opts, char** o
     }
     pomai::DBOptions db_opts;
     db_opts.path = opts->path ? opts->path : "";
-    db_opts.shard_count = opts->shards;
     db_opts.dim = opts->dim;
     db_opts.edge_profile = static_cast<pomai::EdgeProfile>(opts->edge_profile);
     db_opts.ApplyEdgeProfile();
@@ -315,7 +308,6 @@ pomai_status_t* pomai_options_resolve_json(const pomai_options_t* opts, char** o
     std::string json = "{";
     json += "\"path\":\"" + JsonEscape(db_opts.path) + "\",";
     json += "\"dim\":" + std::to_string(db_opts.dim) + ",";
-    json += "\"shards\":" + std::to_string(db_opts.shard_count) + ",";
     json += "\"edge_profile\":" + std::to_string(static_cast<uint8_t>(db_opts.edge_profile));
     json += "}";
 
@@ -344,7 +336,6 @@ pomai_status_t* pomai_open(const pomai_options_t* opts, pomai_db_t** out_db) {
 
     pomai::DBOptions db_opts;
     db_opts.path = opts->path;
-    db_opts.shard_count = opts->shards > 0 ? opts->shards : 1;
     db_opts.dim = opts->dim;
     db_opts.fsync = (opts->fsync_policy == POMAI_FSYNC_POLICY_ALWAYS)
                         ? pomai::FsyncPolicy::kAlways
@@ -667,8 +658,8 @@ pomai_status_t* pomai_search_membrane(pomai_db_t* db, const char* membrane, cons
         wrapper->pub.count = wrapper->ids.size();
         wrapper->pub.ids = wrapper->ids.data();
         wrapper->pub.scores = wrapper->scores.data();
-        wrapper->pub.total_shards_count = 1;
-        wrapper->pub.pruned_shards_count = 0;
+        wrapper->pub.total_locules_count = 1;
+        wrapper->pub.pruned_locules_count = 0;
         wrapper->pub.zero_copy_pointers = nullptr;
 
         *out = &wrapper->pub;
@@ -696,8 +687,8 @@ pomai_status_t* pomai_search_membrane(pomai_db_t* db, const char* membrane, cons
     wrapper->pub.count = wrapper->ids.size();
     wrapper->pub.ids = wrapper->ids.data();
     wrapper->pub.scores = wrapper->scores.data();
-    wrapper->pub.total_shards_count = res.total_shards_count;
-    wrapper->pub.pruned_shards_count = res.pruned_shards_count;
+    wrapper->pub.total_locules_count = res.total_locules_count;
+    wrapper->pub.pruned_locules_count = res.pruned_locules_count;
 
     if (!res.zero_copy_pointers.empty()) {
         wrapper->pub.zero_copy_pointers = static_cast<pomai_semantic_pointer_t*>(
@@ -781,9 +772,8 @@ pomai_status_t* pomai_search_batch(
         arr[i].count = r.hits.size();
         arr[i].ids = nullptr;
         arr[i].scores = nullptr;
-        arr[i].shard_ids = nullptr;
-        arr[i].total_shards_count = r.total_shards_count;
-        arr[i].pruned_shards_count = r.pruned_shards_count;
+        arr[i].total_locules_count = r.total_locules_count;
+        arr[i].pruned_locules_count = r.pruned_locules_count;
         arr[i].zero_copy_pointers = nullptr;
 
         if (!r.hits.empty()) {
@@ -805,13 +795,12 @@ void pomai_search_batch_free(pomai_search_results_t* results, size_t num_queries
     for (size_t i = 0; i < num_queries; ++i) {
         palloc_free(results[i].ids);
         palloc_free(results[i].scores);
-        palloc_free(results[i].shard_ids);
         palloc_free(results[i].zero_copy_pointers);
     }
     palloc_free(results);
 }
 
-pomai_status_t* pomai_create_membrane_kind(pomai_db_t* db, const char* name, uint32_t dim, uint32_t shard_count, uint32_t kind) {
+pomai_status_t* pomai_create_membrane_kind(pomai_db_t* db, const char* name, uint32_t dim, uint32_t kind) {
     (void)kind;
     if (db == nullptr || name == nullptr) {
         return MakeStatus(POMAI_STATUS_INVALID_ARGUMENT, "db/name must be non-null");
@@ -819,7 +808,6 @@ pomai_status_t* pomai_create_membrane_kind(pomai_db_t* db, const char* name, uin
     pomai::MembraneSpec spec;
     spec.name = name;
     spec.dim = dim;
-    spec.shard_count = shard_count > 0 ? shard_count : 1u;
     spec.kind = pomai::MembraneKind::kVector;
     auto st = db->db->CreateMembrane(spec);
     if (!st.ok()) return ToCStatus(st);

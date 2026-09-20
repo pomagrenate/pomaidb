@@ -20,7 +20,6 @@ POMAI_TEST(Iterator_AllInsertedIDs) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("iterator_all_ids");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -29,7 +28,6 @@ POMAI_TEST(Iterator_AllInsertedIDs) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 1;
     db->CreateMembrane(spec);
     db->OpenMembrane("default");
 
@@ -69,7 +67,6 @@ POMAI_TEST(Iterator_TombstoneFiltering) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("iterator_tombstones");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -77,7 +74,6 @@ POMAI_TEST(Iterator_TombstoneFiltering) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 1;
     db->CreateMembrane(spec);
     db->OpenMembrane("default");
 
@@ -122,7 +118,6 @@ POMAI_TEST(Iterator_NewestWinsDeduplication) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("iterator_dedup");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -130,7 +125,6 @@ POMAI_TEST(Iterator_NewestWinsDeduplication) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 1;
     db->CreateMembrane(spec);
     db->OpenMembrane("default");
 
@@ -172,7 +166,6 @@ POMAI_TEST(Iterator_SnapshotIsolation) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("iterator_snapshot_isolation");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -180,7 +173,6 @@ POMAI_TEST(Iterator_SnapshotIsolation) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 1;
     db->CreateMembrane(spec);
     db->OpenMembrane("default");
 
@@ -225,7 +217,6 @@ POMAI_TEST(Iterator_DeterministicOrdering) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("iterator_deterministic");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -233,7 +224,6 @@ POMAI_TEST(Iterator_DeterministicOrdering) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 1;
     db->CreateMembrane(spec);
     db->OpenMembrane("default");
 

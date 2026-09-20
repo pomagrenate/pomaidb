@@ -26,7 +26,6 @@ namespace
         pomai::DBOptions opt;
         opt.path = pomai::test::TempDir("pomai-membrane-integ");
         opt.dim = 8;
-        opt.shard_count = 4;
         opt.fsync = pomai::FsyncPolicy::kNever;
 
         std::unique_ptr<pomai::DB> db;
@@ -35,12 +34,10 @@ namespace
         pomai::MembraneSpec a;
         a.name = "A";
         a.dim = opt.dim;
-        a.shard_count = opt.shard_count;
 
         pomai::MembraneSpec b;
         b.name = "B";
         b.dim = opt.dim;
-        b.shard_count = opt.shard_count;
 
         POMAI_EXPECT_OK(db->CreateMembrane(a));
         POMAI_EXPECT_OK(db->CreateMembrane(b));
@@ -103,7 +100,6 @@ namespace
         pomai::DBOptions opt;
         opt.path = pomai::test::TempDir("pomai-membrane-list");
         opt.dim = 8;
-        opt.shard_count = 2;
         opt.fsync = pomai::FsyncPolicy::kNever;
 
         std::unique_ptr<pomai::DB> db;
@@ -114,7 +110,6 @@ namespace
             pomai::MembraneSpec s;
             s.name = name;
             s.dim = opt.dim;
-            s.shard_count = opt.shard_count;
             return s;
         };
 
@@ -140,7 +135,6 @@ namespace
         pomai::DBOptions opt;
         opt.path = pomai::test::TempDir("pomai-membrane-persist");
         opt.dim = 8;
-        opt.shard_count = 2;
         opt.fsync = pomai::FsyncPolicy::kAlways;
 
         // 1. Create Membrane
@@ -151,7 +145,6 @@ namespace
             pomai::MembraneSpec s;
             s.name = "persistent_memb";
             s.dim = 8;
-            s.shard_count = 2;
             POMAI_EXPECT_OK(db->CreateMembrane(s));
             POMAI_EXPECT_OK(db->Close());
         }

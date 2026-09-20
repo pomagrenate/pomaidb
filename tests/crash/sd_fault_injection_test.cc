@@ -41,7 +41,6 @@ POMAI_TEST(SdFaultInjection_CorruptedWalAndSegment_NoCrashOnReopen) {
   DBOptions opt;
   opt.path = test::TempDir("sd-fault-injection");
   opt.dim = 16;
-  opt.shard_count = 1;
   opt.fsync = FsyncPolicy::kNever;
 
   {

@@ -28,7 +28,6 @@ POMAI_TEST(PartialFailure_SearchResultHasErrorsField) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("partial_failure_api");
     opt.dim = 4;
-    opt.shard_count = 2; // Multi-shard setup
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -37,7 +36,6 @@ POMAI_TEST(PartialFailure_SearchResultHasErrorsField) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 2;
     POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane("default"));
 
@@ -67,7 +65,6 @@ POMAI_TEST(PartialFailure_EmptyErrorsOnSuccess) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("partial_empty_errors");
     opt.dim = 4;
-    opt.shard_count = 4;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -75,7 +72,6 @@ POMAI_TEST(PartialFailure_EmptyErrorsOnSuccess) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 4;
     POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane("default"));
 

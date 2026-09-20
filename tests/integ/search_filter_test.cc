@@ -140,7 +140,6 @@ POMAI_TEST(SearchFilterTest_Persistence) {
         pomai::MembraneSpec spec;
         spec.name = "test_mem";
         spec.dim = 2;
-        spec.shard_count = 1;
         POMAI_EXPECT_OK(db->CreateMembrane(spec));
         POMAI_EXPECT_OK(db->OpenMembrane("test_mem"));
         

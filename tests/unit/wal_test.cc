@@ -24,7 +24,7 @@ namespace pomai
     {
         std::string dir = pomai::test::TempDir("wal_roundtrip");
         {
-            auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever);
+            auto wal = std::make_unique<Wal>(Env::Default(), dir, 1024*1024, FsyncPolicy::kNever);
             POMAI_EXPECT_OK(wal->Open());
             
             std::vector<float> v1 = {1.0f, 2.0f};
@@ -40,7 +40,7 @@ namespace pomai
         {
             // Replay
             table::MemTable mem(2, 4096);
-            auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever);
+            auto wal = std::make_unique<Wal>(Env::Default(), dir, 1024*1024, FsyncPolicy::kNever);
 
             POMAI_EXPECT_OK(wal->ReplayInto(mem));
             
@@ -61,7 +61,7 @@ namespace pomai
         
         // 1. Write valid
         {
-            auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever);
+            auto wal = std::make_unique<Wal>(Env::Default(), dir, 1024*1024, FsyncPolicy::kNever);
             POMAI_EXPECT_OK(wal->Open());
             std::vector<float> v1 = {1.0f, 1.0f};
             pomai::Metadata meta;
@@ -82,7 +82,7 @@ namespace pomai
         // 3. Replay
         {
             table::MemTable mem(2, 4096);
-            auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever);
+            auto wal = std::make_unique<Wal>(Env::Default(), dir, 1024*1024, FsyncPolicy::kNever);
             
             POMAI_EXPECT_OK(wal->ReplayInto(mem));
 
@@ -99,7 +99,7 @@ namespace pomai
         
         // 1. Write valid
         {
-            auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever);
+            auto wal = std::make_unique<Wal>(Env::Default(), dir, 1024*1024, FsyncPolicy::kNever);
             POMAI_EXPECT_OK(wal->Open());
             std::vector<float> v1 = {1.0f, 1.0f};
             pomai::Metadata meta;
@@ -117,7 +117,7 @@ namespace pomai
         // 3. Replay
         {
             table::MemTable mem(2, 4096);
-            auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever);
+            auto wal = std::make_unique<Wal>(Env::Default(), dir, 1024*1024, FsyncPolicy::kNever);
             
             Status st = wal->ReplayInto(mem);
             POMAI_EXPECT_TRUE(!st.ok());
@@ -129,7 +129,7 @@ namespace pomai
         std::string dir = pomai::test::TempDir("wal_bad_version");
 
         {
-            auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever);
+            auto wal = std::make_unique<Wal>(Env::Default(), dir, 1024*1024, FsyncPolicy::kNever);
             POMAI_EXPECT_OK(wal->Open());
             std::vector<float> v1 = {1.0f, 2.0f};
             pomai::Metadata meta;
@@ -146,7 +146,7 @@ namespace pomai
         }
 
         table::MemTable mem(2, 4096);
-        auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever);
+        auto wal = std::make_unique<Wal>(Env::Default(), dir, 1024*1024, FsyncPolicy::kNever);
         Status st = wal->ReplayInto(mem);
         POMAI_EXPECT_TRUE(!st.ok());
         POMAI_EXPECT_EQ(st.code(), ErrorCode::kAborted);
@@ -162,7 +162,7 @@ namespace pomai
         std::string dir = pomai::test::TempDir("wal_enc_roundtrip");
         const std::string key_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
         {
-            auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever, true, key_hex);
+            auto wal = std::make_unique<Wal>(Env::Default(), dir, 1024*1024, FsyncPolicy::kNever, true, key_hex);
             POMAI_EXPECT_OK(wal->Open());
             std::vector<float> v1 = {5.0f, 6.0f};
             pomai::Metadata meta;
@@ -171,7 +171,7 @@ namespace pomai
         }
 
         table::MemTable mem(2, 4096);
-        auto wal = std::make_unique<Wal>(Env::Default(), dir, 0, 1024*1024, FsyncPolicy::kNever, true, key_hex);
+        auto wal = std::make_unique<Wal>(Env::Default(), dir, 1024*1024, FsyncPolicy::kNever, true, key_hex);
         POMAI_EXPECT_OK(wal->ReplayInto(mem));
         auto out = GetVec(mem, 99, 2);
         POMAI_EXPECT_EQ(out.size(), static_cast<size_t>(2));

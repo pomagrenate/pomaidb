@@ -39,7 +39,6 @@ POMAI_TEST(DB_SoakStress_LongRunningNoLeaksOrCorruption) {
   DBOptions opt;
   opt.path = test::TempDir("db-soak-stress");
   opt.dim = dim;
-  opt.shard_count = 2;
   opt.fsync = FsyncPolicy::kNever;
   opt.memtable_flush_threshold_mb = 8;
   opt.max_memtable_mb = 16;

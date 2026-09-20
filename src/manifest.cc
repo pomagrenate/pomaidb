@@ -297,7 +297,6 @@ namespace pomai::storage
             std::string out;
             out += "pomai.membrane.v3\n";
             out += "name " + spec.name + "\n";
-            out += "shards " + std::to_string(spec.shard_count) + "\n";
             out += "dim " + std::to_string(spec.dim) + "\n";
             out += "kind " + MembraneKindToString(spec.kind) + "\n";
             
@@ -343,7 +342,6 @@ namespace pomai::storage
             
             spec->name = std::string(name);
             // defaults
-            spec->shard_count = 0;
             spec->dim = 0;
             spec->metric = pomai::MetricType::kL2;
             spec->kind = pomai::MembraneKind::kVector;
@@ -363,7 +361,7 @@ namespace pomai::storage
                 if (toks[0] == "name") {
                     // verify name matches?
                 } else if (toks[0] == "shards") {
-                    if (toks.size() > 1) (void)ParseU32(toks[1], &spec->shard_count);
+                    // Legacy token: ignored for backward compatibility with v2/early v3 manifests
                 } else if (toks[0] == "dim") {
                     if (toks.size() > 1) (void)ParseU32(toks[1], &spec->dim);
                 } else if (toks[0] == "metric") {
@@ -437,8 +435,6 @@ namespace pomai::storage
             return pomai::Status::InvalidArgument("invalid membrane name");
         if (spec.dim == 0)
             return pomai::Status::InvalidArgument("dim must be > 0");
-        if (spec.shard_count == 0)
-            return pomai::Status::InvalidArgument("shard_count must be > 0");
 
         auto st = EnsureInitialized(root_path);
         if (!st.ok())

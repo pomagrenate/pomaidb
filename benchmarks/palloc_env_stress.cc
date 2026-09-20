@@ -144,7 +144,6 @@ static IngestResult IngestAndVerify(const std::string& db_path, size_t target_ve
   opts.path = db_path;
   opts.dim = static_cast<uint32_t>(kVectorDim);
   // Monolithic runtime: a single logical instance indexes all vectors.
-  opts.shard_count = 1;
   opts.fsync = pomai::FsyncPolicy::kNever;
 
   // Backpressure: cap memtable usage so we leave RAM headroom for OS / other processes.

@@ -15,7 +15,6 @@ POMAI_TEST(WAL_CorruptionDetection) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("wal_corruption");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kAlways;
 
     // Create DB and insert data
@@ -26,7 +25,6 @@ POMAI_TEST(WAL_CorruptionDetection) {
         MembraneSpec spec;
         spec.name = "default";
         spec.dim = 4;
-        spec.shard_count = 1;
         db->CreateMembrane(spec);
         db->OpenMembrane("default");
         
@@ -62,7 +60,6 @@ POMAI_TEST(IncompleteFlushRecovery) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("incomplete_flush");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kAlways;
 
     // Create DB, insert data, close without explicit flush
@@ -73,7 +70,6 @@ POMAI_TEST(IncompleteFlushRecovery) {
         MembraneSpec spec;
         spec.name = "default";
         spec.dim = 4;
-        spec.shard_count = 1;
         db->CreateMembrane(spec);
         db->OpenMembrane("default");
         
@@ -106,7 +102,6 @@ POMAI_TEST(ConcurrentConsistency) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("concurrent_consistency");
     opt.dim = 4;
-    opt.shard_count = 2;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -115,7 +110,6 @@ POMAI_TEST(ConcurrentConsistency) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 2;
     db->CreateMembrane(spec);
     db->OpenMembrane("default");
 
@@ -144,7 +138,6 @@ POMAI_TEST(BadStorage_MissingSegmentReopenFails) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("bad_storage");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     {
@@ -176,7 +169,6 @@ POMAI_TEST(Backpressure_ManyPutsNoCrash) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("backpressure");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;

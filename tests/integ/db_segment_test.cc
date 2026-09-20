@@ -26,12 +26,10 @@ POMAI_TEST(DB_SegmentLoading_ReadTest) {
     pomai::DBOptions opt;
     opt.path = root;
     opt.dim = dim;
-    opt.shard_count = 1;
 
     pomai::MembraneSpec spec;
     spec.name = membrane;
     spec.dim = dim;
-    spec.shard_count = 1;
     spec.metric = pomai::MetricType::kInnerProduct;
 
     std::vector<float> vec1 = {1.0f, 0.0f, 0.0f, 0.0f};
@@ -98,7 +96,6 @@ POMAI_TEST(DB_FreezeAndCompact) {
     pomai::DBOptions opt;
     opt.path = root;
     opt.dim = dim;
-    opt.shard_count = 1;
 
     std::unique_ptr<pomai::DB> db;
     POMAI_EXPECT_OK(pomai::DB::Open(opt, &db));
@@ -106,7 +103,6 @@ POMAI_TEST(DB_FreezeAndCompact) {
     pomai::MembraneSpec spec;
     spec.name = membrane;
     spec.dim = dim;
-    spec.shard_count = 1;
     spec.metric = pomai::MetricType::kL2;
     POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane(membrane));

@@ -410,7 +410,6 @@ def test_exp07_double_close_uaf():
         pomaidb._lib.pomai_options_init(ctypes.byref(opts))
         opts.path = db_path.encode("utf-8")
         opts.dim = 4
-        opts.shards = 1
         
         db_ptr = ctypes.c_void_p()
         st = pomaidb._lib.pomai_open(ctypes.byref(opts), ctypes.byref(db_ptr))

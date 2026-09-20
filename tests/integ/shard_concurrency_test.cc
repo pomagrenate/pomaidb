@@ -13,7 +13,6 @@ POMAI_TEST(ShardConcurrency_ParallelPuts) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("shard_concurrency_puts");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -22,7 +21,6 @@ POMAI_TEST(ShardConcurrency_ParallelPuts) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 1;
     db->CreateMembrane(spec);
     db->OpenMembrane("default");
 
@@ -68,7 +66,6 @@ POMAI_TEST(ShardConcurrency_MixedOperations) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("shard_concurrency_mixed");
     opt.dim = 4;
-    opt.shard_count = 2;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -76,7 +73,6 @@ POMAI_TEST(ShardConcurrency_MixedOperations) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 2;
     db->CreateMembrane(spec);
     db->OpenMembrane("default");
 

@@ -62,7 +62,6 @@ int main(int argc, char** argv) {
     opts.path = "/tmp/ingestion_bench";
     opts.dim = dim;
     // Legacy field: must be >=1 but has no effect in monolithic runtime mode.
-    opts.shard_count = 1;
     opts.fsync = pomai::FsyncPolicy::kNever;  // Disable for max throughput
     
     std::unique_ptr<pomai::DB> db;

@@ -16,7 +16,6 @@ POMAI_TEST(MembranePersistence_CreateRestart) {
         DBOptions opt;
         opt.path = path;
         opt.dim = 4;
-        opt.shard_count = 1;
         opt.fsync = FsyncPolicy::kAlways; // Ensure durability
         
         std::unique_ptr<DB> db;
@@ -26,7 +25,6 @@ POMAI_TEST(MembranePersistence_CreateRestart) {
         MembraneSpec spec;
         spec.name = "custom";
         spec.dim = 4;
-        spec.shard_count = 1;
         POMAI_EXPECT_OK(db->CreateMembrane(spec));
         POMAI_EXPECT_OK(db->OpenMembrane("custom"));
         
@@ -43,7 +41,6 @@ POMAI_TEST(MembranePersistence_CreateRestart) {
         DBOptions opt;
         opt.path = path;
         opt.dim = 4;
-        opt.shard_count = 1;
         
         std::unique_ptr<DB> db;
         POMAI_EXPECT_OK(DB::Open(opt, &db));
@@ -78,7 +75,6 @@ POMAI_TEST(MembranePersistence_DropRestartAbsent) {
         DBOptions opt;
         opt.path = path;
         opt.dim = 4;
-        opt.shard_count = 1;
         opt.fsync = FsyncPolicy::kAlways;
         
         std::unique_ptr<DB> db;
@@ -87,7 +83,6 @@ POMAI_TEST(MembranePersistence_DropRestartAbsent) {
         MembraneSpec spec;
         spec.name = "temp";
         spec.dim = 4;
-        spec.shard_count = 1;
         POMAI_EXPECT_OK(db->CreateMembrane(spec));
         POMAI_EXPECT_OK(db->OpenMembrane("temp"));
         
@@ -103,7 +98,6 @@ POMAI_TEST(MembranePersistence_DropRestartAbsent) {
         DBOptions opt;
         opt.path = path;
         opt.dim = 4;
-        opt.shard_count = 1;
         
         std::unique_ptr<DB> db;
         POMAI_EXPECT_OK(DB::Open(opt, &db));

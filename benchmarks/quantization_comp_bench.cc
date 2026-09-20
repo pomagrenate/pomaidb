@@ -40,7 +40,6 @@ void BenchType(const std::string& name, pomai::QuantizationType qtype,
     pomai::DBOptions opts;
     opts.path = path;
     opts.dim = dim;
-    opts.shard_count = 1;
     opts.index_params.quant_type = qtype;
     opts.index_params.adaptive_threshold = 1000000; // Force brute force on segments for accuracy demo
     opts.metric = pomai::MetricType::kInnerProduct;

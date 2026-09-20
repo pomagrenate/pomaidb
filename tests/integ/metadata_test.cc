@@ -14,7 +14,6 @@ namespace
         DBOptions opt;
         opt.path = path;
         opt.dim = 4;
-        opt.shard_count = 1;
         opt.fsync = FsyncPolicy::kNever;
 
         std::unique_ptr<DB> db;
@@ -49,7 +48,6 @@ namespace
         DBOptions opt;
         opt.path = path;
         opt.dim = 4;
-        opt.shard_count = 1;
 
         std::unique_ptr<DB> db;
         POMAI_EXPECT_OK(DB::Open(opt, &db));
@@ -93,7 +91,6 @@ namespace
         DBOptions opt;
         opt.path = path;
         opt.dim = 4;
-        opt.shard_count = 1;
 
         {
             std::unique_ptr<DB> db;
@@ -140,7 +137,6 @@ namespace
         DBOptions opt;
         opt.path = path;
         opt.dim = 4;
-        opt.shard_count = 1;
 
         std::unique_ptr<DB> db;
         POMAI_EXPECT_OK(DB::Open(opt, &db));

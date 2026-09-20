@@ -80,11 +80,11 @@ def main():
     # 2. MULTI-MEMBRANE LIFECYCLE
     # -------------------------------------------------------------------------
     print("\n[Step 2] Multi-Membrane Architecture Management...")
-    print("  -> Creating 'realtime_events' membrane (dim=64, shards=2)...")
-    db.create_membrane("realtime_events", dim=DIMENSION, shard_count=2)
+    print("  -> Creating 'realtime_events' membrane (dim=64)...")
+    db.create_membrane("realtime_events", dim=DIMENSION)
 
-    print("  -> Creating 'archival_docs' membrane (dim=64, shards=1)...")
-    db.create_membrane("archival_docs", dim=DIMENSION, shard_count=1)
+    print("  -> Creating 'archival_docs' membrane (dim=64)...")
+    db.create_membrane("archival_docs", dim=DIMENSION)
 
     membranes = db.list_membranes()
     print(f"  -> Active membranes: {membranes}")

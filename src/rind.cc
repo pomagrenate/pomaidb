@@ -38,7 +38,7 @@ Status Rind::Open() {
 
     active_memtable_ = std::make_shared<table::MemTable>(dim_, 4 * 1024 * 1024);
 
-    wal_ = std::make_unique<storage::Wal>(env_, db_dir_, 0, 64 * 1024 * 1024, fsync_);
+    wal_ = std::make_unique<storage::Wal>(env_, db_dir_, 64 * 1024 * 1024, fsync_);
     s = wal_->Open();
     if (!s.ok()) return s;
 

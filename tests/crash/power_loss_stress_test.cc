@@ -28,7 +28,6 @@ void ChildWriter(const std::string& db_path, std::uint32_t dim) {
   pomai::DBOptions opt;
   opt.path = db_path;
   opt.dim = dim;
-  opt.shard_count = 2;
   opt.fsync = pomai::FsyncPolicy::kAlways;
 
   std::unique_ptr<pomai::DB> db;
@@ -54,7 +53,6 @@ void VerifyReopenAndSearch(const std::string& db_path, std::uint32_t dim) {
   pomai::DBOptions opt;
   opt.path = db_path;
   opt.dim = dim;
-  opt.shard_count = 2;
   opt.fsync = pomai::FsyncPolicy::kAlways;
 
   std::unique_ptr<pomai::DB> db;

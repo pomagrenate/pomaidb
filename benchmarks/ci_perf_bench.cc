@@ -49,7 +49,6 @@ RunMetrics OneRun(const std::string& db_path, std::uint32_t dim, std::uint32_t n
     pomai::DBOptions opts;
     opts.path = db_path;
     opts.dim = dim;
-    opts.shard_count = 1;
     opts.fsync = pomai::FsyncPolicy::kNever;
 
     std::unique_ptr<pomai::DB> db;

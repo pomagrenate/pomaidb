@@ -25,7 +25,6 @@ namespace
         pomai::DBOptions opt;
         opt.path = pomai::test::TempDir("pomai-db_persistence_test");
         opt.dim = 16;
-        opt.shard_count = 4;
         opt.fsync = pomai::FsyncPolicy::kAlways;
 
         // 1) Open -> Put -> Flush -> Close

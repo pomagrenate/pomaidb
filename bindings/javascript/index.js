@@ -31,7 +31,7 @@ const lib = koffi.load(libPath);
 const PomaiOptions = koffi.struct("pomai_options_t", {
   struct_size: "uint32_t",
   path: "str",
-  shards: "uint32_t",
+  reserved0: "uint32_t",
   dim: "uint32_t",
   search_threads: "uint32_t",
   fsync_policy: "int",
@@ -104,9 +104,8 @@ const PomaiSearchResults = koffi.struct("pomai_search_results_t", {
   count: "size_t",
   ids: "uint64_t*",
   scores: "float*",
-  shard_ids: "uint32_t*",
-  total_shards_count: "uint32_t",
-  pruned_shards_count: "uint32_t",
+  total_locules_count: "uint32_t",
+  pruned_locules_count: "uint32_t",
   zero_copy_pointers: "void*"
 });
 
@@ -141,7 +140,7 @@ const pomai_search = lib.func("pomai_status_t* pomai_search(void* db, pomai_quer
 const pomai_search_membrane = lib.func("pomai_status_t* pomai_search_membrane(void* db, str membrane, pomai_query_t* query, _Out_ void** out)");
 const pomai_search_results_free = lib.func("void pomai_search_results_free(void* results)");
 
-const pomai_create_membrane_kind = lib.func("pomai_status_t* pomai_create_membrane_kind(void* db, str name, uint32_t dim, uint32_t shard_count, uint32_t kind)");
+const pomai_create_membrane_kind = lib.func("pomai_status_t* pomai_create_membrane_kind(void* db, str name, uint32_t dim, uint32_t kind)");
 const pomai_drop_membrane = lib.func("pomai_status_t* pomai_drop_membrane(void* db, str membrane_name)");
 const pomai_open_membrane = lib.func("pomai_status_t* pomai_open_membrane(void* db, str membrane_name)");
 const pomai_close_membrane = lib.func("pomai_status_t* pomai_close_membrane(void* db, str membrane_name)");
@@ -352,8 +351,8 @@ function decodeBytes(ptr, len) {
     }
   }
 
-  createMembrane(name, dim, shardCount = 1) {
-    checkStatus(pomai_create_membrane_kind(this._handle, name, dim, shardCount, 0));
+  createMembrane(name, dim) {
+    checkStatus(pomai_create_membrane_kind(this._handle, name, dim, 0));
   }
 
   dropMembrane(name) {

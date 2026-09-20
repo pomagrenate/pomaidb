@@ -25,7 +25,6 @@ namespace
     pomai::DBOptions opt;
     opt.path = pomai::test::TempDir("pomai-db_concurrency_tsan_test");
     opt.dim = 32;
-    opt.shard_count = 4;
     opt.fsync = pomai::FsyncPolicy::kNever;
 
     std::unique_ptr<pomai::DB> db;

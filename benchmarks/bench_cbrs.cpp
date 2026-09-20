@@ -383,7 +383,6 @@ Row RunScenario(const ScenarioConfig& sc) {
     opt.path = cfg.path;
     opt.dim = cfg.dim;
     // Legacy field; runtime is monolithic, but this benchmark still varies logical routing units.
-    opt.shard_count = cfg.units;
     opt.fsync = ParseFsync(cfg.fsync);
     opt.routing_enabled = cfg.routing != "fanout";
     opt.routing_k = cfg.k_global;
@@ -558,7 +557,7 @@ Row RunScenario(const ScenarioConfig& sc) {
             sres.hits.erase(it, sres.hits.end());
         }
         lats.push_back(std::chrono::duration<double, std::micro>(qe - qs).count());
-        routed_units.push_back(sres.routed_shards_count);
+        routed_units.push_back(sres.routed_locules_count);
         routed_probe.push_back(sres.routing_probe_centroids);
         routed_buckets.push_back(static_cast<double>(sres.routed_buckets_count));
 

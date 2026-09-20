@@ -32,7 +32,6 @@ POMAI_TEST(Database_OpenAndClose) {
     DBOptions opt;
     opt.path = td.path();
     opt.dim = 4;
-    opt.shard_count = 1;
 
     std::unique_ptr<DB> db;
     Status st = DB::Open(opt, &db);
@@ -68,7 +67,6 @@ POMAI_TEST(Database_CleanupOnFirstOpenFailure) {
     DBOptions opt;
     opt.path = bad_path; // Use the file path as the dir path
     opt.dim = 4;
-    opt.shard_count = 1;
 
     std::unique_ptr<DB> db;
     Status st = DB::Open(opt, &db);
@@ -84,7 +82,6 @@ POMAI_TEST(Database_CorruptWalReplayFailsOpen) {
         DBOptions opt;
         opt.path = db_path;
         opt.dim = 4;
-        opt.shard_count = 1;
         std::unique_ptr<DB> db;
         auto st = DB::Open(opt, &db);
         POMAI_EXPECT_TRUE(st.ok());
@@ -117,7 +114,6 @@ POMAI_TEST(Database_CorruptWalReplayFailsOpen) {
         DBOptions opt;
         opt.path = db_path;
         opt.dim = 4;
-        opt.shard_count = 1;
         std::unique_ptr<DB> db;
         Status st = DB::Open(opt, &db);
         // Corrupt WAL must be handled gracefully (either fail closed or recover by skipping bad WAL).

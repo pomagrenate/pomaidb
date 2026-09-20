@@ -81,7 +81,7 @@ def _register_api(lib):
         _fields_ = [
             ("struct_size", ctypes.c_uint32),
             ("path", ctypes.c_char_p),
-            ("shards", ctypes.c_uint32),
+            ("reserved0", ctypes.c_uint32),
             ("dim", ctypes.c_uint32),
             ("search_threads", ctypes.c_uint32),
             ("fsync_policy", ctypes.c_int),
@@ -154,9 +154,8 @@ def _register_api(lib):
             ("count", ctypes.c_size_t),
             ("ids", ctypes.POINTER(ctypes.c_uint64)),
             ("scores", ctypes.POINTER(ctypes.c_float)),
-            ("shard_ids", ctypes.POINTER(ctypes.c_uint32)),
-            ("total_shards_count", ctypes.c_uint32),
-            ("pruned_shards_count", ctypes.c_uint32),
+            ("total_locules_count", ctypes.c_uint32),
+            ("pruned_locules_count", ctypes.c_uint32),
             ("zero_copy_pointers", ctypes.POINTER(PomaiSemanticPointer)),
         ]
 
@@ -235,7 +234,7 @@ def _register_api(lib):
     lib.pomai_search_batch_free.argtypes = [ctypes.POINTER(PomaiSearchResults), ctypes.c_size_t]
     lib.pomai_search_batch_free.restype = None
 
-    lib.pomai_create_membrane_kind.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.uint32 if hasattr(ctypes, "uint32") else ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32]
+    lib.pomai_create_membrane_kind.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.uint32 if hasattr(ctypes, "uint32") else ctypes.c_uint32, ctypes.c_uint32]
     lib.pomai_create_membrane_kind.restype = ctypes.c_void_p
 
     lib.pomai_drop_membrane.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
@@ -294,13 +293,12 @@ def _check_status(st):
     _lib.pomai_status_free(st)
     raise PomaiDBError(err)
 
-def open_db(path, dim, shards=1, metric="l2", edge_profile=0, quant_type=0, memory_budget_bytes=0, auto_freeze_on_pressure=True, memtable_flush_threshold_mb=64):
+def open_db(path, dim, metric="l2", edge_profile=0, quant_type=0, memory_budget_bytes=0, auto_freeze_on_pressure=True, memtable_flush_threshold_mb=64, **kwargs):
     _ensure_lib()
     opts = _lib.PomaiOptions()
     _lib.pomai_options_init(ctypes.byref(opts))
     opts.path = path.encode("utf-8")
     opts.dim = dim
-    opts.shards = shards
     opts.metric = 2 if metric.lower() == "cosine" else (1 if metric.lower() in ("ip", "innerproduct") else 0)
     opts.edge_profile = edge_profile
     opts.quant_type = quant_type
@@ -518,8 +516,8 @@ def release_zero_copy_session(session_id):
     if session_id:
         _lib.pomai_release_pointer(session_id)
 
-def create_membrane(db, name, dim, shard_count=1):
-    _check_status(_lib.pomai_create_membrane_kind(db, name.encode("utf-8"), dim, shard_count, 0))
+def create_membrane(db, name, dim, **kwargs):
+    _check_status(_lib.pomai_create_membrane_kind(db, name.encode("utf-8"), dim, 0))
 
 def drop_membrane(db, name):
     _check_status(_lib.pomai_drop_membrane(db, name.encode("utf-8")))
@@ -550,13 +548,12 @@ def get_stats(db):
     _lib.pomai_free(ctypes.cast(out_json, ctypes.c_void_p))
     return json.loads(s)
 
-def resolve_effective_options(path, dim, shards=1, edge_profile=0):
+def resolve_effective_options(path, dim, edge_profile=0, **kwargs):
     _ensure_lib()
     opts = _lib.PomaiOptions()
     _lib.pomai_options_init(ctypes.byref(opts))
     opts.path = path.encode("utf-8")
     opts.dim = dim
-    opts.shards = shards
     opts.edge_profile = edge_profile
     out_json = ctypes.c_char_p()
     out_len = ctypes.c_size_t()

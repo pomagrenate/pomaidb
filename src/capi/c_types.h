@@ -61,7 +61,7 @@ typedef enum {
 typedef struct {
     uint32_t struct_size;
     const char* path;
-    uint32_t shards;
+    uint32_t reserved0;
     uint32_t dim;
     uint32_t search_threads;
     pomai_fsync_policy_t fsync_policy;
@@ -166,9 +166,8 @@ typedef struct {
     size_t count;
     uint64_t* ids;
     float* scores;
-    uint32_t* shard_ids;
-    uint32_t total_shards_count;
-    uint32_t pruned_shards_count;
+    uint32_t total_locules_count;
+    uint32_t pruned_locules_count;
     pomai_semantic_pointer_t* zero_copy_pointers;
 } pomai_search_results_t;
 

@@ -18,7 +18,6 @@ POMAI_TEST(Consistency_ReadYourWrites_Immediate) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("consistency_ryw_imm");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -30,7 +29,6 @@ POMAI_TEST(Consistency_ReadYourWrites_Immediate) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 1;
     POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane("default"));
 
@@ -90,12 +88,11 @@ POMAI_TEST(Consistency_Update_LatestWins) {
     // unique path
     opt.path = pomai::test::TempDir("consistency_update_v2");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
     POMAI_EXPECT_OK(DB::Open(opt, &db));
-    MembraneSpec spec; spec.name = "default"; spec.dim=4; spec.shard_count=1;
+    MembraneSpec spec; spec.name = "default"; spec.dim=4;
     POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane("default"));
 
@@ -137,12 +134,11 @@ POMAI_TEST(Consistency_Tombstone_Hides_Frozen) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("consistency_tomb");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
     POMAI_EXPECT_OK(DB::Open(opt, &db));
-    MembraneSpec spec; spec.name = "default"; spec.dim=4; spec.shard_count=1;
+    MembraneSpec spec; spec.name = "default"; spec.dim=4;
     POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane("default"));
 
@@ -169,7 +165,6 @@ POMAI_TEST(Consistency_Get_UsesCanonicalNewestWinsAcrossAllLayers) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("consistency_newest_wins_layers");
     opt.dim = 4;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;
@@ -178,7 +173,6 @@ POMAI_TEST(Consistency_Get_UsesCanonicalNewestWinsAcrossAllLayers) {
     MembraneSpec spec;
     spec.name = "default";
     spec.dim = 4;
-    spec.shard_count = 1;
     POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane("default"));
 

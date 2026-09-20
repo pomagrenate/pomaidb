@@ -8,7 +8,7 @@ pub enum PomaiStatusOpaque {}
 pub struct PomaiOptions {
     pub struct_size: u32,
     pub path: *const c_char,
-    pub shards: u32,
+    pub reserved0: u32,
     pub dim: u32,
     pub search_threads: u32,
     pub fsync_policy: c_int,
@@ -91,9 +91,8 @@ pub struct PomaiSearchResults {
     pub count: usize,
     pub ids: *mut u64,
     pub scores: *mut f32,
-    pub shard_ids: *mut u32,
-    pub total_shards_count: u32,
-    pub pruned_shards_count: u32,
+    pub total_locules_count: u32,
+    pub pruned_locules_count: u32,
     pub zero_copy_pointers: *mut c_void,
 }
 
@@ -126,7 +125,7 @@ extern "C" {
     pub fn pomai_search_membrane(db: *mut PomaiDbOpaque, membrane: *const c_char, query: *const PomaiQuery, out: *mut *mut PomaiSearchResults) -> *mut PomaiStatusOpaque;
     pub fn pomai_search_results_free(results: *mut PomaiSearchResults);
 
-    pub fn pomai_create_membrane_kind(db: *mut PomaiDbOpaque, name: *const c_char, dim: u32, shard_count: u32, kind: u32) -> *mut PomaiStatusOpaque;
+    pub fn pomai_create_membrane_kind(db: *mut PomaiDbOpaque, name: *const c_char, dim: u32, kind: u32) -> *mut PomaiStatusOpaque;
     pub fn pomai_drop_membrane(db: *mut PomaiDbOpaque, name: *const c_char) -> *mut PomaiStatusOpaque;
     pub fn pomai_open_membrane(db: *mut PomaiDbOpaque, name: *const c_char) -> *mut PomaiStatusOpaque;
     pub fn pomai_close_membrane(db: *mut PomaiDbOpaque, name: *const c_char) -> *mut PomaiStatusOpaque;

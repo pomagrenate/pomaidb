@@ -43,11 +43,12 @@ namespace pomai
         return a.id < b.id;
     }
 
-    struct ShardError
+    struct LoculeError
     {
-        uint32_t shard_id;
+        uint32_t locule_id;
         std::string message;
     };
+    using ShardError = LoculeError;
 
     struct SemanticPointer {
         const void* raw_data_ptr = nullptr;
@@ -61,10 +62,10 @@ namespace pomai
     struct SearchResult
     {
         std::vector<SearchHit> hits;
-        std::vector<ShardError> errors; // Partial failures
-        uint32_t routed_shards_count = 0;
-        uint32_t total_shards_count = 0;
-        uint32_t pruned_shards_count = 0;
+        std::vector<LoculeError> errors; // Partial failures
+        uint32_t routed_locules_count = 0;
+        uint32_t total_locules_count = 0;
+        uint32_t pruned_locules_count = 0;
         uint32_t routing_probe_centroids = 0;
         uint64_t routed_buckets_count = 0; // Candidate/bucket count when routing enabled.
 
@@ -74,9 +75,9 @@ namespace pomai
         void Clear() {
             hits.clear();
             errors.clear();
-            routed_shards_count = 0;
-            total_shards_count = 0;
-            pruned_shards_count = 0;
+            routed_locules_count = 0;
+            total_locules_count = 0;
+            pruned_locules_count = 0;
             routing_probe_centroids = 0;
             routed_buckets_count = 0;
             zero_copy_pointers.clear();

@@ -14,7 +14,6 @@ POMAI_TEST(Tsan_BasicOpenPutBatchSearchScanClose) {
     DBOptions opt;
     opt.path = pomai::test::TempDir("tsan_basic_workload");
     opt.dim = 8;
-    opt.shard_count = 1;
     opt.fsync = FsyncPolicy::kNever;
 
     std::unique_ptr<DB> db;

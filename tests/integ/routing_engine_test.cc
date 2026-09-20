@@ -13,7 +13,6 @@ POMAI_TEST(RoutingEngine_RoutedIngestStillSupportsPointOps) {
     pomai::DBOptions opt;
     opt.path = pomai::test::TempDir("routing_point_ops");
     opt.dim = 4;
-    opt.shard_count = 3;
     opt.routing_enabled = true;
     opt.routing_k = 2;
     opt.routing_warmup_mult = 1;
@@ -24,7 +23,6 @@ POMAI_TEST(RoutingEngine_RoutedIngestStillSupportsPointOps) {
     pomai::MembraneSpec spec;
     spec.name = "default";
     spec.dim = opt.dim;
-    spec.shard_count = opt.shard_count;
     POMAI_EXPECT_OK(db->CreateMembrane(spec));
     POMAI_EXPECT_OK(db->OpenMembrane("default"));
 

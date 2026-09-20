@@ -28,7 +28,6 @@ namespace pomai::storage
         /** \a env VFS for file I/O; nullptr = use Env::Default(). \a heap optional. */
         Wal(pomai::Env* env,
             std::string db_path,
-            std::uint32_t shard_id,
             std::size_t segment_bytes,
             pomai::FsyncPolicy fsync,
             bool encryption_enabled = false,
@@ -70,7 +69,6 @@ namespace pomai::storage
 
         pomai::Env* env_ = nullptr;
         std::string db_path_;
-        std::uint32_t shard_id_;
         std::size_t segment_bytes_;
         pomai::FsyncPolicy fsync_;
 
