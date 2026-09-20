@@ -251,8 +251,11 @@ public:
     }
 
     size_t count() const {
-        return index_->cur_element_count;
+        return index_ ? static_cast<size_t>(index_->cur_element_count.load()) : size_t{0};
     }
+
+    const HnswOptions& opts() const noexcept { return opts_; }
+    pomai::MetricType metric() const noexcept { return metric_; }
 
     pomai::Status SaveToStream(std::ostream& out) const {
         auto st = index_->saveIndexNoExceptions(out);
@@ -379,12 +382,25 @@ std::size_t HnswIndex::count() const {
     return impl_->count();
 }
 
+HnswOptions HnswIndex::opts() const noexcept {
+    return impl_ ? impl_->opts() : opts_;
+}
+
+pomai::MetricType HnswIndex::metric() const noexcept {
+    return impl_ ? impl_->metric() : metric_;
+}
+
 pomai::Status HnswIndex::SaveToStream(std::ostream& out) const {
     return impl_->SaveToStream(out);
 }
 
 pomai::Status HnswIndex::LoadFromStream(std::istream& in) {
-    return impl_->LoadFromStream(in);
+    auto st = impl_->LoadFromStream(in);
+    if (st.ok()) {
+        opts_ = impl_->opts();
+        metric_ = impl_->metric();
+    }
+    return st;
 }
 
 pomai::Status HnswIndex::SaveToBuffer(std::vector<uint8_t>* out) const {
@@ -392,7 +408,12 @@ pomai::Status HnswIndex::SaveToBuffer(std::vector<uint8_t>* out) const {
 }
 
 pomai::Status HnswIndex::LoadFromBuffer(const uint8_t* data, size_t len) {
-    return impl_->LoadFromBuffer(data, len);
+    auto st = impl_->LoadFromBuffer(data, len);
+    if (st.ok()) {
+        opts_ = impl_->opts();
+        metric_ = impl_->metric();
+    }
+    return st;
 }
 
 pomai::Status HnswIndex::Save(const std::string& path) const {

@@ -72,8 +72,8 @@ public:
     // ── Metadata ──────────────────────────────────────────────────────────────
     [[nodiscard]] uint32_t dim() const noexcept { return dim_; }
     [[nodiscard]] std::size_t count() const;
-    [[nodiscard]] HnswOptions opts() const noexcept { return opts_; }
-    [[nodiscard]] pomai::MetricType metric() const noexcept { return metric_; }
+    [[nodiscard]] HnswOptions opts() const noexcept;
+    [[nodiscard]] pomai::MetricType metric() const noexcept;
 
     // ── Persistence ───────────────────────────────────────────────────────────
     pomai::Status SaveToStream(std::ostream& out) const;

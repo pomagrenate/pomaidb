@@ -269,7 +269,7 @@ public:
         // Index params tuned for recall >= 95% (trade latency for accuracy)
         opts.index_params.nlist = 64;
         opts.index_params.nprobe = 64;  // probe all buckets for small/medium
-        opts.index_params.hnsw_ef_search = 256;
+        opts.index_params.hnsw_ef_search = 128;
         opts.index_params.hnsw_ef_construction = 200;
         opts.index_params.adaptive_threshold = 5000;
 
@@ -313,8 +313,10 @@ public:
         // Phase 2: Warmup
         printf("\n[2/3] Warmup (100 queries)...\n");
         pomai::SearchResult search_result;
+        pomai::SearchOptions s_opts;
+        s_opts.ef_search = opts.index_params.hnsw_ef_search;
         for (uint32_t i = 0; i < std::min(100u, config_.num_queries); ++i) {
-            db->Search(dataset_.queries[i], config_.topk, &search_result);
+            db->Search(dataset_.queries[i], config_.topk, s_opts, &search_result);
         }
         
         // Phase 3: Benchmark search (single-threaded)
@@ -324,7 +326,7 @@ public:
         for (uint32_t qi = 0; qi < config_.num_queries; ++qi) {
             auto q_start = high_resolution_clock::now();
 
-            st = db->Search(dataset_.queries[qi], config_.topk, &search_result);
+            st = db->Search(dataset_.queries[qi], config_.topk, s_opts, &search_result);
             if (!st.ok()) {
                 fprintf(stderr, "Search failed: %s\n", st.message());
                 continue;

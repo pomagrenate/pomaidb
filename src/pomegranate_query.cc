@@ -36,8 +36,16 @@ struct PickMinComparator {
     }
 };
 
+/// Branchless 64-bit integer mixer for uniform dispersion under power-of-2 masks
+inline uint64_t MixId(VectorId id) noexcept {
+    uint64_t z = static_cast<uint64_t>(id) + 0x9e3779b97f4a7c15ULL;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+
 /// Zero-allocation open-addressing seen table.
-/// Uses 512 entries directly on the stack (4KB) with linear probing and Fibonacci hashing.
+/// Uses 512 entries directly on the stack (4KB) with linear probing and SplitMix64 hashing.
 /// Completely eliminates heap node allocation and hash table rehashing on the query hot path.
 class FlatSeenSet {
 public:
@@ -49,7 +57,7 @@ public:
     }
 
     bool Insert(VectorId id) {
-        const uint64_t h = id * 11400714819323198485ULL;
+        const uint64_t h = MixId(id);
         if (heap_table_.empty()) {
             constexpr size_t mask = kInlineCap - 1;
             const size_t idx = static_cast<size_t>(h) & mask;
@@ -95,7 +103,7 @@ private:
         size_t mask = new_cap - 1;
 
         auto rehash = [&](uint64_t val) {
-            uint64_t h = val * 11400714819323198485ULL;
+            uint64_t h = MixId(static_cast<VectorId>(val));
             size_t idx = static_cast<size_t>(h) & mask;
             for (size_t i = 0; i < new_cap; ++i) {
                 size_t slot = (idx + i) & mask;
@@ -160,7 +168,9 @@ Status PomegranateQuery::Execute(std::span<const float> query,
         query_sum += v;
     }
 
-    size_t pick_target = std::max<size_t>(topk * 2, 64);
+    size_t pick_target = (opts.ef_search > 0)
+        ? std::max<size_t>(static_cast<size_t>(opts.ef_search), static_cast<size_t>(topk * 4))
+        : std::max<size_t>(static_cast<size_t>(topk * 8), size_t{128});
 
     std::vector<PickItem> pick_container;
     pick_container.reserve(pick_target + 1);
@@ -287,12 +297,15 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                     };
 
                     ArilFilter filter(aril.get(), rind_tombstone_snap, has_filters, opts);
-                    uint32_t aril_k = static_cast<uint32_t>(std::min<size_t>(pick_target, topk + 48));
+                    uint32_t aril_k = static_cast<uint32_t>(pick_target);
                     std::vector<VectorId> graph_slots;
                     std::vector<float> graph_dists;
                     graph_slots.reserve(aril_k);
                     graph_dists.reserve(aril_k);
-                    int ef_search = std::max<int>({static_cast<int>(opts.ef_search), static_cast<int>(aril_k * 6), 512});
+                    int graph_default_ef = static_cast<int>(aril->local_graph()->opts().ef_search);
+                    int ef_search = (opts.ef_search > 0)
+                        ? std::max<int>(static_cast<int>(opts.ef_search), static_cast<int>(aril_k))
+                        : std::max<int>({graph_default_ef > 0 ? graph_default_ef : 64, static_cast<int>(aril_k * 2)});
                     Status st = aril->local_graph()->Search(
                         query, aril_k, ef_search,
                         &graph_slots, &graph_dists, &filter);
