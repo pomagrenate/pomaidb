@@ -230,25 +230,57 @@ inline void dot_batch_avx2(const float* query, const float* matrix,
         const float* v2 = matrix + (row + 2) * dim;
         const float* v3 = matrix + (row + 3) * dim;
 
-        __m256 acc0 = _mm256_setzero_ps();
-        __m256 acc1 = _mm256_setzero_ps();
-        __m256 acc2 = _mm256_setzero_ps();
-        __m256 acc3 = _mm256_setzero_ps();
+        // Dual-accumulator per row (8 total): hides 4-cycle FMA latency,
+        // processes 16 floats/iter instead of 8 — ~2x FMA pipeline utilization.
+        __m256 acc0a = _mm256_setzero_ps(), acc0b = _mm256_setzero_ps();
+        __m256 acc1a = _mm256_setzero_ps(), acc1b = _mm256_setzero_ps();
+        __m256 acc2a = _mm256_setzero_ps(), acc2b = _mm256_setzero_ps();
+        __m256 acc3a = _mm256_setzero_ps(), acc3b = _mm256_setzero_ps();
 
         std::size_t i = 0;
+        for (; i + 15 < dim; i += 16) {
+            // Prefetch next cache line (64 bytes = 16 floats) for all 4 rows
+            _mm_prefetch(reinterpret_cast<const char*>(v0 + i + 16), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(v1 + i + 16), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(v2 + i + 16), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(v3 + i + 16), _MM_HINT_T0);
+
+            __m256 q0 = _mm256_loadu_ps(query + i);
+            __m256 q1 = _mm256_loadu_ps(query + i + 8);
+
+            acc0a = _mm256_fmadd_ps(q0, _mm256_loadu_ps(v0 + i),     acc0a);
+            acc0b = _mm256_fmadd_ps(q1, _mm256_loadu_ps(v0 + i + 8), acc0b);
+
+            acc1a = _mm256_fmadd_ps(q0, _mm256_loadu_ps(v1 + i),     acc1a);
+            acc1b = _mm256_fmadd_ps(q1, _mm256_loadu_ps(v1 + i + 8), acc1b);
+
+            acc2a = _mm256_fmadd_ps(q0, _mm256_loadu_ps(v2 + i),     acc2a);
+            acc2b = _mm256_fmadd_ps(q1, _mm256_loadu_ps(v2 + i + 8), acc2b);
+
+            acc3a = _mm256_fmadd_ps(q0, _mm256_loadu_ps(v3 + i),     acc3a);
+            acc3b = _mm256_fmadd_ps(q1, _mm256_loadu_ps(v3 + i + 8), acc3b);
+        }
+        // Fold second accumulator into first
+        acc0a = _mm256_add_ps(acc0a, acc0b);
+        acc1a = _mm256_add_ps(acc1a, acc1b);
+        acc2a = _mm256_add_ps(acc2a, acc2b);
+        acc3a = _mm256_add_ps(acc3a, acc3b);
+
+        // 8-element tail
         for (; i + 7 < dim; i += 8) {
             __m256 q = _mm256_loadu_ps(query + i);
-            acc0 = _mm256_fmadd_ps(q, _mm256_loadu_ps(v0 + i), acc0);
-            acc1 = _mm256_fmadd_ps(q, _mm256_loadu_ps(v1 + i), acc1);
-            acc2 = _mm256_fmadd_ps(q, _mm256_loadu_ps(v2 + i), acc2);
-            acc3 = _mm256_fmadd_ps(q, _mm256_loadu_ps(v3 + i), acc3);
+            acc0a = _mm256_fmadd_ps(q, _mm256_loadu_ps(v0 + i), acc0a);
+            acc1a = _mm256_fmadd_ps(q, _mm256_loadu_ps(v1 + i), acc1a);
+            acc2a = _mm256_fmadd_ps(q, _mm256_loadu_ps(v2 + i), acc2a);
+            acc3a = _mm256_fmadd_ps(q, _mm256_loadu_ps(v3 + i), acc3a);
         }
 
-        float s0 = hsum256_avx2(acc0);
-        float s1 = hsum256_avx2(acc1);
-        float s2 = hsum256_avx2(acc2);
-        float s3 = hsum256_avx2(acc3);
+        float s0 = hsum256_avx2(acc0a);
+        float s1 = hsum256_avx2(acc1a);
+        float s2 = hsum256_avx2(acc2a);
+        float s3 = hsum256_avx2(acc3a);
 
+        // Scalar tail for dim % 8
         for (; i < dim; ++i) {
             float q = query[i];
             s0 += q * v0[i];
@@ -277,30 +309,69 @@ inline void l2_sq_batch_avx2(const float* query, const float* matrix,
         const float* v2 = matrix + (row + 2) * dim;
         const float* v3 = matrix + (row + 3) * dim;
 
-        __m256 acc0 = _mm256_setzero_ps();
-        __m256 acc1 = _mm256_setzero_ps();
-        __m256 acc2 = _mm256_setzero_ps();
-        __m256 acc3 = _mm256_setzero_ps();
+        // Dual-accumulator per row (8 total): hides 4-cycle FMA latency,
+        // processes 16 floats/iter instead of 8 — ~2x FMA pipeline utilization.
+        __m256 acc0a = _mm256_setzero_ps(), acc0b = _mm256_setzero_ps();
+        __m256 acc1a = _mm256_setzero_ps(), acc1b = _mm256_setzero_ps();
+        __m256 acc2a = _mm256_setzero_ps(), acc2b = _mm256_setzero_ps();
+        __m256 acc3a = _mm256_setzero_ps(), acc3b = _mm256_setzero_ps();
 
         std::size_t i = 0;
+        for (; i + 15 < dim; i += 16) {
+            // Prefetch next cache line for all 4 rows
+            _mm_prefetch(reinterpret_cast<const char*>(v0 + i + 16), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(v1 + i + 16), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(v2 + i + 16), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(v3 + i + 16), _MM_HINT_T0);
+
+            __m256 q0 = _mm256_loadu_ps(query + i);
+            __m256 q1 = _mm256_loadu_ps(query + i + 8);
+
+            __m256 d0a = _mm256_sub_ps(q0, _mm256_loadu_ps(v0 + i));
+            __m256 d0b = _mm256_sub_ps(q1, _mm256_loadu_ps(v0 + i + 8));
+            acc0a = _mm256_fmadd_ps(d0a, d0a, acc0a);
+            acc0b = _mm256_fmadd_ps(d0b, d0b, acc0b);
+
+            __m256 d1a = _mm256_sub_ps(q0, _mm256_loadu_ps(v1 + i));
+            __m256 d1b = _mm256_sub_ps(q1, _mm256_loadu_ps(v1 + i + 8));
+            acc1a = _mm256_fmadd_ps(d1a, d1a, acc1a);
+            acc1b = _mm256_fmadd_ps(d1b, d1b, acc1b);
+
+            __m256 d2a = _mm256_sub_ps(q0, _mm256_loadu_ps(v2 + i));
+            __m256 d2b = _mm256_sub_ps(q1, _mm256_loadu_ps(v2 + i + 8));
+            acc2a = _mm256_fmadd_ps(d2a, d2a, acc2a);
+            acc2b = _mm256_fmadd_ps(d2b, d2b, acc2b);
+
+            __m256 d3a = _mm256_sub_ps(q0, _mm256_loadu_ps(v3 + i));
+            __m256 d3b = _mm256_sub_ps(q1, _mm256_loadu_ps(v3 + i + 8));
+            acc3a = _mm256_fmadd_ps(d3a, d3a, acc3a);
+            acc3b = _mm256_fmadd_ps(d3b, d3b, acc3b);
+        }
+        // Fold second accumulator into first
+        acc0a = _mm256_add_ps(acc0a, acc0b);
+        acc1a = _mm256_add_ps(acc1a, acc1b);
+        acc2a = _mm256_add_ps(acc2a, acc2b);
+        acc3a = _mm256_add_ps(acc3a, acc3b);
+
+        // 8-element tail
         for (; i + 7 < dim; i += 8) {
             __m256 q = _mm256_loadu_ps(query + i);
             __m256 d0 = _mm256_sub_ps(q, _mm256_loadu_ps(v0 + i));
             __m256 d1 = _mm256_sub_ps(q, _mm256_loadu_ps(v1 + i));
             __m256 d2 = _mm256_sub_ps(q, _mm256_loadu_ps(v2 + i));
             __m256 d3 = _mm256_sub_ps(q, _mm256_loadu_ps(v3 + i));
-
-            acc0 = _mm256_fmadd_ps(d0, d0, acc0);
-            acc1 = _mm256_fmadd_ps(d1, d1, acc1);
-            acc2 = _mm256_fmadd_ps(d2, d2, acc2);
-            acc3 = _mm256_fmadd_ps(d3, d3, acc3);
+            acc0a = _mm256_fmadd_ps(d0, d0, acc0a);
+            acc1a = _mm256_fmadd_ps(d1, d1, acc1a);
+            acc2a = _mm256_fmadd_ps(d2, d2, acc2a);
+            acc3a = _mm256_fmadd_ps(d3, d3, acc3a);
         }
 
-        float s0 = hsum256_avx2(acc0);
-        float s1 = hsum256_avx2(acc1);
-        float s2 = hsum256_avx2(acc2);
-        float s3 = hsum256_avx2(acc3);
+        float s0 = hsum256_avx2(acc0a);
+        float s1 = hsum256_avx2(acc1a);
+        float s2 = hsum256_avx2(acc2a);
+        float s3 = hsum256_avx2(acc3a);
 
+        // Scalar tail for dim % 8
         for (; i < dim; ++i) {
             float q = query[i];
             float d0 = q - v0[i]; s0 += d0 * d0;
