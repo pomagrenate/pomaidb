@@ -8,6 +8,7 @@
 #include <psync/psync.h>
 
 #include "distance.h"
+#include "pomegranate_compute.h"
 
 namespace pomai::ingest {
 
@@ -320,11 +321,45 @@ void Rind::Taste(std::span<const float> query, uint32_t topk, MetricType metric,
     auto scan_table = [&](const table::MemTable& table) {
         auto cursor = table.CreateCursor();
         table::MemTable::CursorEntry entry;
-        while (cursor.Next(&entry)) {
-            if (entry.is_deleted || entry.vec.size() != dim_snapshot) continue;
+        if (!table.IsQuantizedInMem()) {
+            std::vector<table::MemTable::CursorEntry> batch;
+            batch.reserve(4);
 
-            float score = core::ComputeMetricScore(metric, query, entry.vec);
-            out_hits->push_back({entry.id, score});
+            auto flush_batch = [&]() {
+                if (batch.empty()) return;
+                if (batch.size() == 4) {
+                    float scores[4];
+                    compute::SeedBatchReranker::Rerank4(
+                        query.data(), dim_snapshot, metric,
+                        batch[0].vec.data(), batch[1].vec.data(),
+                        batch[2].vec.data(), batch[3].vec.data(),
+                        scores);
+                    for (size_t k = 0; k < 4; ++k) {
+                        out_hits->push_back({batch[k].id, scores[k]});
+                    }
+                } else {
+                    for (size_t k = 0; k < batch.size(); ++k) {
+                        float score = core::ComputeMetricScore(metric, query, batch[k].vec);
+                        out_hits->push_back({batch[k].id, score});
+                    }
+                }
+                batch.clear();
+            };
+
+            while (cursor.Next(&entry)) {
+                if (entry.is_deleted || entry.vec.size() != dim_snapshot) continue;
+                batch.push_back(entry);
+                if (batch.size() == 4) {
+                    flush_batch();
+                }
+            }
+            flush_batch();
+        } else {
+            while (cursor.Next(&entry)) {
+                if (entry.is_deleted || entry.vec.size() != dim_snapshot) continue;
+                float score = core::ComputeMetricScore(metric, query, entry.vec);
+                out_hits->push_back({entry.id, score});
+            }
         }
     };
 

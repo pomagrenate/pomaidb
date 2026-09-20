@@ -256,7 +256,7 @@ Status PomegranateEngine::Search(std::span<const float> query,
                                 SearchResult* out) {
     if (!opened_) return Status::Corruption("engine not open");
     auto snap = fruit_map_->CurrentSnapshot();
-    return query::PomegranateQuery::Execute(query, topk, opts, metric_, snap.get(), rind_.get(), out);
+    return query::PomegranateQuery::Execute(query, topk, opts, metric_, snap.get(), rind_.get(), out, thread_pool_.get());
 }
 
 Status PomegranateEngine::Search(std::span<const float> query,
@@ -270,7 +270,7 @@ Status PomegranateEngine::Search(std::span<const float> query,
                                        std::to_string(query.size()));
     }
     auto snap = fruit_map_->CurrentSnapshot();
-    return query::PomegranateQuery::Execute(query, topk, opts, metric_, snap.get(), rind_.get(), sink);
+    return query::PomegranateQuery::Execute(query, topk, opts, metric_, snap.get(), rind_.get(), sink, thread_pool_.get());
 }
 
 Status PomegranateEngine::SearchBatch(std::span<const float> queries,

@@ -13,6 +13,7 @@
 #include "distance.h"
 #include "hnsw_index.h"
 #include "topk.h"
+#include "pomegranate_compute.h"
 
 namespace pomai::query {
 
@@ -130,7 +131,8 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                                 MetricType metric,
                                 const manifest::FruitSnapshot* snapshot,
                                 const ingest::Rind* rind,
-                                SearchHitSink& sink) {
+                                SearchHitSink& sink,
+                                ptask::ThreadPool* thread_pool) {
     if (topk == 0) {
         return Status::Ok();
     }
@@ -229,23 +231,22 @@ Status PomegranateQuery::Execute(std::span<const float> query,
         }
 
         // ---------------------------------------------------------------------
-        // Stage 3b: Intra-Locule Search (HNSW Fast-Path + Pulp SQ8 Fallback)
+        // Stage 3b: Intra-Locule Search (HNSW Fast-Path + 4-Way SIMD Pulp Scan)
         // ---------------------------------------------------------------------
-        for (const auto& cand_loc : candidate_locules) {
+        auto scan_locule = [&](const auto& cand_loc,
+                               auto& push_fn, float current_worst) {
             const auto& loc = cand_loc.locule;
-            if (!loc) continue;
+            if (!loc) return;
 
-            // Dynamic Spatial Peel: If pick_heap is full and this locule's lower-bound distance
-            // is strictly worse than the worst score in the heap, skip this locule
+            // Spatial Peel: If heap is full and lower-bound is strictly worse, skip locule
             if (pick_heap.size() >= pick_target) {
-                float worst_score = pick_heap.top().score;
                 if (metric == MetricType::kL2) {
-                    if (cand_loc.min_possible_distance > -worst_score) {
-                        continue;
+                    if (cand_loc.min_possible_distance > -current_worst) {
+                        return;
                     }
                 } else {
-                    if (cand_loc.min_possible_distance < worst_score) {
-                        continue;
+                    if (cand_loc.min_possible_distance < current_worst) {
+                        return;
                     }
                 }
             }
@@ -257,7 +258,6 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                 const auto dir = aril->directory();
 
                 if (aril->HasGraph()) {
-                    // Intra-Locule HNSW Graph Search with in-graph filtering
                     class ArilFilter : public index::IdFilter {
                     public:
                         ArilFilter(const storage::ArilReader* a,
@@ -310,36 +310,102 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                             pi.aril = aril.get();
                             pi.slot = slot;
                             pi.from_rind = false;
-                            push_candidate(pi);
+                            push_fn(pi);
                         }
-                        continue; // Successfully retrieved candidates via HNSW
+                        continue;
                     }
                 }
 
-                // Fallback path: SIMD Pulp SQ8 flat scan
-                for (uint32_t slot = 0; slot < count; ++slot) {
-                    if (aril->scar().IsDeleted(slot)) continue;
+                // High-throughput 4-way fused SIMD Pulp SQ8 scan with threshold screening
+                for (uint32_t slot = 0; slot < count; slot += 4) {
+                    uint32_t valid = std::min<uint32_t>(4, count - slot);
+                    float scores[4];
+                    compute::PulpBatchScanner::Scan4(query.data(), query.size(), metric, query_sum,
+                                                    aril->pulp(), slot, valid, scores);
 
-                    VectorId id = (slot < dir.size()) ? dir[slot].id : 0;
-                    if (rind_tombstone_snap.IsDeleted(id)) continue;
+                    for (uint32_t k = 0; k < valid; ++k) {
+                        float score = scores[k];
+                        if (score <= current_worst) {
+                            continue; // Fast threshold rejection!
+                        }
 
-                    if (has_filters) {
-                        Metadata meta;
-                        (void)aril->GetMetadata(slot, &meta);
-                        if (!opts.Matches(meta)) continue;
+                        uint32_t curr_slot = slot + k;
+                        if (aril->scar().IsDeleted(curr_slot)) continue;
+
+                        VectorId id = (curr_slot < dir.size()) ? dir[curr_slot].id : 0;
+                        if (rind_tombstone_snap.IsDeleted(id)) continue;
+
+                        if (has_filters) {
+                            Metadata meta;
+                            (void)aril->GetMetadata(curr_slot, &meta);
+                            if (!opts.Matches(meta)) continue;
+                        }
+
+                        PickItem pi;
+                        pi.id = id;
+                        pi.score = score;
+                        pi.aril = aril.get();
+                        pi.slot = curr_slot;
+                        pi.from_rind = false;
+
+                        push_fn(pi);
                     }
-
-                    float score = aril->pulp().Taste(query, slot, metric, query_sum);
-
-                    PickItem pi;
-                    pi.id = id;
-                    pi.score = score;
-                    pi.aril = aril.get();
-                    pi.slot = slot;
-                    pi.from_rind = false;
-
-                    push_candidate(pi);
                 }
+            }
+        };
+
+        float init_worst = (pick_heap.size() >= pick_target) ? pick_heap.top().score : -1e30f;
+
+        if (candidate_locules.size() > 1 && thread_pool && thread_pool->worker_count() > 1) {
+            // Parallel locule scanning across ptask workers
+            struct WorkerResult {
+                std::vector<PickItem> items;
+            };
+            std::vector<WorkerResult> worker_results(candidate_locules.size());
+
+            ptask::parallel_for(*thread_pool, size_t{0}, candidate_locules.size(), [&](size_t idx) {
+                const auto& cand_loc = candidate_locules[idx];
+                std::vector<PickItem> local_container;
+                local_container.reserve(pick_target + 1);
+                std::priority_queue<PickItem, std::vector<PickItem>, PickMinComparator> local_heap(
+                    PickMinComparator(), std::move(local_container));
+                FlatSeenSet local_seen;
+
+                auto local_push = [&](const PickItem& item) {
+                    if (local_heap.size() >= pick_target) {
+                        const auto& worst = local_heap.top();
+                        if (item.score < worst.score || (item.score == worst.score && item.id >= worst.id)) {
+                            return;
+                        }
+                    }
+                    if (!local_seen.Insert(item.id)) return;
+                    if (local_heap.size() < pick_target) {
+                        local_heap.push(item);
+                    } else {
+                        local_heap.pop();
+                        local_heap.push(item);
+                    }
+                };
+
+                scan_locule(cand_loc, local_push, init_worst);
+
+                while (!local_heap.empty()) {
+                    worker_results[idx].items.push_back(local_heap.top());
+                    local_heap.pop();
+                }
+            });
+
+            // Merge worker candidates into main pick_heap
+            for (auto& wr : worker_results) {
+                for (const auto& item : wr.items) {
+                    push_candidate(item);
+                }
+            }
+        } else {
+            // Sequential locule scan
+            for (const auto& cand_loc : candidate_locules) {
+                float curr_worst = (pick_heap.size() >= pick_target) ? pick_heap.top().score : -1e30f;
+                scan_locule(cand_loc, push_candidate, curr_worst);
             }
         }
     }
@@ -355,20 +421,47 @@ Status PomegranateQuery::Execute(std::span<const float> query,
     }
 
     // -------------------------------------------------------------------------
-    // Stage 5: Rerank (Exact distance via SeedKernel)
+    // Stage 5: Rerank (Exact distance via SeedKernel 4-Way SIMD Batching)
     // -------------------------------------------------------------------------
     std::vector<core::TopKItem> exact_hits;
     exact_hits.reserve(picked.size());
 
-    for (const auto& item : picked) {
-        if (item.from_rind) {
-            exact_hits.push_back({item.id, item.score, 0, nullptr});
-        } else if (item.aril) {
-            auto span = item.aril->GetVectorSpan(item.slot);
-            if (!span.empty() && span.size() == query.size()) {
-                float exact_score = core::ComputeMetricScore(metric, query, span);
-                exact_hits.push_back({item.id, exact_score, 0, nullptr});
+    size_t p_idx = 0;
+    while (p_idx < picked.size()) {
+        if (picked[p_idx].from_rind || !picked[p_idx].aril) {
+            exact_hits.push_back({picked[p_idx].id, picked[p_idx].score, 0, nullptr});
+            p_idx++;
+            continue;
+        }
+
+        // Try to batch up to 4 contiguous candidates for 4-way SIMD reranking
+        size_t batch_end = p_idx;
+        const float* v_ptrs[4] = {nullptr, nullptr, nullptr, nullptr};
+        while (batch_end < picked.size() && (batch_end - p_idx) < 4) {
+            if (picked[batch_end].from_rind || !picked[batch_end].aril) break;
+            auto span = picked[batch_end].aril->GetVectorSpan(picked[batch_end].slot);
+            if (span.empty() || span.size() != query.size()) break;
+            v_ptrs[batch_end - p_idx] = span.data();
+            batch_end++;
+        }
+
+        size_t batch_len = batch_end - p_idx;
+        if (batch_len == 4) {
+            float scores_out[4];
+            compute::SeedBatchReranker::Rerank4(query.data(), query.size(), metric,
+                                                v_ptrs[0], v_ptrs[1], v_ptrs[2], v_ptrs[3],
+                                                scores_out);
+            for (size_t k = 0; k < 4; ++k) {
+                exact_hits.push_back({picked[p_idx + k].id, scores_out[k], 0, nullptr});
             }
+            p_idx = batch_end;
+        } else {
+            for (size_t k = p_idx; k < batch_end; ++k) {
+                auto span = picked[k].aril->GetVectorSpan(picked[k].slot);
+                float exact_score = core::ComputeMetricScore(metric, query, span);
+                exact_hits.push_back({picked[k].id, exact_score, 0, nullptr});
+            }
+            p_idx = batch_end;
         }
     }
 
@@ -388,7 +481,8 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                                 MetricType metric,
                                 const manifest::FruitSnapshot* snapshot,
                                 const ingest::Rind* rind,
-                                SearchResult* out) {
+                                SearchResult* out,
+                                ptask::ThreadPool* thread_pool) {
     if (!out) return Status::InvalidArgument("null search result output");
     out->Clear();
 
@@ -403,7 +497,7 @@ Status PomegranateQuery::Execute(std::span<const float> query,
     };
 
     VectorHitCollector collector(&out->hits);
-    Status s = Execute(query, topk, opts, metric, snapshot, rind, collector);
+    Status s = Execute(query, topk, opts, metric, snapshot, rind, collector, thread_pool);
     if (!s.ok()) return s;
 
     if (snapshot) {

@@ -22,6 +22,7 @@
 #include "search.h"
 #include "status.h"
 #include "types.h"
+#include <ptask/ptask.h>
 
 namespace pomai::query {
 
@@ -33,7 +34,8 @@ public:
                           MetricType metric,
                           const manifest::FruitSnapshot* snapshot,
                           const ingest::Rind* rind,
-                          SearchHitSink& sink);
+                          SearchHitSink& sink,
+                          ptask::ThreadPool* thread_pool = nullptr);
 
     static Status Execute(std::span<const float> query,
                           uint32_t topk,
@@ -41,7 +43,8 @@ public:
                           MetricType metric,
                           const manifest::FruitSnapshot* snapshot,
                           const ingest::Rind* rind,
-                          SearchResult* out);
+                          SearchResult* out,
+                          ptask::ThreadPool* thread_pool = nullptr);
 };
 
 } // namespace pomai::query

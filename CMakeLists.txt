@@ -190,6 +190,7 @@ add_library(pomai STATIC
   src/press.cc
   src/pomegranate_query.cc
   src/pomegranate_engine.cc
+  src/pomegranate_compute.cc
 
   # Utilities (linked into libpomai)
   src/utils/posix_file.cc
@@ -1020,6 +1021,16 @@ if (POMAI_BUILD_TESTS)
   add_executable(pio_core_test tests/unit/test_pio.cc)
   target_link_libraries(pio_core_test PRIVATE pio)
   add_test(NAME pio_core_test COMMAND pio_core_test)
+
+  add_executable(core_compute_test tests/unit/core_compute_test.cc)
+  target_link_libraries(core_compute_test PRIVATE pomai)
+  target_include_directories(core_compute_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/capi
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
+  )
+  add_test(NAME core_compute_test COMMAND core_compute_test)
 endif()
 
 install(TARGETS pomai pomai_c pomai_c_static
