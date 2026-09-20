@@ -11,7 +11,6 @@
 #include <cstring>
 #include "storage/palloc_io.h"
 #include <limits>
-#include <memory>
 #include <random>
 #include <stdexcept>
 
@@ -235,7 +234,7 @@ pomai::Status ProductQuantizer::Save(const std::string& path) const
 }
 
 pomai::Status ProductQuantizer::Load(const std::string& path,
-                                      std::unique_ptr<ProductQuantizer>* out)
+                                      alloc::UniquePtr<ProductQuantizer>* out)
 {
     alloc::UniquePtr<storage::PallocSequentialFile> f;
     auto st = storage::PallocSequentialFile::Open(path.c_str(), &f);
@@ -256,7 +255,7 @@ pomai::Status ProductQuantizer::Load(const std::string& path,
         return pomai::Status::Corruption("Bad PQ magic in " + path);
     if (dim == 0 || M == 0 || (dim % M) != 0 || nbits != 8)
         return pomai::Status::Corruption("Invalid PQ parameters in file (dim % M != 0 or nbits != 8)");
-    auto pq = std::make_unique<ProductQuantizer>(dim, M, nbits);
+    auto pq = alloc::UniquePtr<ProductQuantizer>::Make(nullptr, dim, M, nbits);
     const std::size_t cent_sz = pq->centroids_.size() * sizeof(float);
     
     char* dst = reinterpret_cast<char*>(pq->centroids_.data());

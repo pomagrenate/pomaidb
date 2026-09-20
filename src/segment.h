@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -65,6 +64,7 @@ namespace pomai::table
 
         using Ptr = std::unique_ptr<SegmentReader, void(*)(SegmentReader*)>;
 
+        static pomai::Status Open(std::string path, alloc::UniquePtr<SegmentReader>* out);
         static pomai::Status Open(std::string path, Ptr* out);
 
         ~SegmentReader();

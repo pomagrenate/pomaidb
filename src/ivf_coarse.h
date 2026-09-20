@@ -1,9 +1,9 @@
 #pragma once
 #include <cstdint>
 #include <span>
-#include <unordered_map>
 #include <vector>
 
+#include "flat_hash_memmap.h"
 #include "status.h"
 #include "types.h"
 
@@ -70,7 +70,7 @@ namespace pomai::index
         std::vector<std::vector<pomai::VectorId>> lists_;
 
         // id -> centroid assignment (for delete/move)
-        std::unordered_map<pomai::VectorId, std::uint32_t> id2list_;
+        pomai::table::FlatHashMemMap<pomai::VectorId, std::uint32_t> id2list_;
 
         // Training state
         bool trained_ = false;

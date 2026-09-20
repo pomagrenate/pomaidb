@@ -30,14 +30,14 @@ void HNSW::neighbor_range(storage_idx_t id, int level, size_t& begin, size_t& en
 }
 
 void HNSW::add_point(storage_idx_t id, int level, DistanceComputer& qdis) {
-    std::lock_guard<std::mutex> lock(graph_mutex);
+    psync::LockGuard<psync::Mutex> lock(graph_mutex);
     
     if (level < 0) level = get_random_level();
     
     // Resize graph metadata
     if (id >= (storage_idx_t)graph.levels.size()) {
         graph.levels.resize(id + 1);
-        node_locks.emplace_back(std::make_unique<std::mutex>());
+        node_locks.emplace_back(alloc::UniquePtr<psync::Mutex>::Make(nullptr));
     }
     graph.levels[id] = level + 1;
 
@@ -81,8 +81,8 @@ void HNSW::add_point(storage_idx_t id, int level, DistanceComputer& qdis) {
 
     // 2. Insert into each level
     for (int l = std::min(level, max_level); l >= 0; --l) {
-        std::priority_queue<NodeDist> candidates;
-        std::priority_queue<NodeDistCloser> visited;
+        PriorityQueue<NodeDist> candidates;
+        PriorityQueue<NodeDistCloser> visited;
         
         candidates.push({d_curr, curr});
         visited.push({d_curr, curr});
@@ -114,7 +114,7 @@ void HNSW::add_point(storage_idx_t id, int level, DistanceComputer& qdis) {
         }
 
         // Convert visited to NodeDist for shrinking
-        std::priority_queue<NodeDist> results;
+        PriorityQueue<NodeDist> results;
         while (!visited.empty()) {
             results.push({visited.top().dist, visited.top().id});
             visited.pop();
@@ -158,7 +158,7 @@ void HNSW::add_point(storage_idx_t id, int level, DistanceComputer& qdis) {
 }
 
 void HNSW::shrink_neighbor_list(DistanceComputer& qdis, storage_idx_t cur, 
-                             std::priority_queue<NodeDist>& candidates, int max_size) {
+                             PriorityQueue<NodeDist>& candidates, int max_size) {
     if ((int)candidates.size() <= max_size) return;
     
     std::vector<NodeDist> result;
@@ -208,8 +208,8 @@ void HNSW::search(QueryDistanceComputer& qdis, int k, int ef,
         }
     }
 
-    std::priority_queue<NodeDist> candidates;
-    std::priority_queue<NodeDistCloser> top_k;
+    PriorityQueue<NodeDist> candidates;
+    PriorityQueue<NodeDistCloser> top_k;
     
     candidates.push({d_curr, curr});
     top_k.push({d_curr, curr});
@@ -296,7 +296,7 @@ void HNSW::load(FILE* f) {
     fread(graph.neighbors.data(), sizeof(storage_idx_t), n_neigh, f);
     
     node_locks.clear();
-    for (size_t i = 0; i < n; ++i) node_locks.emplace_back(std::make_unique<std::mutex>());
+    for (size_t i = 0; i < n; ++i) node_locks.emplace_back(alloc::UniquePtr<psync::Mutex>::Make(nullptr));
 }
 
 } // namespace pomai::hnsw

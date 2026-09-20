@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
-#include <queue>
 #include <thread>
+#include "ring_buffer.h"
 #include <psync/psync.h>
 #include <functional>
 #include <future>
@@ -74,7 +74,7 @@ namespace pomai::util
 
     private:
         std::vector<std::jthread> workers_;
-        std::queue<std::function<void()>> tasks_;
+        DynamicRingBuffer<std::function<void()>> tasks_;
         psync::Mutex queue_mutex_;
         psync::ConditionVariable condition_;
         bool stop_ = false;

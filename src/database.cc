@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
-#include <memory>
 
 namespace pomai {
 namespace {
@@ -38,15 +37,15 @@ Status StorageEngine::Open(const EmbeddedOptions& options) {
     dopt.index_params = options.index_params;
     dopt.memtable_flush_threshold_mb = options.memtable_flush_threshold_mb;
 
-    auto v_engine = std::make_unique<core::VectorEngine>(
-        dopt, MembraneKind::kVector, options.metric);
+    auto v_engine = alloc::UniquePtr<core::VectorEngine>::Make(
+        nullptr, dopt, MembraneKind::kVector, options.metric);
     Status st = v_engine->Open();
     if (!st.ok()) {
         POMAI_LOG_ERROR("VectorEngine::Open failed: {}", st.message());
         return st;
     }
 
-    return kernel_.RegisterPod(std::make_unique<core::VectorPod>(std::move(v_engine)));
+    return kernel_.RegisterPod(alloc::UniquePtr<core::VectorPod>::Make(nullptr, std::move(v_engine)));
 }
 
 void StorageEngine::Close() {
@@ -249,7 +248,7 @@ struct Database::Impl {
     std::shared_ptr<core::SyncReceiver> sync_receiver;
 };
 
-Database::Database() : opened_(false), impl_(std::make_unique<Impl>()) {}
+Database::Database() : opened_(false), impl_(alloc::UniquePtr<Impl>::Make(nullptr)) {}
 Database::~Database() { (void)Close(); }
 
 Status Database::Open(const EmbeddedOptions& options) {
@@ -268,15 +267,15 @@ Status Database::Open(const EmbeddedOptions& options) {
     
     auto_freeze_on_pressure_ = options.auto_freeze_on_pressure;
 
-    storage_engine_ = std::make_unique<StorageEngine>();
+    storage_engine_ = alloc::UniquePtr<StorageEngine>::Make(nullptr);
     auto st = storage_engine_->Open(options);
     if (!st.ok()) return st;
 
     opened_ = true;
     if (impl_->sync_receiver) {
-        impl_->scheduler.RegisterPeriodic(std::make_unique<SyncTask>(storage_engine_.get(), impl_->sync_receiver), std::chrono::seconds(10));
+        impl_->scheduler.RegisterPeriodic(alloc::UniquePtr<SyncTask>::Make(nullptr, storage_engine_.get(), impl_->sync_receiver), std::chrono::seconds(10));
     }
-    impl_->scheduler.RegisterPeriodic(std::make_unique<MaintenanceTask>(this), std::chrono::seconds(5));
+    impl_->scheduler.RegisterPeriodic(alloc::UniquePtr<MaintenanceTask>::Make(nullptr, this), std::chrono::seconds(5));
     
     return Status::Ok();
 }

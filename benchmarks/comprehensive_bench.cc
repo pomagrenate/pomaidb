@@ -352,8 +352,9 @@ public:
         
         results.recall_at_k = recall_sum_ / config_.num_queries;
         
-        // Cleanup
-        db->Close();
+        // Cleanup: Close and reset DB before removing files on disk to prevent Windows file locking issues
+        (void)db->Close();
+        db.reset();
         fs::remove_all(opts.path);
         
         return results;

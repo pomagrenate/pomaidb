@@ -11,8 +11,6 @@
 #include <new>
 #include <type_traits>
 #include <vector>
-#include <deque>
-#include <list>
 #include <unordered_map>
 #include <palloc.h>
 #include "palloc_compat.h"
@@ -103,12 +101,6 @@ using PallocVector = std::vector<T, PallocAllocator<T>>;
 
 template <typename K, typename V, typename Hash = std::hash<K>>
 using PallocUnorderedMap = std::unordered_map<K, V, Hash, std::equal_to<K>, PallocAllocator<std::pair<const K, V>>>;
-
-template <typename T>
-using PallocDeque = std::deque<T, PallocAllocator<T>>;
-
-template <typename T>
-using PallocList = std::list<T, PallocAllocator<T>>;
 
 // Helper function to create palloc-allocated containers
 template <typename T, typename... Args>

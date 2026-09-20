@@ -23,7 +23,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <memory>
 #include <vector>
 
 #include "metadata.h"

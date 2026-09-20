@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -13,6 +12,7 @@
 #include "snapshot.h"
 #include "status.h"
 #include "types.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::compute::vulkan {
 class VulkanComputeContext;
@@ -132,8 +132,8 @@ private:
     bool opened_{false};
     uint64_t sync_lsn_{0};
 
-    std::unique_ptr<PomegranateEngine> engine_;
-    std::unique_ptr<pomai::compute::vulkan::VulkanComputeContext> vulkan_ctx_;
+    alloc::UniquePtr<PomegranateEngine> engine_;
+    alloc::UniquePtr<pomai::compute::vulkan::VulkanComputeContext> vulkan_ctx_;
 };
 
 } // namespace pomai::core

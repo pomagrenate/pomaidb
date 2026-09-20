@@ -271,6 +271,27 @@ namespace pomai
         core::MembraneManager mgr_;
     };
 
+    Status DB::Open(const DBOptions &options, alloc::UniquePtr<DB> *out)
+    {
+        pomai::util::EnsurePallocInitialized();
+        if (!out)
+            return Status::InvalidArgument("out=null");
+        if (options.path.empty())
+            return Status::InvalidArgument("path empty");
+        if (options.dim == 0)
+            return Status::InvalidArgument("dim must be > 0");
+        
+        DBOptions effective = options;
+        effective.ApplyEdgeProfile();
+        auto impl = alloc::UniquePtr<DbImpl>::Make(nullptr, std::move(effective));
+        auto st = impl->Init();
+        if (!st.ok()) {
+             return st;
+        }
+        *out = std::move(impl);
+        return Status::Ok();
+    }
+
     Status DB::Open(const DBOptions &options, std::unique_ptr<DB> *out)
     {
         pomai::util::EnsurePallocInitialized();

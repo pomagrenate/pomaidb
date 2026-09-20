@@ -142,8 +142,10 @@ FileWalSyncReceiver::~FileWalSyncReceiver() {
 
 Status FileWalSyncReceiver::Receive(const WalEntry& entry) {
     if (!file_) {
-        auto st = env_->NewAppendableFile(path_, &file_);
+        std::unique_ptr<WritableFile> f;
+        auto st = env_->NewAppendableFile(path_, &f);
         if (!st.ok()) return st;
+        file_ = alloc::UniquePtr<WritableFile>::Adopt(f.release());
     }
 
     const size_t vec_bytes = entry.dim * sizeof(float);

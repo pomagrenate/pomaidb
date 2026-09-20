@@ -3,7 +3,6 @@
 #include "types.h"
 #include <string>
 #include <vector>
-#include <unordered_map>
 #include <cmath>
 
 #ifndef M_PI

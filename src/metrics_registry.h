@@ -1,7 +1,6 @@
 #pragma once
 #include <map>
 #include <string>
-#include <memory>
 #include <vector>
 
 namespace pomai::core::metrics {

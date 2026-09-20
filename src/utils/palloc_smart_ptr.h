@@ -48,7 +48,9 @@ public:
     // Move from different type (base class conversion)
     template <typename U>
     UniquePtr(UniquePtr<U>&& other) noexcept
-        : ptr_(other.release()), is_palloc_owned_(other.is_palloc_owned_release()) {
+        : ptr_(other.ptr_), is_palloc_owned_(other.is_palloc_owned_) {
+        other.ptr_ = nullptr;
+        other.is_palloc_owned_ = false;
     }
 
     UniquePtr& operator=(UniquePtr&& other) noexcept {
@@ -63,7 +65,9 @@ public:
     // Move assignment from different type
     template <typename U>
     UniquePtr& operator=(UniquePtr<U>&& other) noexcept {
-        reset(other.release(), other.is_palloc_owned_release());
+        reset(other.ptr_, other.is_palloc_owned_);
+        other.ptr_ = nullptr;
+        other.is_palloc_owned_ = false;
         return *this;
     }
 

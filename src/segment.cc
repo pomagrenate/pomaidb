@@ -432,7 +432,7 @@ namespace pomai::table
         if (p) { p->~SegmentReader(); palloc_free(p); }
     }
 
-    pomai::Status SegmentReader::Open(std::string path, SegmentReader::Ptr* out)
+    pomai::Status SegmentReader::Open(std::string path, alloc::UniquePtr<SegmentReader>* out)
     {
         void* raw = palloc_malloc_aligned(sizeof(SegmentReader), alignof(SegmentReader));
         if (!raw) return pomai::Status::ResourceExhausted("SegmentReader allocation failed");
@@ -513,23 +513,17 @@ namespace pomai::table
             }
         }
         
-        if (h->version >= 3) {
-            reader->metadata_offset_ = h->metadata_offset;
-        } else {
-            reader->metadata_offset_ = 0;
-        }
 
         reader->base_addr_ = data;
         reader->file_size_ = size;
 
-        // Verify size
-        size_t expected_min = reader->entries_start_offset_ + reader->count_ * reader->entry_size_ + 4; // + CRC
-        if (size < expected_min) {
+        // Verify bounds
+        if (reader->entries_start_offset_ + (reader->count_ * reader->entry_size_) > size) {
             PallocDeleter(reader);
-            return pomai::Status::Corruption("segment truncated");
+            return pomai::Status::Corruption("segment file truncated");
         }
 
-        // Try load index (best effort)
+        // Try load auxiliary index if exists
         std::string idx_path = path;
         if (idx_path.size() > 4 && idx_path.substr(idx_path.size()-4) == ".dat") {
              idx_path = idx_path.substr(0, idx_path.size()-4);
@@ -537,14 +531,9 @@ namespace pomai::table
         std::string hnsw_path = idx_path + ".hnsw";
         idx_path += ".idx";
 
-        // Try HNSW first
-        // NOTE: HNSW library allocates with new during Load; we use Adopt() to wrap
-        // the external allocation in alloc::UniquePtr for consistent ownership
-        std::unique_ptr<pomai::index::HnswIndex> hnsw_std;
-        st = pomai::index::HnswIndex::Load(hnsw_path, &hnsw_std);
-        if (st.ok()) {
-            reader->hnsw_index_ = alloc::UniquePtr<pomai::index::HnswIndex>::Adopt(hnsw_std.release());
-        } else {
+        // Try HNSW first (allocated natively through palloc)
+        st = pomai::index::HnswIndex::Load(hnsw_path, &reader->hnsw_index_);
+        if (!st.ok()) {
             // Ignore error if not found (fallback to scan)
             std::unique_ptr<pomai::index::IvfFlatIndex> idx_std;
             (void)pomai::index::IvfFlatIndex::Load(idx_path, &idx_std);
@@ -558,7 +547,7 @@ namespace pomai::table
             // Layout per entry: [id:8][flags+pad:4][vector data starts at byte 12]
             const uint8_t* base      = reader->base_addr_;
             uint32_t       estart    = reader->entries_start_offset_;
-            std::size_t    esize     = reader->entry_size_;
+            uint32_t       esize     = static_cast<uint32_t>(reader->entry_size_);
             reader->hnsw_index_->SetVectorGetter(
                 [base, estart, esize](uint32_t entry_idx) -> const float* {
                     return reinterpret_cast<const float*>(
@@ -573,12 +562,22 @@ namespace pomai::table
             if (pq_path.size() > 4 && pq_path.substr(pq_path.size() - 4) == ".dat")
                 pq_path = pq_path.substr(0, pq_path.size() - 4);
             pq_path += ".pq";
-            std::unique_ptr<core::ProductQuantizer> pq;
+            alloc::UniquePtr<core::ProductQuantizer> pq;
             if (core::ProductQuantizer::Load(pq_path, &pq).ok())
-                reader->pq_ = alloc::UniquePtr<core::ProductQuantizer>::Adopt(pq.release());
+                reader->pq_ = std::move(pq);
         }
 
-        *out = Ptr(reader, PallocDeleter);
+        *out = alloc::UniquePtr<SegmentReader>::AdoptPalloc(reader);
+        return pomai::Status::Ok();
+    }
+
+    pomai::Status SegmentReader::Open(std::string path, SegmentReader::Ptr* out)
+    {
+        if (!out) return pomai::Status::InvalidArgument("null out pointer");
+        alloc::UniquePtr<SegmentReader> reader;
+        auto st = Open(std::move(path), &reader);
+        if (!st.ok()) return st;
+        *out = Ptr(reader.release(), PallocDeleter);
         return pomai::Status::Ok();
     }
 

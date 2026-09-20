@@ -5,7 +5,6 @@
 #pragma once
 
 #include <vector>
-#include <memory>
 #include <cassert>
 #include "concurrency_macros.h"
 #include "palloc_compat.h"

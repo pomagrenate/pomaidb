@@ -347,7 +347,7 @@ private:
 
 HnswIndex::HnswIndex(uint32_t dim, HnswOptions opts, pomai::MetricType metric)
     : dim_(dim), opts_(opts), metric_(metric),
-      impl_(std::make_unique<Impl>(dim, opts, metric)) {}
+      impl_(alloc::UniquePtr<Impl>::Make(nullptr, dim, opts, metric)) {}
 
 HnswIndex::~HnswIndex() = default;
 
@@ -433,6 +433,48 @@ pomai::Status HnswIndex::Save(const std::string& path) const {
 }
 
 pomai::Status HnswIndex::Load(const std::string& path,
+                             alloc::UniquePtr<HnswIndex>* out) {
+    if (!out) return pomai::Status::InvalidArgument("out pointer is null");
+
+    uint64_t file_size = 0;
+    auto st = storage::PallocFilesystem::GetFileSize(path.c_str(), &file_size);
+    if (!st.ok()) return st;
+
+    if (file_size < sizeof(PomaiHnswHeader)) {
+        return pomai::Status::Corruption("file too small for HNSW index");
+    }
+
+    alloc::UniquePtr<storage::PallocRandomAccessFile> raf;
+    st = storage::PallocRandomAccessFile::Open(path.c_str(), &raf);
+    if (!st.ok()) return st;
+
+    Slice read_slice;
+    st = raf->Read(0, file_size, &read_slice);
+    if (!st.ok()) return st;
+    if (read_slice.size() != file_size) {
+        return pomai::Status::IOError("short read in HnswIndex::Load");
+    }
+
+    PomaiHnswHeader hdr;
+    std::memcpy(&hdr, read_slice.data(), sizeof(hdr));
+    if (hdr.magic != kPomaiHnswMagic || hdr.version != kPomaiHnswVersion) {
+        return pomai::Status::Corruption("Invalid Pomai HNSW magic or version");
+    }
+
+    HnswOptions opts;
+    opts.M = hdr.M;
+    opts.ef_construction = hdr.ef_construction;
+    opts.ef_search = hdr.ef_search;
+
+    auto index = alloc::UniquePtr<HnswIndex>::Make(nullptr, hdr.dim, opts, static_cast<pomai::MetricType>(hdr.metric));
+    st = index->LoadFromBuffer(reinterpret_cast<const uint8_t*>(read_slice.data()), read_slice.size());
+    if (!st.ok()) return st;
+
+    *out = std::move(index);
+    return pomai::Status::Ok();
+}
+
+pomai::Status HnswIndex::Load(const std::string& path,
                              std::unique_ptr<HnswIndex>* out) {
     if (!out) return pomai::Status::InvalidArgument("out pointer is null");
 
@@ -471,6 +513,18 @@ pomai::Status HnswIndex::Load(const std::string& path,
     if (!st.ok()) return st;
 
     *out = std::move(index);
+    return pomai::Status::Ok();
+}
+
+pomai::Status HnswIndex::Load(const std::string& path,
+                             uint32_t dim,
+                             pomai::MetricType metric,
+                             alloc::UniquePtr<HnswIndex>* out) {
+    if (!out) return pomai::Status::InvalidArgument("out pointer is null");
+    auto st = Load(path, out);
+    if (!st.ok()) return st;
+    if ((*out)->dim() != dim) return pomai::Status::Corruption("HNSW dim mismatch");
+    if ((*out)->metric() != metric) return pomai::Status::Corruption("HNSW metric mismatch");
     return pomai::Status::Ok();
 }
 

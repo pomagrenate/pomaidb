@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
-#include <unordered_map>
+#include "flat_hash_memmap.h"
 #include <vector>
 #include <psync/psync.h>
 
@@ -70,10 +70,10 @@ struct palloc_page_pool_impl {
   }
 
   std::vector<PageMeta> pages;
-  std::unordered_map<uint64_t, size_t> page_index;  // page_id -> frame index
+  pomai::table::FlatHashMemMap<uint64_t, size_t> page_index;  // page_id -> frame index
 
   // Mapping from page_id to swap slot for pages that are currently swapped out.
-  std::unordered_map<uint64_t, uint64_t> swapped;
+  pomai::table::FlatHashMemMap<uint64_t, uint64_t> swapped;
   std::vector<uint64_t> free_swap_slots;
   uint64_t next_swap_slot = 0;
 
@@ -156,21 +156,21 @@ struct palloc_page_pool_impl {
       return false;
     }
 #endif
-    swapped[page_id] = slot;
+    swapped.Put(page_id, slot);
     bytes_in_swap = std::max(bytes_in_swap, static_cast<size_t>((slot + 1) * page_size));
     pages[frame].swap_slot = slot;
     return true;
   }
 
   bool read_page_from_swap(size_t frame, uint64_t page_id) {
-    auto it = swapped.find(page_id);
-    if (it == swapped.end()) {
+    auto* slot_ptr = swapped.Find(page_id);
+    if (!slot_ptr) {
       // Page has no backing swap; treat as zero-filled.
       std::fill_n(frame_ptr(frame), page_size, uint8_t{0});
       return true;
     }
     if (!has_swap()) return false;
-    uint64_t slot = it->second;
+    uint64_t slot = *slot_ptr;
 #if defined(_WIN32) || defined(_WIN64)
     uint64_t off = slot * page_size;
     OVERLAPPED ov{};
@@ -227,7 +227,7 @@ struct palloc_page_pool_impl {
         m.dirty = false;
         m.swap_slot = kInvalidSwapSlot;
         ++resident_pages;
-        if (is_new) *is_new = (swapped.find(page_id) == swapped.end());
+        if (is_new) *is_new = (swapped.Find(page_id) == nullptr);
         if (!read_page_from_swap(i, page_id)) {
           // On read failure, treat as failure.
           m.in_use = false;
@@ -256,7 +256,7 @@ struct palloc_page_pool_impl {
         }
       }
       // Remove from resident index.
-      page_index.erase(m.page_id);
+      page_index.Erase(m.page_id);
       pomai::core::metrics::MetricsRegistry::Instance().Increment("palloc_page_eviction");
       ++evictions;
       m.page_id = page_id;
@@ -265,7 +265,7 @@ struct palloc_page_pool_impl {
       m.last_access_epoch = ++epoch;
       m.dirty = false;
       // Keep swap_slot as-is; write_page_to_swap will update if needed.
-      if (is_new) *is_new = (swapped.find(page_id) == swapped.end());
+      if (is_new) *is_new = (swapped.Find(page_id) == nullptr);
       if (!read_page_from_swap(idx, page_id)) {
         // failed to bring in; mark frame unused
         m.in_use = false;
@@ -378,9 +378,9 @@ void* palloc_fetch_page(palloc_page_pool* pool, uint64_t page_id,
   palloc_page_pool_impl& impl = pool->impl;
   psync::LockGuard<psync::Mutex> lock(impl.mutex);
 
-  auto it = impl.page_index.find(page_id);
-  if (it != impl.page_index.end()) {
-    size_t frame = it->second;
+  auto* frame_ptr = impl.page_index.Find(page_id);
+  if (frame_ptr) {
+    size_t frame = *frame_ptr;
     PageMeta& m = impl.pages[frame];
     m.pin_count += 1;
     m.ref_bit = true;
@@ -398,7 +398,7 @@ void* palloc_fetch_page(palloc_page_pool* pool, uint64_t page_id,
     return nullptr;
   }
 
-  impl.page_index[page_id] = frame;
+  impl.page_index.Put(page_id, frame);
   PageMeta& m = impl.pages[frame];
   m.pin_count = 1;
   m.ref_bit = true;
@@ -416,9 +416,9 @@ void palloc_unpin_page(palloc_page_pool* pool, uint64_t page_id,
   palloc_page_pool_impl& impl = pool->impl;
   psync::LockGuard<psync::Mutex> lock(impl.mutex);
 
-  auto it = impl.page_index.find(page_id);
-  if (it == impl.page_index.end()) return;
-  size_t frame = it->second;
+  auto* frame_ptr = impl.page_index.Find(page_id);
+  if (!frame_ptr) return;
+  size_t frame = *frame_ptr;
   PageMeta& m = impl.pages[frame];
   if (m.pin_count > 0) {
     m.pin_count -= 1;
@@ -436,11 +436,11 @@ int palloc_flush_page(palloc_page_pool* pool, uint64_t page_id) {
   palloc_page_pool_impl& impl = pool->impl;
   psync::LockGuard<psync::Mutex> lock(impl.mutex);
 
-  auto it = impl.page_index.find(page_id);
-  if (it == impl.page_index.end()) {
+  auto* frame_ptr = impl.page_index.Find(page_id);
+  if (!frame_ptr) {
     return 0;  // nothing to do
   }
-  size_t frame = it->second;
+  size_t frame = *frame_ptr;
   return impl.flush_frame_locked(frame) ? 0 : -1;
 }
 

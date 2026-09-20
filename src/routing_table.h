@@ -1,9 +1,10 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <span>
 #include <vector>
+
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::core::routing {
 
@@ -27,6 +28,6 @@ struct RoutingTable {
     std::vector<std::uint32_t> ClosestCentroids(std::span<const float> vec, std::uint32_t n) const;
 };
 
-using RoutingTablePtr = std::shared_ptr<const RoutingTable>;
+using RoutingTablePtr = alloc::SharedPtr<const RoutingTable>;
 
 } // namespace pomai::core::routing

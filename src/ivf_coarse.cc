@@ -200,7 +200,7 @@ namespace pomai::index
              const float* vec = &train_buffer_[i * dim_];
              uint32_t cid = AssignCentroid({vec, dim_});
              lists_[cid].push_back(train_ids_[i]);
-             id2list_[train_ids_[i]] = cid;
+             id2list_.Put(train_ids_[i], cid);
         }
         
         trained_ = true;
@@ -271,9 +271,9 @@ namespace pomai::index
         }
 
         // Online insert (Trained phase)
-        auto it = id2list_.find(id);
-        if (it != id2list_.end()) {
-            const std::uint32_t old = it->second;
+        auto* old_cid = id2list_.Find(id);
+        if (old_cid != nullptr) {
+            const std::uint32_t old = *old_cid;
             auto &lst = lists_[old];
             auto pos = std::find(lst.begin(), lst.end(), id);
             if (pos != lst.end()) {
@@ -286,7 +286,7 @@ namespace pomai::index
 
         uint32_t cid = AssignCentroid(vec);
         lists_[cid].push_back(id);
-        id2list_[id] = cid;
+        id2list_.Put(id, cid);
 
         // Streaming Index: Adapt centroid towards newly added vector.
         OnlineCentroidUpdate(cid, vec);
@@ -316,11 +316,11 @@ namespace pomai::index
             return pomai::Status::Ok();
         }
 
-        auto it = id2list_.find(id);
-        if (it == id2list_.end())
+        auto* found_cid = id2list_.Find(id);
+        if (found_cid == nullptr)
             return pomai::Status::Ok();
 
-        const std::uint32_t cid = it->second;
+        const std::uint32_t cid = *found_cid;
         auto &lst = lists_[cid];
         auto pos = std::find(lst.begin(), lst.end(), id);
         if (pos != lst.end())
@@ -328,7 +328,7 @@ namespace pomai::index
             *pos = lst.back();
             lst.pop_back();
         }
-        id2list_.erase(it);
+        id2list_.Erase(id);
 
         if (live_count_ > 0)
             live_count_ -= 1;

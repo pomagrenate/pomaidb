@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <atomic>
 #include <map>
-#include <mutex>
 
 namespace pomai::core {
 
@@ -85,15 +84,21 @@ PomegranateEngine::~PomegranateEngine() {
 Status PomegranateEngine::Open() {
     if (opened_) return Status::Ok();
 
-    fruit_map_ = std::make_unique<manifest::FruitMap>(opt_.path, opt_.dim, metric_);
+    fruit_map_ = alloc::UniquePtr<manifest::FruitMap>::Make(nullptr, opt_.path, opt_.dim, metric_);
     Status s = fruit_map_->Open();
-    if (!s.ok()) return s;
+    if (!s.ok()) {
+        fruit_map_.reset();
+        return s;
+    }
 
     // Calculate dynamic memtable threshold based on system resources and dimension
     uint64_t mem_threshold = CalculateDynamicMemtableThreshold(opt_, opt_.dim);
-    rind_ = std::make_unique<ingest::Rind>(env_, opt_.path, opt_.dim, metric_, opt_.fsync, mem_threshold);
+    rind_ = alloc::UniquePtr<ingest::Rind>::Make(nullptr, env_, opt_.path, opt_.dim, metric_, opt_.fsync, mem_threshold);
     s = rind_->Open();
-    if (!s.ok()) return s;
+    if (!s.ok()) {
+        rind_.reset();
+        return s;
+    }
 
     compact::PressOptions press_opts;
     press_opts.index_params = opt_.index_params;
@@ -104,9 +109,9 @@ Status PomegranateEngine::Open() {
         if (press_opts.index_params.hnsw_ef_construction == 0) press_opts.index_params.hnsw_ef_construction = 200;
         if (press_opts.index_params.hnsw_ef_search == 0) press_opts.index_params.hnsw_ef_search = 64;
     }
-    press_ = std::make_unique<compact::Press>(opt_.path, opt_.dim, metric_, press_opts);
+    press_ = alloc::UniquePtr<compact::Press>::Make(nullptr, opt_.path, opt_.dim, metric_, press_opts);
 
-    thread_pool_ = std::make_unique<ptask::ThreadPool>(opt_.search_threads);
+    thread_pool_ = alloc::UniquePtr<ptask::ThreadPool>::Make(nullptr, opt_.search_threads);
 
     opened_ = true;
     return Status::Ok();
@@ -123,6 +128,13 @@ Status PomegranateEngine::Close() {
     if (rind_) {
         (void)rind_->Flush();
         (void)rind_->Close();
+        rind_.reset();
+    }
+    if (press_) {
+        press_.reset();
+    }
+    if (fruit_map_) {
+        fruit_map_.reset();
     }
     opened_ = false;
     return Status::Ok();

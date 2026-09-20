@@ -38,12 +38,18 @@ Status Rind::Open() {
 
     active_memtable_ = std::make_shared<table::MemTable>(dim_, 4 * 1024 * 1024);
 
-    wal_ = std::make_unique<storage::Wal>(env_, db_dir_, 64 * 1024 * 1024, fsync_);
+    wal_ = alloc::UniquePtr<storage::Wal>::Make(nullptr, env_, db_dir_, 64 * 1024 * 1024, fsync_);
     s = wal_->Open();
-    if (!s.ok()) return s;
+    if (!s.ok()) {
+        wal_.reset();
+        return s;
+    }
 
     s = wal_->ReplayInto(*active_memtable_);
-    if (!s.ok()) return s;
+    if (!s.ok()) {
+        wal_.reset();
+        return s;
+    }
 
     // Populate initial tombstones from replayed active memtable
     tombstones_.clear();
@@ -66,6 +72,7 @@ Status Rind::Close() {
 
     if (wal_) {
         (void)wal_->Flush();
+        wal_.reset();
     }
     opened_ = false;
     return Status::Ok();

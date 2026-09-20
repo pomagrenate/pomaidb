@@ -18,10 +18,11 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
-#include <memory>
 #include <span>
 #include <utility>
 #include <vector>
+
+#include "utils/palloc_compat.h"
 
 namespace pomai::table {
 
@@ -57,7 +58,7 @@ class FlatHashMemMap {
   explicit FlatHashMemMap(size_t initial_cap = kInitialCap)
       : cap_(initial_cap ? RoundUpPow2(initial_cap) : kInitialCap),
         mask_(cap_ - 1),
-        slots_(std::make_unique<Slot[]>(cap_)),
+        slots_(static_cast<Slot*>(palloc_malloc_aligned(cap_ * sizeof(Slot), 64))),
         count_(0),
         sentinel_(K(~uint64_t(0)))
   {
@@ -67,10 +68,47 @@ class FlatHashMemMap {
   FlatHashMemMap(const FlatHashMemMap&)            = delete;
   FlatHashMemMap& operator=(const FlatHashMemMap&) = delete;
 
-  FlatHashMemMap(FlatHashMemMap&&)            = default;
-  FlatHashMemMap& operator=(FlatHashMemMap&&) = default;
+  FlatHashMemMap(FlatHashMemMap&& other) noexcept
+      : cap_(other.cap_),
+        mask_(other.mask_),
+        slots_(other.slots_),
+        count_(other.count_),
+        hash_(std::move(other.hash_)),
+        eq_(std::move(other.eq_)),
+        sentinel_(other.sentinel_) {
+    other.slots_ = nullptr;
+    other.cap_ = 0;
+    other.mask_ = 0;
+    other.count_ = 0;
+  }
 
-  ~FlatHashMemMap() = default;
+  FlatHashMemMap& operator=(FlatHashMemMap&& other) noexcept {
+    if (this != &other) {
+      if (slots_) {
+        palloc_free(slots_);
+      }
+      cap_ = other.cap_;
+      mask_ = other.mask_;
+      slots_ = other.slots_;
+      count_ = other.count_;
+      hash_ = std::move(other.hash_);
+      eq_ = std::move(other.eq_);
+      sentinel_ = other.sentinel_;
+
+      other.slots_ = nullptr;
+      other.cap_ = 0;
+      other.mask_ = 0;
+      other.count_ = 0;
+    }
+    return *this;
+  }
+
+  ~FlatHashMemMap() {
+    if (slots_) {
+      palloc_free(slots_);
+      slots_ = nullptr;
+    }
+  }
 
   // Insert or overwrite key->value. Returns true if new key was inserted.
   bool Put(const K& key, V value) {
@@ -78,7 +116,7 @@ class FlatHashMemMap {
     if (count_ >= threshold()) {
       Grow();
     }
-    return PutInternal(slots_.get(), mask_, key, value, /*allow_overwrite=*/true);
+    return PutInternal(slots_, mask_, key, value, /*allow_overwrite=*/true);
   }
 
   // Returns pointer to V or nullptr if not found.
@@ -143,6 +181,65 @@ class FlatHashMemMap {
     clear_slots(0, cap_);
     count_ = 0;
   }
+  void clear() noexcept { Clear(); }
+
+  void reserve(size_t n) {
+    size_t req_cap = RoundUpPow2((n * 4u) / 3u + 1);
+    if (req_cap <= cap_) return;
+    size_t new_cap  = req_cap;
+    size_t new_mask = new_cap - 1;
+    auto*  new_slots = static_cast<Slot*>(palloc_malloc_aligned(new_cap * sizeof(Slot), 64));
+    if (!new_slots) return;
+    for (size_t i = 0; i < new_cap; ++i) {
+      new_slots[i].key   = sentinel_;
+      new_slots[i].value = V{};
+    }
+    if (slots_) {
+      for (size_t i = 0; i < cap_; ++i) {
+        Slot& s = slots_[i];
+        if (s.key != sentinel_) {
+          PutIntoRaw(new_slots, new_mask, s.key, s.value);
+        }
+      }
+      palloc_free(slots_);
+    }
+    cap_   = new_cap;
+    mask_  = new_mask;
+    slots_ = new_slots;
+  }
+
+  V& operator[](const K& key) {
+    assert(key != sentinel_);
+    if (count_ >= threshold()) {
+      Grow();
+    }
+    size_t idx = BucketOf(key);
+    for (size_t i = 0; i < cap_; ++i) {
+      Slot& s = slots_[(idx + i) & mask_];
+      if (s.key == sentinel_) {
+        s.key = key;
+        s.value = V{};
+        ++count_;
+        return s.value;
+      }
+      if (eq_(s.key, key)) {
+        return s.value;
+      }
+    }
+    assert(false && "FlatHashMemMap: table overflow");
+    return slots_[0].value;
+  }
+
+  // Find any occupied key (e.g. for O(1) eviction). Returns false if empty.
+  bool FindAny(K* out_key) const noexcept {
+    for (size_t i = 0; i < cap_; ++i) {
+      if (slots_[i].key != sentinel_) {
+        if (out_key) *out_key = slots_[i].key;
+        return true;
+      }
+    }
+    return false;
+  }
 
   // Iterate over all occupied slots. Callback: fn(const K& k, V& v) -> void.
   template <typename Fn>
@@ -166,17 +263,17 @@ class FlatHashMemMap {
   }
 
   // Raw slot access for Cursor iteration (read-only).
-  const Slot* data() const noexcept { return slots_.get(); }
+  const Slot* data() const noexcept { return slots_; }
   const K     sentinel() const noexcept { return sentinel_; }
 
  private:
-  size_t cap_;
-  size_t mask_;
-  std::unique_ptr<Slot[]> slots_;
+  size_t cap_{0};
+  size_t mask_{0};
+  Slot*  slots_{nullptr};
   size_t count_{0};
   Hash   hash_{};
   Eq     eq_{};
-  K      sentinel_;
+  K      sentinel_{};
 
   size_t threshold() const noexcept {
     return (cap_ * 3u) / 4u;  // 0.75 load factor without float conversion
@@ -187,6 +284,7 @@ class FlatHashMemMap {
   }
 
   void clear_slots(size_t begin, size_t end) noexcept {
+    if (!slots_) return;
     for (size_t i = begin; i < end; ++i) {
       slots_[i].key   = sentinel_;
       slots_[i].value = V{};
@@ -231,7 +329,7 @@ class FlatHashMemMap {
   void Grow() {
     size_t new_cap  = cap_ * 2;
     size_t new_mask = new_cap - 1;
-    auto   new_slots = std::make_unique<Slot[]>(new_cap);
+    auto*  new_slots = static_cast<Slot*>(palloc_malloc_aligned(new_cap * sizeof(Slot), 64));
     // init new table
     for (size_t i = 0; i < new_cap; ++i) {
       new_slots[i].key   = sentinel_;
@@ -243,13 +341,14 @@ class FlatHashMemMap {
     for (size_t i = 0; i < cap_; ++i) {
       Slot& s = slots_[i];
       if (s.key != sentinel_) {
-        PutIntoRaw(new_slots.get(), new_mask, s.key, s.value);
+        PutIntoRaw(new_slots, new_mask, s.key, s.value);
       }
     }
     count_    = old_count;
     cap_      = new_cap;
     mask_     = new_mask;
-    slots_    = std::move(new_slots);
+    palloc_free(slots_);
+    slots_    = new_slots;
   }
 
   void PutIntoRaw(Slot* slots, size_t mask, const K& key, const V& value) noexcept {

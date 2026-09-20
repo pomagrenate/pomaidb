@@ -19,6 +19,7 @@
 #include "status.h"
 #include "types.h"
 #include "hooks.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::core {
     class SyncReceiver;
@@ -174,7 +175,7 @@ public:
     [[nodiscard]] bool IsOpen() const { return opened_; }
 
 private:
-    std::unique_ptr<StorageEngine> storage_engine_;
+    alloc::UniquePtr<StorageEngine> storage_engine_;
     bool opened_ = false;
 
     /** When memtable exceeds threshold: return ResourceExhausted or Freeze() if auto. Single-threaded. */
@@ -187,7 +188,7 @@ private:
 
     // Internal scheduler and task management
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    alloc::UniquePtr<Impl> impl_;
 };
 
 } // namespace pomai

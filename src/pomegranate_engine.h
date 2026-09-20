@@ -33,6 +33,7 @@
 #include "status.h"
 #include "types.h"
 #include "utils/env.h"
+#include "utils/palloc_smart_ptr.h"
 #include <ptask/ptask.h>
 
 namespace pomai::core {
@@ -105,10 +106,10 @@ private:
     MetricType metric_;
     Env* env_;
 
-    std::unique_ptr<ingest::Rind> rind_;
-    std::unique_ptr<manifest::FruitMap> fruit_map_;
-    std::unique_ptr<compact::Press> press_;
-    std::unique_ptr<ptask::ThreadPool> thread_pool_;
+    alloc::UniquePtr<ingest::Rind> rind_;
+    alloc::UniquePtr<manifest::FruitMap> fruit_map_;
+    alloc::UniquePtr<compact::Press> press_;
+    alloc::UniquePtr<ptask::ThreadPool> thread_pool_;
     mutable psync::Mutex compact_mu_;
     bool opened_{false};
 };

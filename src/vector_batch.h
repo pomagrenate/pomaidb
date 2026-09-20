@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <vector>
-#include <memory>
 #include <span>
 
 namespace pomai::core {

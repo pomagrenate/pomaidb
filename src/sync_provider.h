@@ -10,6 +10,7 @@
 #include "status.h"
 #include "types.h"
 #include "metadata.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai {
 class Env;
@@ -87,7 +88,7 @@ public:
 private:
     std::string path_;
     Env* env_;
-    std::unique_ptr<WritableFile> file_;
+    alloc::UniquePtr<WritableFile> file_;
     uint64_t count_ = 0;
     uint64_t last_lsn_ = 0;
 };

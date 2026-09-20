@@ -1,9 +1,8 @@
 #pragma once
 
-#include <memory>
+#include <array>
 #include <string>
 #include <chrono>
-#include <unordered_map>
 #include <vector>
 
 #include "message.h"
@@ -11,6 +10,7 @@
 #include "status.h"
 #include "metrics_registry.h"
 #include "ring_buffer.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::core {
 
@@ -29,22 +29,42 @@ namespace pomai::core {
         MicroKernel& operator=(const MicroKernel&) = delete;
 
         /** Register a service pod. kernel takes ownership. */
-        Status RegisterPod(std::unique_ptr<Pod> pod) {
+        Status RegisterPod(alloc::UniquePtr<Pod> pod) {
             if (!pod) return Status::InvalidArgument("pod is null");
             PodId id = pod->Id();
-            if (pods_.count(id)) return Status::AlreadyExists("pod already registered");
-            
-            pod->OnStart();
-            pods_[id] = std::move(pod);
-            return Status::Ok();
+            for (size_t i = 0; i < kMaxPods; ++i) {
+                if (pods_[i].active && pods_[i].id == id) {
+                    return Status::AlreadyExists("pod already registered");
+                }
+            }
+            for (size_t i = 0; i < kMaxPods; ++i) {
+                if (!pods_[i].active) {
+                    pod->OnStart();
+                    pods_[i].id = id;
+                    pods_[i].active = true;
+                    pods_[i].pod = std::move(pod);
+                    ++pod_count_;
+                    return Status::Ok();
+                }
+            }
+            return Status::ResourceExhausted("Max pods reached");
+        }
+
+        Status RegisterPod(std::unique_ptr<Pod> pod) {
+            if (!pod) return Status::InvalidArgument("pod is null");
+            return RegisterPod(alloc::UniquePtr<Pod>::Adopt(pod.release()));
         }
 
         /** Unregister and stop a pod. */
         void UnregisterPod(PodId id) {
-            auto it = pods_.find(id);
-            if (it != pods_.end()) {
-                it->second->OnStop();
-                pods_.erase(it);
+            for (size_t i = 0; i < kMaxPods; ++i) {
+                if (pods_[i].active && pods_[i].id == id) {
+                    pods_[i].pod->OnStop();
+                    pods_[i].pod.reset();
+                    pods_[i].active = false;
+                    --pod_count_;
+                    return;
+                }
             }
         }
 
@@ -69,8 +89,8 @@ namespace pomai::core {
             if (!msg_opt) return false;
             
             Message msg = std::move(*msg_opt);
-            auto it = pods_.find(msg.target);
-            if (it == pods_.end()) {
+            Pod* target_pod = GetPod(msg.target);
+            if (!target_pod) {
                 metrics::MetricsRegistry::Instance().Increment("kernel_dispatch_target_not_found");
                 SetStatusIfPresent(msg.status_ptr, Status::NotFound("kernel target pod not found"));
                 return true;
@@ -85,7 +105,7 @@ namespace pomai::core {
                 msg.trace.hop_count++;
             }
             try {
-                it->second->Handle(std::move(msg));
+                target_pod->Handle(std::move(msg));
             } catch (...) {
                 metrics::MetricsRegistry::Instance().Increment("kernel_dispatch_exceptions");
                 SetStatusIfPresent(msg.status_ptr, Status::Internal("kernel pod handler exception"));
@@ -116,17 +136,25 @@ namespace pomai::core {
 
         /** Shutdown all pods. */
         void Stop() {
-            for (auto& kv : pods_) {
-                kv.second->OnStop();
+            for (size_t i = 0; i < kMaxPods; ++i) {
+                if (pods_[i].active) {
+                    pods_[i].pod->OnStop();
+                    pods_[i].pod.reset();
+                    pods_[i].active = false;
+                }
             }
-            pods_.clear();
+            pod_count_ = 0;
             queue_.clear();
         }
 
         /** Direct access to a pod (use sparingly). */
         Pod* GetPod(PodId id) {
-            auto it = pods_.find(id);
-            return (it != pods_.end()) ? it->second.get() : nullptr;
+            for (size_t i = 0; i < kMaxPods; ++i) {
+                if (pods_[i].active && pods_[i].id == id) {
+                    return pods_[i].pod.get();
+                }
+            }
+            return nullptr;
         }
 
     private:
@@ -134,7 +162,16 @@ namespace pomai::core {
             if (!status_ptr) return;
             *status_ptr = st;
         }
-        std::unordered_map<PodId, std::unique_ptr<Pod>> pods_;
+
+        struct PodSlot {
+            PodId id{PodId::kKernel};
+            bool active{false};
+            alloc::UniquePtr<Pod> pod;
+        };
+
+        static constexpr size_t kMaxPods = 16;
+        std::array<PodSlot, kMaxPods> pods_;
+        size_t pod_count_{0};
         util::StaticRingBuffer<Message, 1024> queue_;
     };
 

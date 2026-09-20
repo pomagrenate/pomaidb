@@ -2,6 +2,7 @@
 
 #include "pod.h"
 #include "vector_engine.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::core {
 
@@ -10,8 +11,10 @@ namespace pomai::core {
      */
     class VectorPod : public Pod {
     public:
-        explicit VectorPod(std::unique_ptr<VectorEngine> engine)
+        explicit VectorPod(alloc::UniquePtr<VectorEngine> engine)
             : engine_(std::move(engine)) {}
+        explicit VectorPod(std::unique_ptr<VectorEngine> engine)
+            : engine_(alloc::UniquePtr<VectorEngine>::Adopt(engine.release())) {}
 
         void Handle(Message&& msg) override;
 
@@ -37,7 +40,7 @@ namespace pomai::core {
         }
 
     private:
-        std::unique_ptr<VectorEngine> engine_;
+        alloc::UniquePtr<VectorEngine> engine_;
     };
 
 } // namespace pomai::core

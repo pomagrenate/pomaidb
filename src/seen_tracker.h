@@ -1,8 +1,8 @@
 #pragma once
 #include <cstdint>
-#include <unordered_map>
 #include <vector>
 #include "types.h"
+#include "flat_hash_memmap.h"
 
 namespace pomai::core {
 
@@ -21,34 +21,33 @@ public:
         ++current_generation_;
         // Handle overflow: reset all entries (rare, only every 2^32 searches)
         if (current_generation_ == 0) {
-            entries_.clear();
+            entries_.Clear();
             current_generation_ = 1;
         }
     }
 
     /// Check if ID has been seen in current search.
     bool Contains(VectorId id) const {
-        auto it = entries_.find(id);
-        if (it == entries_.end()) return false;
-        return it->second.generation == current_generation_;
+        const auto* e = entries_.Find(id);
+        if (!e) return false;
+        return e->generation == current_generation_;
     }
 
     /// Mark ID as seen in current search.
     void MarkSeen(VectorId id) {
-        entries_[id] = {current_generation_, false};
+        entries_.Put(id, {current_generation_, false});
     }
 
     /// Mark ID as tombstone in current search.
     void MarkTombstone(VectorId id) {
-        entries_[id] = {current_generation_, true};
+        entries_.Put(id, {current_generation_, true});
     }
 
     /// Check if ID is tombstone in current search.
     bool IsTombstone(VectorId id) const {
-        auto it = entries_.find(id);
-        if (it == entries_.end()) return false;
-        if (it->second.generation != current_generation_) return false;
-        return it->second.is_tombstone;
+        const auto* e = entries_.Find(id);
+        if (!e || e->generation != current_generation_) return false;
+        return e->is_tombstone;
     }
 
     /// Reserve capacity (called once at initialization).
@@ -62,7 +61,7 @@ private:
         bool is_tombstone;
     };
 
-    std::unordered_map<VectorId, Entry> entries_;
+    table::FlatHashMemMap<VectorId, Entry> entries_;
     uint32_t current_generation_ = 0;
 };
 

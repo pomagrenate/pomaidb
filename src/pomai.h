@@ -11,6 +11,7 @@
 #include "types.h"
 #include "iterator.h"
 #include "snapshot.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai
 {
@@ -113,6 +114,7 @@ namespace pomai
                                    std::unique_ptr<class SnapshotIterator> *out) = 0;
 
         static Status Open(const DBOptions &options, std::unique_ptr<DB> *out);
+        static Status Open(const DBOptions &options, alloc::UniquePtr<DB> *out);
     };
 
 } // namespace pomai

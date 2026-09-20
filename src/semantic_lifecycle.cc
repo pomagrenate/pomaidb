@@ -4,24 +4,34 @@ namespace pomai::core {
 
 void SemanticLifecycle::OnRead(VectorId id) {
     if (max_entries_ == 0) return;
+    auto* entry = table_.Find(id);
+    if (entry) {
+        entry->reads++;
+        return;
+    }
     EvictIfNeeded();
-    table_[id].reads++;
+    table_.Put(id, Entry{.reads = 1, .writes = 0});
 }
 
 void SemanticLifecycle::OnWrite(VectorId id) {
     if (max_entries_ == 0) return;
+    auto* entry = table_.Find(id);
+    if (entry) {
+        entry->writes++;
+        return;
+    }
     EvictIfNeeded();
-    table_[id].writes++;
+    table_.Put(id, Entry{.reads = 0, .writes = 1});
 }
 
 void SemanticLifecycle::OnDelete(VectorId id) {
-    table_.erase(id);
+    table_.Erase(id);
 }
 
 DataTemperature SemanticLifecycle::Classify(VectorId id) const {
-    auto it = table_.find(id);
-    if (it == table_.end()) return DataTemperature::kCold;
-    const auto score = it->second.reads * 3 + it->second.writes;
+    const auto* entry = table_.Find(id);
+    if (!entry) return DataTemperature::kCold;
+    const auto score = entry->reads * 3 + entry->writes;
     if (score >= 20) return DataTemperature::kHot;
     if (score >= 5) return DataTemperature::kWarm;
     return DataTemperature::kCold;
@@ -29,25 +39,35 @@ DataTemperature SemanticLifecycle::Classify(VectorId id) const {
 
 std::size_t SemanticLifecycle::CountHot() const {
     std::size_t n = 0;
-    for (const auto& kv : table_) if (Classify(kv.first) == DataTemperature::kHot) ++n;
+    table_.ForEach([&](VectorId id, const Entry&) {
+        if (Classify(id) == DataTemperature::kHot) ++n;
+    });
     return n;
 }
+
 std::size_t SemanticLifecycle::CountWarm() const {
     std::size_t n = 0;
-    for (const auto& kv : table_) if (Classify(kv.first) == DataTemperature::kWarm) ++n;
+    table_.ForEach([&](VectorId id, const Entry&) {
+        if (Classify(id) == DataTemperature::kWarm) ++n;
+    });
     return n;
 }
+
 std::size_t SemanticLifecycle::CountCold() const {
     std::size_t n = 0;
-    for (const auto& kv : table_) if (Classify(kv.first) == DataTemperature::kCold) ++n;
+    table_.ForEach([&](VectorId id, const Entry&) {
+        if (Classify(id) == DataTemperature::kCold) ++n;
+    });
     return n;
 }
 
 void SemanticLifecycle::EvictIfNeeded() {
     if (max_entries_ == 0) return;
     if (table_.size() < max_entries_) return;
-    // O(1) best-effort eviction to bound RAM strictly.
-    table_.erase(table_.begin());
+    VectorId victim = 0;
+    if (table_.FindAny(&victim)) {
+        table_.Erase(victim);
+    }
 }
 
 } // namespace pomai::core

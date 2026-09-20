@@ -11,12 +11,12 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "status.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::core {
 
@@ -71,7 +71,7 @@ public:
     // ── Persistence ───────────────────────────────────────────────────────────
     pomai::Status Save(const std::string& path) const;
     static pomai::Status Load(const std::string& path,
-                              std::unique_ptr<ProductQuantizer>* out);
+                              alloc::UniquePtr<ProductQuantizer>* out);
 
     const float* centroids_data() const { return centroids_.data(); }
 

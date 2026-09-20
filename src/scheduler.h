@@ -2,12 +2,11 @@
 
 #include <chrono>
 #include <functional>
-#include <memory>
-#include <queue>
 #include <string>
 #include <vector>
 
 #include "status.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::core {
 
@@ -41,6 +40,7 @@ public:
      * @param task The task to run.
      * @param interval Time between runs.
      */
+    void RegisterPeriodic(alloc::UniquePtr<DatabaseTask> task, std::chrono::milliseconds interval);
     void RegisterPeriodic(std::unique_ptr<DatabaseTask> task, std::chrono::milliseconds interval);
 
     /**
@@ -52,7 +52,7 @@ public:
 
 private:
     struct ScheduledTask {
-        std::unique_ptr<DatabaseTask> task;
+        alloc::UniquePtr<DatabaseTask> task;
         std::chrono::milliseconds interval;
         std::chrono::steady_clock::time_point next_run;
 

@@ -6,12 +6,17 @@ namespace pomai::core {
 TaskScheduler::TaskScheduler() = default;
 TaskScheduler::~TaskScheduler() = default;
 
-void TaskScheduler::RegisterPeriodic(std::unique_ptr<DatabaseTask> task, std::chrono::milliseconds interval) {
+void TaskScheduler::RegisterPeriodic(alloc::UniquePtr<DatabaseTask> task, std::chrono::milliseconds interval) {
     ScheduledTask st;
     st.task = std::move(task);
     st.interval = interval;
     st.next_run = std::chrono::steady_clock::now();
     tasks_.push_back(std::move(st));
+}
+
+void TaskScheduler::RegisterPeriodic(std::unique_ptr<DatabaseTask> task, std::chrono::milliseconds interval) {
+    if (!task) return;
+    RegisterPeriodic(alloc::UniquePtr<DatabaseTask>::Adopt(task.release()), interval);
 }
 
 void TaskScheduler::Poll() {

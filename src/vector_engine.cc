@@ -60,7 +60,7 @@ Status VectorEngine::OpenLocked() {
         return Status::IOError("VectorEngine CreateDir failed: " + opt_.path + " (" + st_env.message() + ")");
     }
 
-    engine_ = std::make_unique<PomegranateEngine>(opt_, metric_, nullptr);
+    engine_ = alloc::UniquePtr<PomegranateEngine>::Make(nullptr, opt_, metric_, nullptr);
     Status s = engine_->Open();
     if (!s.ok()) {
         engine_.reset();

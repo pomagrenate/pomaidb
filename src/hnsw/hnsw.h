@@ -2,19 +2,51 @@
 #define POMAIDB_HNSW_H
 
 #include <vector>
-#include <queue>
 #include <random>
 #include <cmath>
-#include <mutex>
-#include <memory>
 #include <functional>
+#include <algorithm>
+#include <psync/psync.h>
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::hnsw {
 
 /**
  * Minimalist, high-performance HNSW implementation.
- * Decoupled from FAISS infrastructure.
+ * Decoupled from external infrastructure, backed by PomaiDB native primitives.
  */
+
+template <typename T, typename Compare = std::less<T>>
+class PriorityQueue {
+public:
+    PriorityQueue() = default;
+    explicit PriorityQueue(const Compare& comp) : comp_(comp) {}
+
+    bool empty() const noexcept { return c_.empty(); }
+    size_t size() const noexcept { return c_.size(); }
+    const T& top() const { return c_.front(); }
+
+    void push(const T& val) {
+        c_.push_back(val);
+        std::push_heap(c_.begin(), c_.end(), comp_);
+    }
+
+    void push(T&& val) {
+        c_.push_back(std::move(val));
+        std::push_heap(c_.begin(), c_.end(), comp_);
+    }
+
+    void pop() {
+        std::pop_heap(c_.begin(), c_.end(), comp_);
+        c_.pop_back();
+    }
+
+    void clear() noexcept { c_.clear(); }
+
+private:
+    std::vector<T> c_;
+    Compare comp_{};
+};
 
 using storage_idx_t = int32_t;
 
@@ -94,10 +126,10 @@ private:
     // Internal helpers
     void neighbor_range(storage_idx_t id, int level, size_t& begin, size_t& end) const;
     void shrink_neighbor_list(DistanceComputer& qdis, storage_idx_t cur, 
-                             std::priority_queue<NodeDist>& candidates, int max_size);
+                             PriorityQueue<NodeDist>& candidates, int max_size);
     
-    mutable std::mutex graph_mutex;
-    std::vector<std::unique_ptr<std::mutex>> node_locks;
+    mutable psync::Mutex graph_mutex;
+    std::vector<alloc::UniquePtr<psync::Mutex>> node_locks;
 };
 
 } // namespace pomai::hnsw

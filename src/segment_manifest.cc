@@ -1,7 +1,6 @@
 #include "segment_manifest.h"
 #include <fcntl.h>
 #include <filesystem>
-#include <memory>
 #include <string>
 #include <unistd.h>
 #include <vector>

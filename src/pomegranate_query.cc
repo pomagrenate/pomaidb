@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
-#include <queue>
 #include <unordered_set>
 
 #include "distance.h"
@@ -34,6 +33,38 @@ struct PickMinComparator {
         }
         return a.id < b.id; // tie-break: larger id on top (evicted first)
     }
+};
+
+class BoundedPickQueue {
+public:
+    explicit BoundedPickQueue(size_t capacity = 0) : capacity_(capacity) {
+        if (capacity > 0) items_.reserve(capacity + 1);
+    }
+
+    [[nodiscard]] size_t size() const noexcept { return items_.size(); }
+    [[nodiscard]] bool empty() const noexcept { return items_.empty(); }
+
+    [[nodiscard]] const PickItem& top() const noexcept {
+        return items_.front();
+    }
+
+    void pop() noexcept {
+        std::pop_heap(items_.begin(), items_.end(), PickMinComparator{});
+        items_.pop_back();
+    }
+
+    void push(const PickItem& item) {
+        items_.push_back(item);
+        std::push_heap(items_.begin(), items_.end(), PickMinComparator{});
+    }
+
+    [[nodiscard]] std::vector<PickItem> ExtractItems() noexcept {
+        return std::move(items_);
+    }
+
+private:
+    size_t capacity_{0};
+    std::vector<PickItem> items_;
 };
 
 /// Branchless 64-bit integer mixer for uniform dispersion under power-of-2 masks
@@ -172,10 +203,7 @@ Status PomegranateQuery::Execute(std::span<const float> query,
         ? std::max<size_t>(static_cast<size_t>(opts.ef_search), static_cast<size_t>(topk * 4))
         : std::max<size_t>(static_cast<size_t>(topk * 8), size_t{128});
 
-    std::vector<PickItem> pick_container;
-    pick_container.reserve(pick_target + 1);
-    std::priority_queue<PickItem, std::vector<PickItem>, PickMinComparator> pick_heap(
-        PickMinComparator(), std::move(pick_container));
+    BoundedPickQueue pick_heap(pick_target);
     FlatSeenSet seen_ids;
 
     // Helper to conditionally push into bounded pick heap with deterministic tie-breaking
@@ -381,10 +409,7 @@ Status PomegranateQuery::Execute(std::span<const float> query,
 
             ptask::parallel_for(*thread_pool, size_t{0}, candidate_locules.size(), [&](size_t idx) {
                 const auto& cand_loc = candidate_locules[idx];
-                std::vector<PickItem> local_container;
-                local_container.reserve(pick_target + 1);
-                std::priority_queue<PickItem, std::vector<PickItem>, PickMinComparator> local_heap(
-                    PickMinComparator(), std::move(local_container));
+                BoundedPickQueue local_heap(pick_target);
                 FlatSeenSet local_seen;
 
                 auto local_push = [&](const PickItem& item) {
@@ -405,10 +430,7 @@ Status PomegranateQuery::Execute(std::span<const float> query,
 
                 scan_locule(cand_loc, local_push, init_worst);
 
-                while (!local_heap.empty()) {
-                    worker_results[idx].items.push_back(local_heap.top());
-                    local_heap.pop();
-                }
+                worker_results[idx].items = local_heap.ExtractItems();
             });
 
             // Merge worker candidates into main pick_heap
@@ -429,12 +451,7 @@ Status PomegranateQuery::Execute(std::span<const float> query,
     // -------------------------------------------------------------------------
     // Stage 4: Pick (Extract items from heap)
     // -------------------------------------------------------------------------
-    std::vector<PickItem> picked;
-    picked.reserve(pick_heap.size());
-    while (!pick_heap.empty()) {
-        picked.push_back(pick_heap.top());
-        pick_heap.pop();
-    }
+    std::vector<PickItem> picked = pick_heap.ExtractItems();
 
     // -------------------------------------------------------------------------
     // Stage 5: Rerank (Exact distance via SeedKernel 4-Way SIMD Batching)

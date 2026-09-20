@@ -14,7 +14,6 @@
 #include <cstdint>
 #include <span>
 #include <map>
-#include <unordered_map>
 #include <psync/psync.h>
 #include "metadata.h"
 #include "status.h"

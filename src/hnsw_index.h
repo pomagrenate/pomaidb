@@ -19,6 +19,7 @@
 #include "options.h"
 #include "status.h"
 #include "types.h"
+#include "utils/palloc_smart_ptr.h"
 
 namespace pomai::index {
 
@@ -84,7 +85,13 @@ public:
 
     pomai::Status Save(const std::string& path) const;
     static pomai::Status Load(const std::string& path,
+                              alloc::UniquePtr<HnswIndex>* out);
+    static pomai::Status Load(const std::string& path,
                               std::unique_ptr<HnswIndex>* out);
+    static pomai::Status Load(const std::string& path,
+                              uint32_t dim,
+                              pomai::MetricType metric,
+                              alloc::UniquePtr<HnswIndex>* out);
     static pomai::Status Load(const std::string& path,
                               uint32_t dim,
                               pomai::MetricType metric,
@@ -106,7 +113,7 @@ private:
     bool no_vector_pool_{false};
 
     class Impl;
-    std::unique_ptr<Impl> impl_;
+    alloc::UniquePtr<Impl> impl_;
 };
 
 } // namespace pomai::index
