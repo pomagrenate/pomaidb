@@ -9,6 +9,8 @@
 #include <limits>
 
 #include "distance.h"
+#include "pomegranate_compute.h"
+#include <cstring>
 
 namespace pomai::routing {
 
@@ -18,11 +20,50 @@ Compass::~Compass() = default;
 
 void Compass::UpdateLocules(std::vector<alloc::SharedPtr<storage::Locule>> locules) {
     locules_ = std::move(locules);
+    matrix_.count = static_cast<uint32_t>(locules_.size());
+    matrix_.dim = 0;
+    matrix_.data.clear();
+    matrix_.radii.clear();
+    matrix_.norms.clear();
+
+    if (locules_.empty()) return;
+
+    for (const auto& loc : locules_) {
+        if (loc && !loc->anchor().centroid.empty()) {
+            matrix_.dim = static_cast<uint32_t>(loc->anchor().centroid.size());
+            break;
+        }
+    }
+
+    if (matrix_.dim == 0) return;
+
+    const uint32_t dim = matrix_.dim;
+    const uint32_t count = matrix_.count;
+    matrix_.data.resize(static_cast<size_t>(count) * dim, 0.0f);
+    matrix_.radii.resize(count, 0.0f);
+    matrix_.norms.resize(count, 1.0f);
+
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& loc = locules_[i];
+        if (!loc) continue;
+        matrix_.radii[i] = loc->anchor().radius;
+        const auto& c = loc->anchor().centroid;
+        if (c.size() == dim) {
+            std::memcpy(matrix_.data.data() + static_cast<size_t>(i) * dim, c.data(), dim * sizeof(float));
+            if (metric_ != MetricType::kL2) {
+                float norm_sq = 0.0f;
+                for (float v : c) norm_sq += v * v;
+                matrix_.norms[i] = std::sqrt(std::max(0.0f, norm_sq));
+            }
+        }
+    }
 }
 
 std::vector<OrientedLocule> Compass::Orient(std::span<const float> query, uint32_t nprobe) const {
     std::vector<OrientedLocule> results;
     results.reserve(locules_.size());
+
+    if (locules_.empty()) return results;
 
     float q_norm = 1.0f;
     if (metric_ != MetricType::kL2) {
@@ -33,37 +74,87 @@ std::vector<OrientedLocule> Compass::Orient(std::span<const float> query, uint32
         q_norm = std::sqrt(std::max(0.0f, q_norm_sq));
     }
 
-    for (const auto& loc : locules_) {
-        if (!loc) continue;
+    const uint32_t dim = matrix_.dim;
+    const uint32_t count = matrix_.count;
 
-        OrientedLocule ol;
-        ol.locule = loc;
+    if (dim > 0 && dim == query.size() && count > 0) {
+        const float* q_ptr = query.data();
+        const float* mat_ptr = matrix_.data.data();
 
-        const auto& centroid = loc->anchor().centroid;
-        if (centroid.empty() || centroid.size() != query.size()) {
-            ol.distance_to_centroid = 0.0f;
-            ol.min_possible_distance = 0.0f;
+        uint32_t i = 0;
+        for (; i + 3 < count; i += 4) {
+            const float* c0 = mat_ptr + static_cast<size_t>(i + 0) * dim;
+            const float* c1 = mat_ptr + static_cast<size_t>(i + 1) * dim;
+            const float* c2 = mat_ptr + static_cast<size_t>(i + 2) * dim;
+            const float* c3 = mat_ptr + static_cast<size_t>(i + 3) * dim;
+
+            float d[4];
+            if (metric_ == MetricType::kL2) {
+                compute::L2SqF32_4x(q_ptr, c0, c1, c2, c3, dim, d);
+                for (uint32_t k = 0; k < 4; ++k) {
+                    if (!locules_[i + k]) continue;
+                    float dist = std::sqrt(std::max(0.0f, d[k]));
+                    float radius = matrix_.radii[i + k];
+                    float lower_bound = std::max(0.0f, dist - radius);
+                    results.push_back({locules_[i + k], dist, lower_bound * lower_bound});
+                }
+            } else {
+                compute::DotF32_4x(q_ptr, c0, c1, c2, c3, dim, d);
+                for (uint32_t k = 0; k < 4; ++k) {
+                    if (!locules_[i + k]) continue;
+                    float dot = d[k];
+                    float radius = matrix_.radii[i + k];
+                    results.push_back({locules_[i + k], dot, dot + q_norm * radius});
+                }
+            }
+        }
+
+        for (; i < count; ++i) {
+            if (!locules_[i]) continue;
+            const float* c = mat_ptr + static_cast<size_t>(i) * dim;
+            float radius = matrix_.radii[i];
+            if (metric_ == MetricType::kL2) {
+                float l2sq = core::L2Sq(query, std::span<const float>(c, dim));
+                float dist = std::sqrt(std::max(0.0f, l2sq));
+                float lower_bound = std::max(0.0f, dist - radius);
+                results.push_back({locules_[i], dist, lower_bound * lower_bound});
+            } else {
+                float dot = core::Dot(query, std::span<const float>(c, dim));
+                results.push_back({locules_[i], dot, dot + q_norm * radius});
+            }
+        }
+    } else {
+        // Fallback for locules with uninitialized/varying centroid dimensions
+        for (const auto& loc : locules_) {
+            if (!loc) continue;
+
+            OrientedLocule ol;
+            ol.locule = loc;
+
+            const auto& centroid = loc->anchor().centroid;
+            if (centroid.empty() || centroid.size() != query.size()) {
+                ol.distance_to_centroid = 0.0f;
+                ol.min_possible_distance = 0.0f;
+                results.push_back(std::move(ol));
+                continue;
+            }
+
+            float radius = loc->anchor().radius;
+
+            if (metric_ == MetricType::kL2) {
+                float l2sq = core::L2Sq(query, centroid);
+                float dist = std::sqrt(std::max(0.0f, l2sq));
+                ol.distance_to_centroid = dist;
+                float lower_bound = std::max(0.0f, dist - radius);
+                ol.min_possible_distance = lower_bound * lower_bound;
+            } else {
+                float dot = core::Dot(query, centroid);
+                ol.distance_to_centroid = dot;
+                ol.min_possible_distance = dot + q_norm * radius;
+            }
+
             results.push_back(std::move(ol));
-            continue;
         }
-
-        float radius = loc->anchor().radius;
-
-        if (metric_ == MetricType::kL2) {
-            float l2sq = core::L2Sq(query, centroid);
-            float dist = std::sqrt(std::max(0.0f, l2sq));
-            ol.distance_to_centroid = dist;
-            float lower_bound = std::max(0.0f, dist - radius);
-            ol.min_possible_distance = lower_bound * lower_bound; // L2-squared lower bound
-        } else {
-            // Dot or Cosine (larger is better)
-            float dot = core::Dot(query, centroid);
-            ol.distance_to_centroid = dot;
-            // Upper bound on dot score: <q, c> + ||q|| * radius
-            ol.min_possible_distance = dot + q_norm * radius;
-        }
-
-        results.push_back(std::move(ol));
     }
 
     // Sort by proximity

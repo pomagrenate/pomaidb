@@ -49,12 +49,22 @@ public:
     std::vector<OrientedLocule> Peel(const std::vector<OrientedLocule>& candidates,
                                      float worst_distance) const;
 
+    struct CentroidMatrix {
+        uint32_t dim{0};
+        uint32_t count{0};
+        std::vector<float> data;
+        std::vector<float> radii;
+        std::vector<float> norms;
+    };
+
     [[nodiscard]] size_t LoculeCount() const noexcept { return locules_.size(); }
     [[nodiscard]] MetricType metric() const noexcept { return metric_; }
+    [[nodiscard]] const CentroidMatrix& matrix() const noexcept { return matrix_; }
 
 private:
     MetricType metric_{MetricType::kL2};
     std::vector<alloc::SharedPtr<storage::Locule>> locules_;
+    CentroidMatrix matrix_;
 };
 
 } // namespace pomai::routing

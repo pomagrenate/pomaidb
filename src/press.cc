@@ -11,6 +11,7 @@
 #include <random>
 
 #include "distance.h"
+#include "pomegranate_compute.h"
 #include "utils/palloc_compat.h"
 #include "storage/palloc_io.h"
 
@@ -86,7 +87,21 @@ std::vector<PartitionedLocule> PartitionItemsSpatially(
     std::vector<double> min_dist_sq(N, 1e30);
     for (size_t k = 1; k < K; ++k) {
         double total_dist = 0.0;
-        for (size_t i = 0; i < N; ++i) {
+        size_t i = 0;
+        for (; i + 3 < N; i += 4) {
+            float dsq[4];
+            compute::L2SqF32_4x(centroids[k - 1].data(),
+                                all_items[i + 0].vec.data(), all_items[i + 1].vec.data(),
+                                all_items[i + 2].vec.data(), all_items[i + 3].vec.data(),
+                                dim, dsq);
+            for (size_t m = 0; m < 4; ++m) {
+                if (static_cast<double>(dsq[m]) < min_dist_sq[i + m]) {
+                    min_dist_sq[i + m] = static_cast<double>(dsq[m]);
+                }
+                total_dist += min_dist_sq[i + m];
+            }
+        }
+        for (; i < N; ++i) {
             float dsq = core::L2Sq(all_items[i].vec, centroids[k - 1]);
             if (static_cast<double>(dsq) < min_dist_sq[i]) {
                 min_dist_sq[i] = static_cast<double>(dsq);
@@ -103,10 +118,10 @@ std::vector<PartitionedLocule> PartitionItemsSpatially(
         double r = dist_dist(rng);
         double cum = 0.0;
         size_t chosen = N - 1;
-        for (size_t i = 0; i < N; ++i) {
-            cum += min_dist_sq[i];
+        for (size_t j = 0; j < N; ++j) {
+            cum += min_dist_sq[j];
             if (cum >= r) {
-                chosen = i;
+                chosen = j;
                 break;
             }
         }
@@ -145,7 +160,34 @@ std::vector<PartitionedLocule> PartitionItemsSpatially(
             float best_d = 1e30f;
             float second_best_d = 1e30f;
 
-            for (size_t k = 0; k < K; ++k) {
+            size_t k = 0;
+            for (; k + 3 < K; k += 4) {
+                float d[4];
+                if (metric == MetricType::kCosine || metric == MetricType::kInnerProduct) {
+                    compute::DotF32_4x(all_items[i].vec.data(),
+                                       centroids[k + 0].data(), centroids[k + 1].data(),
+                                       centroids[k + 2].data(), centroids[k + 3].data(),
+                                       dim, d);
+                    for (int m = 0; m < 4; ++m) d[m] = 1.0f - d[m];
+                } else {
+                    compute::L2SqF32_4x(all_items[i].vec.data(),
+                                        centroids[k + 0].data(), centroids[k + 1].data(),
+                                        centroids[k + 2].data(), centroids[k + 3].data(),
+                                        dim, d);
+                }
+                for (int m = 0; m < 4; ++m) {
+                    float dm = d[m];
+                    if (dm < best_d) {
+                        second_best_d = best_d;
+                        best_d = dm;
+                        best_c = k + m;
+                    } else if (dm < second_best_d) {
+                        second_best_d = dm;
+                    }
+                }
+            }
+
+            for (; k < K; ++k) {
                 float d = 0.0f;
                 if (metric == MetricType::kCosine || metric == MetricType::kInnerProduct) {
                     d = 1.0f - core::Dot(all_items[i].vec, centroids[k]);
@@ -173,7 +215,36 @@ std::vector<PartitionedLocule> PartitionItemsSpatially(
             if (cluster_counts[chosen_k] >= max_cluster_cap) {
                 float next_best_d = 1e30f;
                 size_t next_best_k = chosen_k;
-                for (size_t k = 0; k < K; ++k) {
+
+                size_t k = 0;
+                for (; k + 3 < K; k += 4) {
+                    if (cluster_counts[k] < max_cluster_cap ||
+                        cluster_counts[k + 1] < max_cluster_cap ||
+                        cluster_counts[k + 2] < max_cluster_cap ||
+                        cluster_counts[k + 3] < max_cluster_cap) {
+                        float d[4];
+                        if (metric == MetricType::kCosine || metric == MetricType::kInnerProduct) {
+                            compute::DotF32_4x(all_items[p.item_idx].vec.data(),
+                                               centroids[k + 0].data(), centroids[k + 1].data(),
+                                               centroids[k + 2].data(), centroids[k + 3].data(),
+                                               dim, d);
+                            for (int m = 0; m < 4; ++m) d[m] = 1.0f - d[m];
+                        } else {
+                            compute::L2SqF32_4x(all_items[p.item_idx].vec.data(),
+                                                centroids[k + 0].data(), centroids[k + 1].data(),
+                                                centroids[k + 2].data(), centroids[k + 3].data(),
+                                                dim, d);
+                        }
+                        for (int m = 0; m < 4; ++m) {
+                            if (cluster_counts[k + m] < max_cluster_cap && d[m] < next_best_d) {
+                                next_best_d = d[m];
+                                next_best_k = k + m;
+                            }
+                        }
+                    }
+                }
+
+                for (; k < K; ++k) {
                     if (cluster_counts[k] < max_cluster_cap) {
                         float d = (metric == MetricType::kCosine || metric == MetricType::kInnerProduct)
                             ? (1.0f - core::Dot(all_items[p.item_idx].vec, centroids[k]))

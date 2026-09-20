@@ -4,12 +4,16 @@
 #include "pomegranate_compute.h"
 #include "distance.h"
 #include "pulp.h"
+#include "seed_scar.h"
+#include "compass.h"
+#include "locule.h"
 #include <iostream>
 #include <vector>
 #include <random>
 #include <cassert>
 #include <cmath>
 #include <chrono>
+#include <filesystem>
 
 #define TEST_ASSERT(cond) \
     do { \
@@ -263,6 +267,139 @@ void TestPulpBatchScanner() {
     std::cout << " PASSED" << std::endl;
 }
 
+void TestSeedScar_IsDeleted4() {
+    std::cout << "[TEST] TestSeedScar_IsDeleted4..." << std::flush;
+    constexpr uint32_t count = 70;
+    pomai::storage::SeedScarBuilder builder(count);
+
+    std::vector<uint32_t> deleted_slots = {0, 3, 5, 7, 8, 9, 14, 15, 16, 23, 24, 31, 32, 63, 67, 68, 69};
+    for (uint32_t slot : deleted_slots) {
+        builder.MarkDeleted(slot);
+    }
+
+    pomai::storage::SeedScarView view(builder.bytes().data(), count);
+
+    for (uint32_t s = 0; s < count; ++s) {
+        uint8_t mask = view.IsDeleted4(s);
+        for (uint32_t k = 0; k < 4; ++k) {
+            bool bit_expected = (s + k < count) ? view.IsDeleted(s + k) : false;
+            bool bit_actual = (mask & (1u << k)) != 0;
+            TEST_ASSERT(bit_expected == bit_actual);
+        }
+    }
+    std::cout << " PASSED" << std::endl;
+}
+
+void TestPulpBuilder_Avx2_Quantization() {
+    std::cout << "[TEST] TestPulpBuilder_Avx2_Quantization..." << std::flush;
+    constexpr uint32_t dim = 128;
+    constexpr size_t num_vecs = 32;
+    std::mt19937 rng(777);
+    std::uniform_real_distribution<float> dist(-5.0f, 5.0f);
+
+    std::vector<std::vector<float>> vecs(num_vecs, std::vector<float>(dim));
+    std::vector<std::span<const float>> spans;
+    spans.reserve(num_vecs);
+
+    for (size_t i = 0; i < num_vecs; ++i) {
+        for (uint32_t d = 0; d < dim; ++d) {
+            vecs[i][d] = dist(rng);
+        }
+        spans.push_back(vecs[i]);
+    }
+
+    pomai::storage::PulpBuilder builder(dim);
+    builder.Train(spans);
+
+    TEST_ASSERT(builder.min_val() < builder.min_val() + 255.0f * builder.inv_scale());
+
+    for (size_t i = 0; i < num_vecs; ++i) {
+        builder.EncodeAppend(spans[i]);
+    }
+
+    TEST_ASSERT(builder.count() == num_vecs);
+    TEST_ASSERT(builder.buffer().size() == num_vecs * dim);
+
+    float min_val = builder.min_val();
+    float scale = (builder.inv_scale() > 0.0f) ? (1.0f / builder.inv_scale()) : 0.0f;
+
+    for (size_t i = 0; i < num_vecs; ++i) {
+        const uint8_t* encoded = builder.buffer().data() + i * dim;
+        for (uint32_t d = 0; d < dim; ++d) {
+            float normalized = (vecs[i][d] - min_val) * scale;
+            float clamped = std::clamp(normalized, 0.0f, 255.0f);
+            uint8_t expected = static_cast<uint8_t>(std::round(clamped));
+            int diff = std::abs(static_cast<int>(encoded[d]) - static_cast<int>(expected));
+            TEST_ASSERT(diff <= 1);
+        }
+    }
+    std::cout << " PASSED" << std::endl;
+}
+
+void TestCompass_Orient4_Equivalence() {
+    std::cout << "[TEST] TestCompass_Orient4_Equivalence..." << std::flush;
+    constexpr uint32_t dim = 128;
+    constexpr size_t num_locules = 9;
+    std::mt19937 rng(999);
+    std::uniform_real_distribution<float> dist(-2.0f, 2.0f);
+
+    pomai::routing::Compass compass_l2(pomai::MetricType::kL2);
+    pomai::routing::Compass compass_ip(pomai::MetricType::kInnerProduct);
+
+    std::string test_dir = "./test_compass_core_tmp";
+    std::filesystem::remove_all(test_dir);
+    std::filesystem::create_directories(test_dir);
+
+    std::vector<pomai::alloc::SharedPtr<pomai::storage::Locule>> locules;
+    for (size_t l = 0; l < num_locules; ++l) {
+        std::string loc_path = test_dir + "/locule_" + std::to_string(l) + ".pom";
+        pomai::format::LoculeAnchor anchor;
+        anchor.id = static_cast<uint32_t>(l + 1);
+        anchor.radius = 1.5f + static_cast<float>(l) * 0.2f;
+        anchor.centroid.resize(dim);
+        for (uint32_t d = 0; d < dim; ++d) {
+            anchor.centroid[d] = dist(rng);
+        }
+        (void)pomai::storage::Locule::Write(loc_path, anchor.id, 1, dim, anchor, {});
+        pomai::alloc::SharedPtr<pomai::storage::Locule> loc_ptr;
+        auto st = pomai::storage::Locule::Open(loc_path, &loc_ptr);
+        TEST_ASSERT(st.ok() && loc_ptr != nullptr);
+        locules.push_back(loc_ptr);
+    }
+
+    compass_l2.UpdateLocules(locules);
+    compass_ip.UpdateLocules(locules);
+
+    TEST_ASSERT(compass_l2.matrix().count == num_locules);
+    TEST_ASSERT(compass_l2.matrix().dim == dim);
+
+    std::vector<float> query(dim);
+    for (uint32_t d = 0; d < dim; ++d) query[d] = dist(rng);
+
+    auto oriented_l2 = compass_l2.Orient(query, 5);
+    TEST_ASSERT(oriented_l2.size() == 5);
+    for (size_t i = 1; i < oriented_l2.size(); ++i) {
+        TEST_ASSERT(oriented_l2[i - 1].distance_to_centroid <= oriented_l2[i].distance_to_centroid);
+    }
+
+    auto oriented_ip = compass_ip.Orient(query, 5);
+    TEST_ASSERT(oriented_ip.size() == 5);
+    for (size_t i = 1; i < oriented_ip.size(); ++i) {
+        TEST_ASSERT(oriented_ip[i - 1].distance_to_centroid >= oriented_ip[i].distance_to_centroid);
+    }
+
+    compass_l2.UpdateLocules({});
+    compass_ip.UpdateLocules({});
+    for (auto& loc : locules) {
+        if (loc) loc->CloseMapping();
+    }
+    locules.clear();
+
+    std::error_code ec;
+    std::filesystem::remove_all(test_dir, ec);
+    std::cout << " PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "======================================================" << std::endl;
     std::cout << "   POMAIDB CUSTOM CORE COMPUTE ACCELERATOR TESTS     " << std::endl;
@@ -278,12 +415,15 @@ int main() {
     TestL2SqF32_4x_Equivalence();
     TestFastBoundedTopKHeap();
     TestPulpBatchScanner();
+    TestSeedScar_IsDeleted4();
+    TestPulpBuilder_Avx2_Quantization();
+    TestCompass_Orient4_Equivalence();
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double>(t1 - t0).count();
 
     std::cout << "======================================================" << std::endl;
-    std::cout << " ALL 6 CORE COMPUTE SUITES PASSED CLEANLY in " << elapsed << "s" << std::endl;
+    std::cout << " ALL 9 CORE COMPUTE SUITES PASSED CLEANLY in " << elapsed << "s" << std::endl;
     std::cout << "======================================================" << std::endl;
     return 0;
 }

@@ -28,6 +28,26 @@ public:
         return (data_[slot >> 3] & (1u << (slot & 7))) != 0;
     }
 
+    /**
+     * IsDeleted4: Returns 4-bit mask where bit k is 1 if (slot + k) is deleted.
+     */
+    [[nodiscard]] uint8_t IsDeleted4(uint32_t slot) const noexcept {
+        if (!data_ || slot >= count_) return 0;
+        const size_t byte_idx = slot >> 3;
+        const size_t bit_off = slot & 7;
+        const size_t total_bytes = size_bytes();
+        uint16_t w = data_[byte_idx];
+        if (byte_idx + 1 < total_bytes) {
+            w |= static_cast<uint16_t>(data_[byte_idx + 1]) << 8;
+        }
+        uint8_t mask = static_cast<uint8_t>((w >> bit_off) & 0x0F);
+        if (slot + 4 > count_) {
+            uint32_t valid = count_ - slot;
+            mask &= static_cast<uint8_t>((1u << valid) - 1);
+        }
+        return mask;
+    }
+
     [[nodiscard]] uint32_t count() const noexcept { return count_; }
     [[nodiscard]] size_t size_bytes() const noexcept { return (count_ + 7) >> 3; }
     [[nodiscard]] const uint8_t* data() const noexcept { return data_; }

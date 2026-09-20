@@ -323,15 +323,18 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                     compute::PulpBatchScanner::Scan4(query.data(), query.size(), metric, query_sum,
                                                     aril->pulp(), slot, valid, scores);
 
+                    const uint8_t scar_del_mask = aril->scar().IsDeleted4(slot);
+                    if (scar_del_mask == 0x0F) continue; // All 4 deleted in scar
+
                     for (uint32_t k = 0; k < valid; ++k) {
                         float score = scores[k];
                         if (score <= current_worst) {
                             continue; // Fast threshold rejection!
                         }
 
-                        uint32_t curr_slot = slot + k;
-                        if (aril->scar().IsDeleted(curr_slot)) continue;
+                        if (scar_del_mask & (1u << k)) continue;
 
+                        uint32_t curr_slot = slot + k;
                         VectorId id = (curr_slot < dir.size()) ? dir[curr_slot].id : 0;
                         if (rind_tombstone_snap.IsDeleted(id)) continue;
 
