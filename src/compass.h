@@ -37,8 +37,11 @@ public:
      * Orient: Evaluates query proximity against all active Locule centroids.
      * Returns candidate locules sorted by distance (closest first).
      * @param nprobe Max number of locules to return (0 = return all).
+     * @param distance_ratio_threshold Adaptive pruning ratio relative to closest cluster (0 = disabled).
      */
-    std::vector<OrientedLocule> Orient(std::span<const float> query, uint32_t nprobe = 0) const;
+    std::vector<OrientedLocule> Orient(std::span<const float> query,
+                                       uint32_t nprobe = 0,
+                                       float distance_ratio_threshold = 0.0f) const;
 
     /**
      * Peel: Prunes candidate locules whose minimum possible distance cannot beat worst_distance.

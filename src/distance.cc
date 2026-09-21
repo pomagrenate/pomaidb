@@ -193,6 +193,12 @@ float L2SqFp16Avx2(const float* q, const uint16_t* c, size_t n) {
         acc1 = _mm256_fmadd_ps(d1, d1, acc1);
     }
     for (; i + 7 < n; i += 8) {
+        // Prefetch for 8-element tail
+        if (i + 15 < n) {
+            _mm_prefetch(reinterpret_cast<const char*>(c + i + 16), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(q + i + 16), _MM_HINT_T0);
+        }
+        
         __m128i h0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c + i));
         __m256 f0 = _mm256_cvtph_ps(h0);
         __m256 q0 = _mm256_loadu_ps(q + i);

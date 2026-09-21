@@ -152,12 +152,13 @@ class FlatHashMemMap {
   // Backward-shift deletion (no tombstones).
   // Returns true if the key was present and removed.
   bool Erase(const K& key) noexcept {
+    if (cap_ == 0 || count_ == 0) return false;
     size_t idx = BucketOf(key);
     size_t pos = cap_; // sentinel = not found
     for (size_t i = 0; i < cap_; ++i) {
       size_t probe = (idx + i) & mask_;
       Slot& s = slots_[probe];
-      if (s.key == sentinel_) break;
+      if (s.key == sentinel_) return false;
       if (eq_(s.key, key)) { pos = probe; break; }
     }
     if (pos == cap_) return false; // not found
@@ -165,13 +166,10 @@ class FlatHashMemMap {
     // Backward-shift: pull slots backward toward the deleted slot until we
     // find either an empty slot or a slot that is already at its home position.
     size_t hole = pos;
-    for (size_t i = 1; i < cap_; ++i) {
-      size_t next = (hole + i) & mask_;
-      Slot& s = slots_[next];
-      if (s.key == sentinel_) break; // stop at empty
-
+    size_t next = (hole + 1) & mask_;
+    while (slots_[next].key != sentinel_) {
       // Natural bucket of the candidate
-      size_t home = BucketOf(s.key);
+      size_t home = BucketOf(slots_[next].key);
       // Can we move 'next' backward to 'hole'?
       // Yes if 'hole' is between 'home' and 'next' (mod cap_) in the forward direction.
       size_t dist_home_to_next = (next - home) & mask_;
@@ -180,6 +178,7 @@ class FlatHashMemMap {
         slots_[hole] = slots_[next]; // shift back
         hole = next;
       }
+      next = (next + 1) & mask_;
     }
     // Mark hole as empty
     slots_[hole].key = sentinel_;

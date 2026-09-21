@@ -28,6 +28,10 @@ namespace pomai::index { class HnswIndex; }
 
 namespace pomai::storage {
 
+// Forward declarations (defined in seed_kernel.h and pulp.h)
+struct VectorMetadata;
+struct PulpMetadata;
+
 /**
  * ArilReader: Zero-copy read-only access to an immutable Aril.
  */

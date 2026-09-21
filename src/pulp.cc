@@ -143,7 +143,7 @@ void PulpBuilder::Train(const std::vector<std::span<const float>>& vectors) {
     }
 }
 
-void PulpBuilder::EncodeAppend(std::span<const float> vec) {
+void PulpBuilder::EncodeAppend(std::span<const float> vec, uint64_t id, uint32_t flags) {
     if (vec.size() != dim_) return;
 
     const size_t prev_size = buffer_.size();
@@ -166,6 +166,13 @@ void PulpBuilder::EncodeAppend(std::span<const float> vec) {
             }
         }
     }
+    
+    // Append metadata separately
+    PulpMetadata meta;
+    meta.id = id;
+    meta.flags = flags;
+    metadata_.push_back(meta);
+    
     ++count_;
 }
 

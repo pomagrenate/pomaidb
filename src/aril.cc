@@ -66,14 +66,24 @@ pomai::Status ArilReader::OpenFromMemory(const uint8_t* base_addr, size_t max_si
             return pomai::Status::Corruption("aril declared vector_count out of bounds");
         }
         if (hdr.pulp_size > 0) {
-            uint64_t min_pulp = static_cast<uint64_t>(hdr.vector_count) * hdr.dimension;
-            if (hdr.pulp_size < min_pulp) {
+            // Support both old layout (codes only) and new layout (codes + metadata)
+            const size_t codes_size = static_cast<uint64_t>(hdr.vector_count) * hdr.dimension;
+            const size_t meta_size = static_cast<uint64_t>(hdr.vector_count) * sizeof(pomai::storage::PulpMetadata);
+            uint64_t min_pulp_old = codes_size;
+            
+            // Accept either layout size (backward compatibility)
+            if (hdr.pulp_size < min_pulp_old) {
                 return pomai::Status::Corruption("aril pulp section truncated for declared vector_count");
             }
         }
         if (hdr.kernel_size > 0) {
-            uint64_t min_kernel = static_cast<uint64_t>(hdr.vector_count) * hdr.dimension * sizeof(float);
-            if (hdr.kernel_size < min_kernel) {
+            // Support both old layout (vectors only) and new layout (vectors + metadata)
+            const size_t vectors_size = static_cast<uint64_t>(hdr.vector_count) * hdr.dimension * sizeof(float);
+            const size_t meta_size = static_cast<uint64_t>(hdr.vector_count) * sizeof(pomai::storage::VectorMetadata);
+            uint64_t min_kernel_old = vectors_size;
+            
+            // Accept either layout size (backward compatibility)
+            if (hdr.kernel_size < min_kernel_old) {
                 return pomai::Status::Corruption("aril kernel section truncated for declared vector_count");
             }
         }
@@ -102,15 +112,36 @@ pomai::Status ArilReader::OpenFromMemory(const uint8_t* base_addr, size_t max_si
 
     // Resolve Pulp view
     if (hdr.pulp_size > 0) {
-        reader->pulp_ = PulpView(base_addr + hdr.pulp_offset, hdr.vector_count,
+        const uint8_t* codes_ptr = base_addr + hdr.pulp_offset;
+        const PulpMetadata* meta_ptr = nullptr;
+        
+        // Check if new bifurcated layout (codes + metadata)
+        const size_t codes_size = static_cast<size_t>(hdr.vector_count) * hdr.dimension;
+        const size_t meta_size = static_cast<size_t>(hdr.vector_count) * sizeof(PulpMetadata);
+        if (hdr.pulp_size >= codes_size + meta_size) {
+            meta_ptr = reinterpret_cast<const PulpMetadata*>(codes_ptr + codes_size);
+        }
+        
+        reader->pulp_ = PulpView(codes_ptr, hdr.vector_count,
                                  hdr.dimension, hdr.pulp_quant_min,
-                                 hdr.pulp_quant_inv_scale, hdr.pulp_quant_type);
+                                 hdr.pulp_quant_inv_scale, hdr.pulp_quant_type,
+                                 meta_ptr);
     }
 
     // Resolve Kernel view
     if (hdr.kernel_size > 0) {
         const float* k_ptr = reinterpret_cast<const float*>(base_addr + hdr.kernel_offset);
-        reader->kernel_ = SeedKernelView(k_ptr, hdr.vector_count, hdr.dimension);
+        const VectorMetadata* meta_ptr = nullptr;
+        
+        // Check if new bifurcated layout (vectors + metadata)
+        const size_t vectors_size = static_cast<size_t>(hdr.vector_count) * hdr.dimension * sizeof(float);
+        const size_t meta_size = static_cast<size_t>(hdr.vector_count) * sizeof(VectorMetadata);
+        if (hdr.kernel_size >= vectors_size + meta_size) {
+            meta_ptr = reinterpret_cast<const VectorMetadata*>(
+                reinterpret_cast<const uint8_t*>(k_ptr) + vectors_size);
+        }
+        
+        reader->kernel_ = SeedKernelView(k_ptr, hdr.vector_count, hdr.dimension, meta_ptr);
     }
 
     // Resolve Scar view
@@ -280,13 +311,13 @@ pomai::Status ArilBuilder::Build(std::vector<uint8_t>* out_bytes) {
     pulp_builder.Train(active_vecs);
 
     for (const auto& e : entries_) {
-        pulp_builder.EncodeAppend(e.vec);
+        pulp_builder.EncodeAppend(e.vec, e.id, e.is_deleted ? 1 : 0);
     }
 
     // 3. Prepare Seed Kernel (FP32)
     SeedKernelBuilder kernel_builder(dim_);
     for (const auto& e : entries_) {
-        kernel_builder.Append(e.vec);
+        kernel_builder.Append(e.vec, e.id, e.is_deleted ? 1 : 0);
     }
 
     // 4. Prepare Seed Scar (Tombstone Bitset)

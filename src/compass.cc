@@ -59,7 +59,9 @@ void Compass::UpdateLocules(std::vector<alloc::SharedPtr<storage::Locule>> locul
     }
 }
 
-std::vector<OrientedLocule> Compass::Orient(std::span<const float> query, uint32_t nprobe) const {
+std::vector<OrientedLocule> Compass::Orient(std::span<const float> query,
+                                            uint32_t nprobe,
+                                            float distance_ratio_threshold) const {
     std::vector<OrientedLocule> results;
     results.reserve(locules_.size());
 
@@ -166,6 +168,32 @@ std::vector<OrientedLocule> Compass::Orient(std::span<const float> query, uint32
         std::sort(results.begin(), results.end(), [](const OrientedLocule& a, const OrientedLocule& b) {
             return a.distance_to_centroid > b.distance_to_centroid;
         });
+    }
+
+    // Adaptive early termination: prune remaining candidate clusters if centroid distance
+    // exceeds a threshold relative to the closest cluster
+    if (!results.empty() && distance_ratio_threshold > 0.0f) {
+        float ratio = distance_ratio_threshold;
+        if (ratio <= 1.0f) {
+            ratio = 1.0f + ratio; // e.g. 0.25 -> 1.25x
+        }
+        if (metric_ == MetricType::kL2) {
+            float min_dist = results[0].distance_to_centroid;
+            float max_allowed = min_dist * ratio;
+            size_t valid = 1;
+            while (valid < results.size() && results[valid].distance_to_centroid <= max_allowed) {
+                valid++;
+            }
+            results.resize(valid);
+        } else {
+            float max_sim = results[0].distance_to_centroid;
+            float min_allowed = (max_sim > 0.0f) ? (max_sim / ratio) : (max_sim * ratio);
+            size_t valid = 1;
+            while (valid < results.size() && results[valid].distance_to_centroid >= min_allowed) {
+                valid++;
+            }
+            results.resize(valid);
+        }
     }
 
     if (nprobe > 0 && results.size() > nprobe) {

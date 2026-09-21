@@ -3,6 +3,9 @@ name: Release and Publish
 on:
   release:
     types: [published, created]
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 jobs:

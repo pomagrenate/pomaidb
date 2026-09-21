@@ -44,8 +44,9 @@ struct BenchmarkConfig {
     size_t dimension = 128;
     size_t num_queries = 100;
     size_t top_k = 10;
-    uint32_t nlist = 64;
-    uint32_t nprobe = 16;
+    uint32_t nlist = 0; // 0 = dynamic Faiss heuristic (~4 * sqrt(N))
+    uint32_t nprobe = 0; // 0 = dynamic fallback heuristic (~sqrt(nlist))
+    float probe_ratio = 0.0f; // 0 = disabled, > 0 = adaptive early termination ratio
     uint32_t ef_search = 128;
     bool use_hnsw = false;
     bool use_quantization = true;
@@ -526,8 +527,9 @@ void PomaiDBBenchmark(const BenchmarkConfig& config,
         }
     }
     
-    pomai::SearchOptions search_opts;
-    search_opts.routing_probe_override = config.nprobe;
+    pomai::PomaiQueryParams search_opts;
+    search_opts.nprobe = config.nprobe;
+    search_opts.probe_distance_ratio = config.probe_ratio;
     search_opts.ef_search = config.ef_search;
 
     // Warmup
@@ -795,6 +797,8 @@ int main(int argc, char** argv) {
             config.nlist = static_cast<uint32_t>(std::stoul(argv[++i]));
         } else if (arg == "--nprobe" && i + 1 < argc) {
             config.nprobe = static_cast<uint32_t>(std::stoul(argv[++i]));
+        } else if (arg == "--probe-ratio" && i + 1 < argc) {
+            config.probe_ratio = std::stof(argv[++i]);
         } else if (arg == "--ef-search" && i + 1 < argc) {
             config.ef_search = static_cast<uint32_t>(std::stoul(argv[++i]));
         } else if (arg == "--hnsw") {
@@ -808,8 +812,9 @@ int main(int argc, char** argv) {
             std::cout << "  --dimension D     Vector dimension (default: 128)" << std::endl;
             std::cout << "  --queries N       Number of queries (default: 100)" << std::endl;
             std::cout << "  --topk K          Top-K results (default: 10)" << std::endl;
-            std::cout << "  --nlist N         Number of IVF clusters (default: 64)" << std::endl;
-            std::cout << "  --nprobe N        Number of clusters to probe (default: 16)" << std::endl;
+            std::cout << "  --nlist N         Number of IVF clusters (0 = dynamic Faiss heuristic: ~4*sqrt(N))" << std::endl;
+            std::cout << "  --nprobe N        Number of clusters to probe (0 = dynamic fallback heuristic: ~sqrt(nlist))" << std::endl;
+            std::cout << "  --probe-ratio R   Adaptive cluster pruning ratio relative to closest cluster (e.g. 1.25)" << std::endl;
             std::cout << "  --ef-search N     Candidate pool size (default: 128)" << std::endl;
             std::cout << "  --hnsw            Enable HNSW analysis" << std::endl;
             std::cout << "  --no-quantization Disable SQ8 quantization" << std::endl;

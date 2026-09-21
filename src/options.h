@@ -61,9 +61,9 @@ namespace pomai
     struct IndexParams
     {
         IndexType type = IndexType::kIvfFlat;
-        // IVF Params
-        uint32_t nlist = 64;
-        uint32_t nprobe = 16;
+        // IVF Params: 0 = dynamic Faiss heuristic (~4 * sqrt(N) for nlist, ~sqrt(nlist) for nprobe)
+        uint32_t nlist = 0;
+        uint32_t nprobe = 0;
         // HNSW Params
         uint32_t hnsw_m = 32;
         uint32_t hnsw_ef_construction = 200;

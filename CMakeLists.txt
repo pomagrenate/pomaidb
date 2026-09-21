@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(pomai VERSION 0.2.0 LANGUAGES C CXX)
+project(pomai VERSION 0.2.1 LANGUAGES C CXX)
 
 # Fix C++20 attribute placement in vendored palloc headers if needed
 if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/palloc/include/palloc_vector.h")

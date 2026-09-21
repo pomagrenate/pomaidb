@@ -77,6 +77,8 @@ namespace pomai
         std::string partition_location_id;
         bool force_fanout = false;
         uint32_t routing_probe_override = 0;
+        uint32_t nprobe = 0;                 // 0 = automatic fallback heuristic (~sqrt(nlist))
+        float probe_distance_ratio = 0.0f;   // Adaptive cluster pruning ratio relative to closest centroid
         uint32_t ef_search = 64;
         bool zero_copy = false;
         
@@ -95,5 +97,7 @@ namespace pomai
             return true;
         }
     };
+
+    using PomaiQueryParams = SearchOptions;
 
 } // namespace pomai

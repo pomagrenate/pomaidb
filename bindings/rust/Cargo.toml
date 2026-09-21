@@ -1,6 +1,6 @@
 [package]
 name = "pomaidb"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["PomaiDB Team <info@pomaidb.org>"]
 description = "Embedded vector database for Edge AI - official Rust bindings"

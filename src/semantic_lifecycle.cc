@@ -63,10 +63,10 @@ std::size_t SemanticLifecycle::CountCold() const {
 
 void SemanticLifecycle::EvictIfNeeded() {
     if (max_entries_ == 0) return;
-    if (table_.size() < max_entries_) return;
-    VectorId victim = 0;
-    if (table_.FindAny(&victim)) {
-        table_.Erase(victim);
+    while (table_.size() >= max_entries_) {
+        VectorId victim = 0;
+        if (!table_.FindAny(&victim)) break;
+        if (!table_.Erase(victim)) break;
     }
 }
 

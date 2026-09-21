@@ -5,6 +5,10 @@
 //   64-byte aligned, SIMD-friendly.
 // - Taste: Approximate scoring scans Pulp without reading expensive Seed Kernels (FP32).
 //
+// Memory Layout (Bifurcated):
+// - Codes Block: Pure quantized codes, NO metadata
+// - Metadata Block: IDs, flags, separate buffer
+//
 // Copyright 2026 PomaiDB authors. MIT License.
 
 #pragma once
@@ -20,14 +24,24 @@
 namespace pomai::storage {
 
 /**
+ * PulpMetadata: Metadata separated from quantized codes
+ */
+struct alignas(64) PulpMetadata {
+    uint64_t id{0};
+    uint32_t flags{0};
+    uint32_t reserved{0};
+};
+
+/**
  * PulpView: Zero-copy read-only view of an Aril's approximate Pulp representation.
  */
 class PulpView {
 public:
     constexpr PulpView() = default;
     constexpr PulpView(const uint8_t* codes, uint32_t count, uint32_t dim,
-                       float min_val, float inv_scale, uint8_t quant_type = 1)
-        : codes_(codes), count_(count), dim_(dim),
+                       float min_val, float inv_scale, uint8_t quant_type = 1,
+                       const PulpMetadata* metadata = nullptr)
+        : codes_(codes), metadata_(metadata), count_(count), dim_(dim),
           min_val_(min_val), inv_scale_(inv_scale), quant_type_(quant_type) {}
 
     [[nodiscard]] uint32_t count() const noexcept { return count_; }
@@ -36,10 +50,19 @@ public:
     [[nodiscard]] float quant_inv_scale() const noexcept { return inv_scale_; }
     [[nodiscard]] uint8_t quant_type() const noexcept { return quant_type_; }
     [[nodiscard]] const uint8_t* data() const noexcept { return codes_; }
+    [[nodiscard]] const PulpMetadata* metadata() const noexcept { return metadata_; }
 
     [[nodiscard]] std::span<const uint8_t> GetCodes(uint32_t slot) const noexcept {
         if (!codes_ || slot >= count_) return {};
         return {codes_ + static_cast<size_t>(slot) * dim_, dim_};
+    }
+
+    /**
+     * GetMetadata: Access metadata AFTER SIMD scan completes
+     */
+    [[nodiscard]] const PulpMetadata* GetMetadata(uint32_t slot) const noexcept {
+        if (!metadata_ || slot >= count_) return nullptr;
+        return metadata_ + slot;
     }
 
     /**
@@ -63,6 +86,7 @@ public:
 
 private:
     const uint8_t* codes_{nullptr};
+    const PulpMetadata* metadata_{nullptr};
     uint32_t count_{0};
     uint32_t dim_{0};
     float min_val_{0.0f};
@@ -85,9 +109,10 @@ public:
     /**
      * Encode: Encodes a single FP32 vector into quantized Pulp codes.
      */
-    void EncodeAppend(std::span<const float> vec);
+    void EncodeAppend(std::span<const float> vec, uint64_t id = 0, uint32_t flags = 0);
 
     [[nodiscard]] const std::vector<uint8_t>& buffer() const noexcept { return buffer_; }
+    [[nodiscard]] const std::vector<PulpMetadata>& metadata() const noexcept { return metadata_; }
     [[nodiscard]] uint32_t count() const noexcept { return count_; }
     [[nodiscard]] uint32_t dim() const noexcept { return dim_; }
     [[nodiscard]] float min_val() const noexcept { return min_val_; }
@@ -101,7 +126,8 @@ private:
     float min_val_{0.0f};
     float scale_{0.0f};
     float inv_scale_{0.0f};
-    std::vector<uint8_t> buffer_;
+    std::vector<uint8_t> buffer_;         // Pure quantized codes
+    std::vector<PulpMetadata> metadata_;  // Separate metadata buffer
 };
 
 } // namespace pomai::storage

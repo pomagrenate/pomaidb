@@ -318,11 +318,21 @@ Status PomegranateQuery::Execute(std::span<const float> query,
     // Stage 1 & 2: Orient & Peel
     // -------------------------------------------------------------------------
     if (snapshot && !snapshot->locules().empty()) {
-        uint32_t effective_nprobe = opts.routing_probe_override;
-        if (effective_nprobe == 0 && !opts.force_fanout) {
-            effective_nprobe = snapshot->default_nprobe() > 0 ? snapshot->default_nprobe() : 16;
+        const size_t total_locules = snapshot->locules().size();
+        uint32_t effective_nprobe = opts.nprobe;
+        if (effective_nprobe == 0) {
+            effective_nprobe = opts.routing_probe_override;
         }
-        auto candidate_locules = snapshot->compass().Orient(query, effective_nprobe);
+        if (effective_nprobe == 0 && !opts.force_fanout) {
+            if (snapshot->default_nprobe() > 0) {
+                effective_nprobe = snapshot->default_nprobe();
+            } else {
+                // Automatic fallback heuristic: max(1, round(sqrt(nlist)))
+                effective_nprobe = static_cast<uint32_t>(
+                    std::max<size_t>(1, static_cast<size_t>(std::round(std::sqrt(static_cast<double>(total_locules))))));
+            }
+        }
+        auto candidate_locules = snapshot->compass().Orient(query, effective_nprobe, opts.probe_distance_ratio);
 
         float worst_bound = -std::numeric_limits<float>::infinity();
         if (pick_heap.size() >= pick_target) {
