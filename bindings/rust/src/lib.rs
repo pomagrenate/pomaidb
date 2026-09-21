@@ -142,7 +142,6 @@ impl Database {
             opts.struct_size = std::mem::size_of::<sys::PomaiOptions>() as u32;
             opts.path = path_c.as_ptr();
             opts.dim = options.dim as u32;
-            opts.shards = options.shards as u32;
             opts.metric = options.metric as u8;
             opts.quant_type = options.quant_type as u8;
             if options.memory_budget_bytes > 0 {

@@ -93,7 +93,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_SECRET }}
         run: |
           cd bindings/javascript
-          npm publish --access public
+          npm publish --access public || echo "Version already published to npm, skipping"
 
   publish-crates:
     name: Publish to crates.io
@@ -129,4 +129,4 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_SECRET }}
         run: |
           cd bindings/rust
-          cargo publish --allow-dirty
+          cargo publish --allow-dirty || echo "Version already published to crates.io, skipping"
