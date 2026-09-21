@@ -239,12 +239,6 @@ inline void dot_batch_avx2(const float* query, const float* matrix,
 
         std::size_t i = 0;
         for (; i + 15 < dim; i += 16) {
-            // Prefetch next cache line (64 bytes = 16 floats) for all 4 rows
-            _mm_prefetch(reinterpret_cast<const char*>(v0 + i + 16), _MM_HINT_T0);
-            _mm_prefetch(reinterpret_cast<const char*>(v1 + i + 16), _MM_HINT_T0);
-            _mm_prefetch(reinterpret_cast<const char*>(v2 + i + 16), _MM_HINT_T0);
-            _mm_prefetch(reinterpret_cast<const char*>(v3 + i + 16), _MM_HINT_T0);
-
             __m256 q0 = _mm256_loadu_ps(query + i);
             __m256 q1 = _mm256_loadu_ps(query + i + 8);
 
@@ -318,12 +312,6 @@ inline void l2_sq_batch_avx2(const float* query, const float* matrix,
 
         std::size_t i = 0;
         for (; i + 15 < dim; i += 16) {
-            // Prefetch next cache line for all 4 rows
-            _mm_prefetch(reinterpret_cast<const char*>(v0 + i + 16), _MM_HINT_T0);
-            _mm_prefetch(reinterpret_cast<const char*>(v1 + i + 16), _MM_HINT_T0);
-            _mm_prefetch(reinterpret_cast<const char*>(v2 + i + 16), _MM_HINT_T0);
-            _mm_prefetch(reinterpret_cast<const char*>(v3 + i + 16), _MM_HINT_T0);
-
             __m256 q0 = _mm256_loadu_ps(query + i);
             __m256 q1 = _mm256_loadu_ps(query + i + 8);
 

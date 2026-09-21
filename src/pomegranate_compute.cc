@@ -284,12 +284,6 @@ void DotF32_4x_Avx2(const float* query,
 
     size_t i = 0;
     for (; i + 15 < dim; i += 16) {
-        // Prefetch next cache line (64 bytes = 16 floats) for each vector
-        _mm_prefetch(reinterpret_cast<const char*>(v0 + i + 16), _MM_HINT_T0);
-        _mm_prefetch(reinterpret_cast<const char*>(v1 + i + 16), _MM_HINT_T0);
-        _mm_prefetch(reinterpret_cast<const char*>(v2 + i + 16), _MM_HINT_T0);
-        _mm_prefetch(reinterpret_cast<const char*>(v3 + i + 16), _MM_HINT_T0);
-
         __m256 q0 = _mm256_loadu_ps(query + i);
         __m256 q1 = _mm256_loadu_ps(query + i + 8);
 
@@ -352,12 +346,6 @@ void L2SqF32_4x_Avx2(const float* query,
 
     size_t i = 0;
     for (; i + 15 < dim; i += 16) {
-        // Prefetch next cache line for each vector
-        _mm_prefetch(reinterpret_cast<const char*>(v0 + i + 16), _MM_HINT_T0);
-        _mm_prefetch(reinterpret_cast<const char*>(v1 + i + 16), _MM_HINT_T0);
-        _mm_prefetch(reinterpret_cast<const char*>(v2 + i + 16), _MM_HINT_T0);
-        _mm_prefetch(reinterpret_cast<const char*>(v3 + i + 16), _MM_HINT_T0);
-
         __m256 q0 = _mm256_loadu_ps(query + i);
         __m256 q1 = _mm256_loadu_ps(query + i + 8);
 
