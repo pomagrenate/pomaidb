@@ -896,6 +896,11 @@ add_executable(round2_hybrid benchmarks/round2_hybrid.cc)
 target_link_libraries(round2_hybrid PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
 target_include_directories(round2_hybrid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
+# Roofline Model & TMAM Analysis Benchmark
+add_executable(roofline_analysis_bench benchmarks/roofline_analysis_bench.cc)
+target_link_libraries(roofline_analysis_bench PRIVATE ${POMAI_EXE_DEPS})
+target_include_directories(roofline_analysis_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 # Round 3 Benchmark Targets
 add_executable(round3_hnsw_audit_suite benchmarks/round3_hnsw_audit_suite.cc)
 target_link_libraries(round3_hnsw_audit_suite PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)

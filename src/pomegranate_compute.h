@@ -53,6 +53,11 @@ void L2SqF32_4x(const float* query,
                 const float* v0, const float* v1, const float* v2, const float* v3,
                 size_t dim, float out_l2sq[4]) noexcept;
 
+/// AVX2-accelerated horizontal sum: returns sum(data[0..dim-1]).
+/// Replaces the scalar 128-iteration chain on the query hot path.
+/// ~16x faster than a scalar loop for dim=128 (8 AVX2 adds + 1 hsum).
+float SumF32(const float* data, size_t dim) noexcept;
+
 /// Candidate item collected during candidate selection
 struct CandidateItem {
     VectorId id{0};

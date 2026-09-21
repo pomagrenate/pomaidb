@@ -119,6 +119,13 @@ void L2SqF32_4x_Scalar(const float* query,
     out_l2sq[3] = static_cast<float>(s3);
 }
 
+// Portable scalar fallback for SumF32
+float SumF32_Scalar(const float* data, size_t dim) noexcept {
+    double s = 0.0;
+    for (size_t i = 0; i < dim; ++i) s += static_cast<double>(data[i]);
+    return static_cast<float>(s);
+}
+
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
 
 __attribute__((target("avx2,fma")))
@@ -421,6 +428,26 @@ inline bool HasAvx2Fma() noexcept {
 #endif
 }
 
+// AVX2 horizontal sum: dual-acc (acc0 low, acc1 high) to hide 4-cycle add latency.
+// 16 floats/iter — ~16x faster than scalar chain for dim=128.
+__attribute__((target("avx2,fma")))
+float SumF32_Avx2(const float* data, size_t dim) noexcept {
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    size_t i = 0;
+    for (; i + 15 < dim; i += 16) {
+        acc0 = _mm256_add_ps(acc0, _mm256_loadu_ps(data + i));
+        acc1 = _mm256_add_ps(acc1, _mm256_loadu_ps(data + i + 8));
+    }
+    acc0 = _mm256_add_ps(acc0, acc1); // fold
+    for (; i + 7 < dim; i += 8) {
+        acc0 = _mm256_add_ps(acc0, _mm256_loadu_ps(data + i));
+    }
+    float s = HorizontalSum(acc0);
+    for (; i < dim; ++i) s += data[i];
+    return s;
+}
+
 } // namespace
 
 void DotSq8_4x(const float* query,
@@ -475,6 +502,14 @@ void L2SqF32_4x(const float* query,
     }
 #endif
     L2SqF32_4x_Scalar(query, v0, v1, v2, v3, dim, out_l2sq);
+}
+
+float SumF32(const float* data, size_t dim) noexcept {
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+    static const bool has_avx2 = HasAvx2Fma();
+    if (has_avx2) return SumF32_Avx2(data, dim);
+#endif
+    return SumF32_Scalar(data, dim);
 }
 
 void PulpBatchScanner::Scan4(const float* query, size_t dim,

@@ -26,6 +26,7 @@
 #include <filesystem>
 
 #include "pomai.h"
+#include "pvec/pvec_distance.h"  // for pvec::dot_batch AVX2 bandwidth measurement
 
 // Platform-specific headers for performance counters
 #ifdef __linux__
@@ -191,31 +192,30 @@ void MemoryBandwidthBenchmark(const BenchmarkConfig& config,
         }
     }
     
-    // Warmup
-    for (size_t i = 0; i < config.warmup_iterations; ++i) {
-        volatile float sum = 0.0f;
-        for (size_t j = 0; j < config.num_vectors; ++j) {
-            for (size_t k = 0; k < config.dimension; ++k) {
-                sum += query_vector[k] * database[j][k];
-            }
+    // Warmup — use same pvec::dot_batch path to warm instruction cache and branch predictor
+    {
+        std::vector<float> warmup_out(config.num_vectors);
+        std::span<const float> q_span(query_vector);
+        for (size_t i = 0; i < config.warmup_iterations; ++i) {
+            pvec::dot_batch(q_span, flat_database.data(),
+                            config.num_vectors, config.dimension, warmup_out.data());
         }
     }
+
     
-    // Measurement — use flat_database (contiguous SoA layout, same as PomaiDB's actual storage)
-    // NOT database[j][k] which is AoS with pointer-chasing across separate heap allocations.
+    // Measurement — use pvec::dot_batch (AVX2 dual-accumulator kernel) to show true hardware ceiling.
+    // This calls the same kernel used internally by PomaiDB, measured against flat_database (SoA layout).
     auto start = std::chrono::high_resolution_clock::now();
 
-    double total_sum = 0.0;  // Use double to prevent compiler from eliding the work
+    std::vector<float> scores_out(config.num_vectors);
+    std::span<const float> q_span(query_vector);
+    double total_sum = 0.0;
     for (size_t iter = 0; iter < config.measurement_iterations; ++iter) {
-        for (size_t j = 0; j < config.num_vectors; ++j) {
-            const float* row = flat_database.data() + j * config.dimension;
-            float dot = 0.0f;
-            for (size_t k = 0; k < config.dimension; ++k) {
-                dot += query_vector[k] * row[k];
-            }
-            total_sum += dot;
-        }
+        pvec::dot_batch(q_span, flat_database.data(),
+                        config.num_vectors, config.dimension, scores_out.data());
+        total_sum += scores_out[0]; // prevent DCE
     }
+
 
     auto end = std::chrono::high_resolution_clock::now();
     double elapsed_seconds = std::chrono::duration<double>(end - start).count();

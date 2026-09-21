@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <numeric>
 #include <unordered_set>
 
@@ -13,6 +14,7 @@
 #include "hnsw_index.h"
 #include "topk.h"
 #include "pomegranate_compute.h"
+#include "utils/palloc_compat.h"
 
 namespace pomai::query {
 
@@ -38,33 +40,90 @@ struct PickMinComparator {
 class BoundedPickQueue {
 public:
     explicit BoundedPickQueue(size_t capacity = 0) : capacity_(capacity) {
-        if (capacity > 0) items_.reserve(capacity + 1);
+        if (capacity > 0) {
+            // Use palloc for inline buffer to avoid heap allocation per query
+            items_data_ = static_cast<PickItem*>(palloc_malloc((capacity + 1) * sizeof(PickItem), alignof(PickItem)));
+            items_capacity_ = capacity + 1;
+        }
     }
 
-    [[nodiscard]] size_t size() const noexcept { return items_.size(); }
-    [[nodiscard]] bool empty() const noexcept { return items_.empty(); }
+    ~BoundedPickQueue() {
+        if (items_data_) {
+            palloc_free(items_data_);
+        }
+    }
+
+    BoundedPickQueue(const BoundedPickQueue&) = delete;
+    BoundedPickQueue& operator=(const BoundedPickQueue&) = delete;
+
+    BoundedPickQueue(BoundedPickQueue&& other) noexcept
+        : capacity_(other.capacity_),
+          items_data_(other.items_data_),
+          items_capacity_(other.items_capacity_),
+          items_size_(other.items_size_) {
+        other.items_data_ = nullptr;
+        other.items_capacity_ = 0;
+        other.items_size_ = 0;
+    }
+
+    BoundedPickQueue& operator=(BoundedPickQueue&& other) noexcept {
+        if (this != &other) {
+            if (items_data_) {
+                palloc_free(items_data_);
+            }
+            capacity_ = other.capacity_;
+            items_data_ = other.items_data_;
+            items_capacity_ = other.items_capacity_;
+            items_size_ = other.items_size_;
+            other.items_data_ = nullptr;
+            other.items_capacity_ = 0;
+            other.items_size_ = 0;
+        }
+        return *this;
+    }
+
+    [[nodiscard]] size_t size() const noexcept { return items_size_; }
+    [[nodiscard]] bool empty() const noexcept { return items_size_ == 0; }
 
     [[nodiscard]] const PickItem& top() const noexcept {
-        return items_.front();
+        return items_data_[0];
     }
 
     void pop() noexcept {
-        std::pop_heap(items_.begin(), items_.end(), PickMinComparator{});
-        items_.pop_back();
+        std::pop_heap(items_data_, items_data_ + items_size_, PickMinComparator{});
+        --items_size_;
     }
 
     void push(const PickItem& item) {
-        items_.push_back(item);
-        std::push_heap(items_.begin(), items_.end(), PickMinComparator{});
+        if (items_size_ >= items_capacity_) {
+            // Grow if needed (rare)
+            size_t new_cap = items_capacity_ * 2;
+            PickItem* new_data = static_cast<PickItem*>(palloc_malloc(new_cap * sizeof(PickItem), alignof(PickItem)));
+            std::memcpy(new_data, items_data_, items_size_ * sizeof(PickItem));
+            palloc_free(items_data_);
+            items_data_ = new_data;
+            items_capacity_ = new_cap;
+        }
+        items_data_[items_size_] = item;
+        ++items_size_;
+        std::push_heap(items_data_, items_data_ + items_size_, PickMinComparator{});
     }
 
     [[nodiscard]] std::vector<PickItem> ExtractItems() noexcept {
-        return std::move(items_);
+        std::vector<PickItem> result;
+        result.reserve(items_size_);
+        for (size_t i = 0; i < items_size_; ++i) {
+            result.push_back(items_data_[i]);
+        }
+        items_size_ = 0;
+        return result;
     }
 
 private:
     size_t capacity_{0};
-    std::vector<PickItem> items_;
+    PickItem* items_data_{nullptr};
+    size_t items_capacity_{0};
+    size_t items_size_{0};
 };
 
 /// Branchless 64-bit integer mixer for uniform dispersion under power-of-2 masks
@@ -194,10 +253,9 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                                        std::to_string(query.size()));
     }
 
-    float query_sum = 0.0f;
-    for (float v : query) {
-        query_sum += v;
-    }
+    // AVX2-accelerated horizontal sum via dual-accumulator kernel (see pomegranate_compute.cc).
+    // For dim=128: 8 AVX2 adds + fold + hsum vs 128 serial scalar adds.
+    float query_sum = compute::SumF32(query.data(), query.size());
 
     size_t pick_target = (opts.ef_search > 0)
         ? std::max<size_t>(static_cast<size_t>(opts.ef_search), static_cast<size_t>(topk * 4))
@@ -339,10 +397,10 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                         &graph_slots, &graph_dists, &filter);
 
                     if (st.ok() && !graph_slots.empty()) {
-                        for (size_t i = 0; i < graph_slots.size(); ++i) {
-                            uint32_t slot = static_cast<uint32_t>(graph_slots[i]);
+                        for (size_t gi = 0; gi < graph_slots.size(); ++gi) {
+                            uint32_t slot = static_cast<uint32_t>(graph_slots[gi]);
                             VectorId id = (slot < dir.size()) ? dir[slot].id : 0;
-                            float dist = graph_dists[i];
+                            float dist = graph_dists[gi];
                             float approx_score = (metric == MetricType::kL2) ? -dist : (1.0f - dist);
 
                             PickItem pi;
@@ -452,6 +510,20 @@ Status PomegranateQuery::Execute(std::span<const float> query,
     // Stage 4: Pick (Extract items from heap)
     // -------------------------------------------------------------------------
     std::vector<PickItem> picked = pick_heap.ExtractItems();
+
+    // Sort candidates to enable better 4-way SIMD batching:
+    // - Group by aril pointer first (same aril -> contiguous memory)
+    // - from_rind false first (aril candidates), then true (rind candidates)
+    // This increases the probability that 4-way batching succeeds
+    std::sort(picked.begin(), picked.end(), [](const PickItem& a, const PickItem& b) {
+        if (a.from_rind != b.from_rind) {
+            return a.from_rind < b.from_rind; // false (aril) first, true (rind) last
+        }
+        if (a.aril != b.aril) {
+            return a.aril < b.aril; // group by aril pointer
+        }
+        return a.slot < b.slot; // deterministic order within same aril
+    });
 
     // -------------------------------------------------------------------------
     // Stage 5: Rerank (Exact distance via SeedKernel 4-Way SIMD Batching)

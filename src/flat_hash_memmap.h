@@ -31,8 +31,23 @@ namespace pomai::table {
 //   - 64-bit integer keys (VectorId)
 //   - Cache-line-friendly linear probing
 //   - ARM/NEON + x86 cache locality (8-byte slot, 64-byte cache line = 4 slots/line)
+
+/// SplitMix64 hash for uint64_t keys.
+/// GCC's std::hash<uint64_t> is a near-identity function: for sequential VectorIds
+/// (0,1,2,...) it produces consecutive bucket indices → worst-case linear clustering.
+/// SplitMix64 provides full avalanche diffusion, reducing average probe distance from
+/// O(N) to O(1) expected under 0.75 load factor.
+struct SplitMix64Hash {
+    size_t operator()(uint64_t k) const noexcept {
+        k += 0x9e3779b97f4a7c15ULL;
+        k  = (k ^ (k >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        k  = (k ^ (k >> 27)) * 0x94d049bb133111ebULL;
+        return static_cast<size_t>(k ^ (k >> 31));
+    }
+};
+
 template <typename K, typename V,
-          typename Hash = std::hash<K>,
+          typename Hash = SplitMix64Hash,
           typename Eq   = std::equal_to<K>>
 class FlatHashMemMap {
  public:
