@@ -29,11 +29,13 @@ public:
     FruitSnapshot(uint64_t generation,
                   uint32_t dimension,
                   MetricType metric,
-                  std::vector<alloc::SharedPtr<storage::Locule>> locules);
+                  std::vector<alloc::SharedPtr<storage::Locule>> locules,
+                  uint32_t default_nprobe = 16);
 
     [[nodiscard]] uint64_t generation() const noexcept { return generation_; }
     [[nodiscard]] uint32_t dimension() const noexcept { return dimension_; }
     [[nodiscard]] MetricType metric() const noexcept { return metric_; }
+    [[nodiscard]] uint32_t default_nprobe() const noexcept { return default_nprobe_; }
 
     [[nodiscard]] const std::vector<alloc::SharedPtr<storage::Locule>>& locules() const noexcept { return locules_; }
     [[nodiscard]] const routing::Compass& compass() const noexcept { return compass_; }
@@ -49,13 +51,14 @@ private:
     uint64_t generation_{0};
     uint32_t dimension_{0};
     MetricType metric_{MetricType::kL2};
+    uint32_t default_nprobe_{16};
     std::vector<alloc::SharedPtr<storage::Locule>> locules_;
     routing::Compass compass_;
 };
 
 class FruitMap {
 public:
-    FruitMap(std::string db_dir, uint32_t dim, MetricType metric);
+    FruitMap(std::string db_dir, uint32_t dim, MetricType metric, uint32_t default_nprobe = 16);
     ~FruitMap();
 
     Status Open();
@@ -63,6 +66,7 @@ public:
     Status InstallSnapshot(alloc::SharedPtr<FruitSnapshot> snapshot);
 
     [[nodiscard]] alloc::SharedPtr<FruitSnapshot> CurrentSnapshot() const;
+    [[nodiscard]] uint32_t default_nprobe() const noexcept { return default_nprobe_; }
 
     [[nodiscard]] uint64_t NextGeneration() noexcept {
         return ++current_generation_;
@@ -73,6 +77,7 @@ private:
     std::string manifest_path_;
     uint32_t dimension_{0};
     MetricType metric_{MetricType::kL2};
+    uint32_t default_nprobe_{16};
 
     uint64_t current_generation_{0};
     mutable psync::Mutex snapshot_mu_;

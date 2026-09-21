@@ -263,6 +263,7 @@ Status PomegranateQuery::Execute(std::span<const float> query,
 
     BoundedPickQueue pick_heap(pick_target);
     FlatSeenSet seen_ids;
+    float dynamic_worst = -1e30f;
 
     // Helper to conditionally push into bounded pick heap with deterministic tie-breaking
     auto push_candidate = [&](const PickItem& item) {
@@ -280,6 +281,9 @@ Status PomegranateQuery::Execute(std::span<const float> query,
         } else {
             pick_heap.pop();
             pick_heap.push(item);
+        }
+        if (pick_heap.size() >= pick_target) {
+            dynamic_worst = pick_heap.top().score;
         }
     };
 
@@ -314,7 +318,11 @@ Status PomegranateQuery::Execute(std::span<const float> query,
     // Stage 1 & 2: Orient & Peel
     // -------------------------------------------------------------------------
     if (snapshot && !snapshot->locules().empty()) {
-        auto candidate_locules = snapshot->compass().Orient(query, opts.routing_probe_override);
+        uint32_t effective_nprobe = opts.routing_probe_override;
+        if (effective_nprobe == 0 && !opts.force_fanout) {
+            effective_nprobe = snapshot->default_nprobe() > 0 ? snapshot->default_nprobe() : 16;
+        }
+        auto candidate_locules = snapshot->compass().Orient(query, effective_nprobe);
 
         float worst_bound = -std::numeric_limits<float>::infinity();
         if (pick_heap.size() >= pick_target) {
@@ -322,20 +330,21 @@ Status PomegranateQuery::Execute(std::span<const float> query,
         }
 
         // Peel distant locules based on current worst bound
-        if (metric == MetricType::kL2 && worst_bound > -1e8f) {
-            candidate_locules = snapshot->compass().Peel(candidate_locules, -worst_bound);
+        if (worst_bound > -1e8f) {
+            float peel_threshold = (metric == MetricType::kL2) ? -worst_bound : worst_bound;
+            candidate_locules = snapshot->compass().Peel(candidate_locules, peel_threshold);
         }
 
         // ---------------------------------------------------------------------
         // Stage 3b: Intra-Locule Search (HNSW Fast-Path + 4-Way SIMD Pulp Scan)
         // ---------------------------------------------------------------------
         auto scan_locule = [&](const auto& cand_loc,
-                               auto& push_fn, float current_worst) {
+                               auto& push_fn, float& current_worst) {
             const auto& loc = cand_loc.locule;
             if (!loc) return;
 
             // Spatial Peel: If heap is full and lower-bound is strictly worse, skip locule
-            if (pick_heap.size() >= pick_target) {
+            if (current_worst > -1e29f) {
                 if (metric == MetricType::kL2) {
                     if (cand_loc.min_possible_distance > -current_worst) {
                         return;
@@ -470,6 +479,7 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                 BoundedPickQueue local_heap(pick_target);
                 FlatSeenSet local_seen;
 
+                float local_worst = init_worst;
                 auto local_push = [&](const PickItem& item) {
                     if (local_heap.size() >= pick_target) {
                         const auto& worst = local_heap.top();
@@ -484,9 +494,12 @@ Status PomegranateQuery::Execute(std::span<const float> query,
                         local_heap.pop();
                         local_heap.push(item);
                     }
+                    if (local_heap.size() >= pick_target) {
+                        local_worst = local_heap.top().score;
+                    }
                 };
 
-                scan_locule(cand_loc, local_push, init_worst);
+                scan_locule(cand_loc, local_push, local_worst);
 
                 worker_results[idx].items = local_heap.ExtractItems();
             });
@@ -500,8 +513,7 @@ Status PomegranateQuery::Execute(std::span<const float> query,
         } else {
             // Sequential locule scan
             for (const auto& cand_loc : candidate_locules) {
-                float curr_worst = (pick_heap.size() >= pick_target) ? pick_heap.top().score : -1e30f;
-                scan_locule(cand_loc, push_candidate, curr_worst);
+                scan_locule(cand_loc, push_candidate, dynamic_worst);
             }
         }
     }

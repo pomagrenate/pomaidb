@@ -27,6 +27,9 @@
 
 #include "pomai.h"
 #include "pvec/pvec_distance.h"  // for pvec::dot_batch AVX2 bandwidth measurement
+#include "pomegranate_compute.h"
+#include "distance.h"
+#include <unordered_set>
 
 // Platform-specific headers for performance counters
 #ifdef __linux__
@@ -41,6 +44,9 @@ struct BenchmarkConfig {
     size_t dimension = 128;
     size_t num_queries = 100;
     size_t top_k = 10;
+    uint32_t nlist = 64;
+    uint32_t nprobe = 16;
+    uint32_t ef_search = 128;
     bool use_hnsw = false;
     bool use_quantization = true;
     bool run_memory_bandwidth_test = true;
@@ -232,14 +238,18 @@ void MemoryBandwidthBenchmark(const BenchmarkConfig& config,
     }
     auto sq8_start = std::chrono::high_resolution_clock::now();
     double sq8_sum = 0.0;
+    const float q_sum = pomai::compute::SumF32(query_vector.data(), config.dimension);
     for (size_t iter = 0; iter < config.measurement_iterations; ++iter) {
-        for (size_t j = 0; j < config.num_vectors; ++j) {
-            const uint8_t* row = flat_sq8.data() + j * config.dimension;
-            int dot = 0;
-            for (size_t k = 0; k < config.dimension; ++k) {
-                dot += static_cast<int>(query_vector[k] * 127.5f + 127.5f) * row[k];
-            }
-            sq8_sum += dot;
+        size_t j = 0;
+        for (; j + 3 < config.num_vectors; j += 4) {
+            const uint8_t* c0 = flat_sq8.data() + (j + 0) * config.dimension;
+            const uint8_t* c1 = flat_sq8.data() + (j + 1) * config.dimension;
+            const uint8_t* c2 = flat_sq8.data() + (j + 2) * config.dimension;
+            const uint8_t* c3 = flat_sq8.data() + (j + 3) * config.dimension;
+            float scores[4];
+            pomai::compute::DotSq8_4x(query_vector.data(), c0, c1, c2, c3,
+                                      config.dimension, 0.0f, 1.0f / 127.5f, q_sum, scores);
+            sq8_sum += scores[0];
         }
     }
     auto sq8_end = std::chrono::high_resolution_clock::now();
@@ -440,6 +450,8 @@ void PomaiDBBenchmark(const BenchmarkConfig& config,
     opt.dim = static_cast<uint32_t>(config.dimension);
     opt.enable_quantization = config.use_quantization;
     opt.index_params.type = config.use_hnsw ? pomai::IndexType::kHnsw : pomai::IndexType::kIvfFlat;
+    opt.index_params.nlist = config.nlist;
+    opt.index_params.nprobe = config.nprobe;
     
     // Delete old database to ensure we use new bifurcated layout
     std::filesystem::remove_all("C:/temp/roofline_pomaidb_test");
@@ -458,13 +470,14 @@ void PomaiDBBenchmark(const BenchmarkConfig& config,
     std::cout << "Inserting " << config.num_vectors << " vectors with bifurcated layout..." << std::endl;
     auto insert_start = std::chrono::high_resolution_clock::now();
     
+    std::vector<std::vector<float>> db_vectors(config.num_vectors);
     for (size_t i = 0; i < config.num_vectors; ++i) {
-        std::vector<float> vec(config.dimension);
+        db_vectors[i].resize(config.dimension);
         for (size_t j = 0; j < config.dimension; ++j) {
-            vec[j] = dist(gen);
+            db_vectors[i][j] = dist(gen);
         }
         // Use VectorId as the ID (bifurcated layout stores this separately)
-        auto status = db->Put(static_cast<pomai::VectorId>(i), vec);
+        auto status = db->Put(static_cast<pomai::VectorId>(i), db_vectors[i]);
         if (!status.ok()) {
             std::cerr << "Failed to insert vector " << i << ": " << status.ToString() << std::endl;
             return;
@@ -472,7 +485,7 @@ void PomaiDBBenchmark(const BenchmarkConfig& config,
     }
     
     auto insert_end = std::chrono::high_resolution_clock::now();
-    double insert_time = std::chrono::duration<double>(insert_end - insert_end).count();
+    double insert_time = std::chrono::duration<double>(insert_end - insert_start).count();
     std::cout << "Insertion time: " << insert_time << "s" << std::endl;
     
     // Force compaction
@@ -495,22 +508,51 @@ void PomaiDBBenchmark(const BenchmarkConfig& config,
             queries[i][j] = dist(gen);
         }
     }
+
+    // Compute exact ground truth for Recall@K evaluation
+    std::vector<std::vector<pomai::VectorId>> ground_truth(config.num_queries);
+    for (size_t q = 0; q < config.num_queries; ++q) {
+        std::vector<std::pair<float, pomai::VectorId>> scored;
+        scored.reserve(config.num_vectors);
+        for (size_t i = 0; i < config.num_vectors; ++i) {
+            float dist_val = pomai::core::L2Sq(queries[q], db_vectors[i]);
+            scored.push_back({dist_val, static_cast<pomai::VectorId>(i)});
+        }
+        size_t k_eval = std::min(config.top_k, config.num_vectors);
+        std::partial_sort(scored.begin(), scored.begin() + k_eval, scored.end());
+        ground_truth[q].reserve(k_eval);
+        for (size_t k = 0; k < k_eval; ++k) {
+            ground_truth[q].push_back(scored[k].second);
+        }
+    }
     
+    pomai::SearchOptions search_opts;
+    search_opts.routing_probe_override = config.nprobe;
+    search_opts.ef_search = config.ef_search;
+
     // Warmup
     for (size_t i = 0; i < config.warmup_iterations; ++i) {
         pomai::SearchResult result;
-        auto status = db->Search(queries[0], config.top_k, &result);
+        auto status = db->Search(queries[0], config.top_k, search_opts, &result);
         (void)status; // Ignore status in warmup
     }
     
     // Measurement
     auto search_start = std::chrono::high_resolution_clock::now();
+    size_t total_correct_hits = 0;
     
     for (size_t i = 0; i < config.num_queries; ++i) {
         pomai::SearchResult result;
-        auto status = db->Search(queries[i], config.top_k, &result);
+        auto status = db->Search(queries[i], config.top_k, search_opts, &result);
         if (!status.ok()) {
             std::cerr << "Search failed in iteration " << i << ": " << status.ToString() << std::endl;
+            continue;
+        }
+        std::unordered_set<pomai::VectorId> gt_set(ground_truth[i].begin(), ground_truth[i].end());
+        for (const auto& hit : result.hits) {
+            if (gt_set.count(hit.id)) {
+                total_correct_hits++;
+            }
         }
     }
     
@@ -519,6 +561,9 @@ void PomaiDBBenchmark(const BenchmarkConfig& config,
     
     metrics.search_latency_ms = (search_time / config.num_queries) * 1000.0;
     metrics.search_throughput_qps = config.num_queries / search_time;
+    double recall_at_k = (config.num_queries > 0 && config.top_k > 0)
+        ? (static_cast<double>(total_correct_hits) / (config.num_queries * config.top_k))
+        : 0.0;
     
     // Calculate effective bandwidth for PomaiDB search
     size_t bytes_processed = config.num_queries * config.num_vectors * 
@@ -527,6 +572,8 @@ void PomaiDBBenchmark(const BenchmarkConfig& config,
     
     std::cout << "Search Latency: " << metrics.search_latency_ms << " ms" << std::endl;
     std::cout << "Search Throughput: " << metrics.search_throughput_qps << " QPS" << std::endl;
+    std::cout << "Recall@" << config.top_k << ": " << std::fixed << std::setprecision(2)
+              << (recall_at_k * 100.0) << "%" << std::endl;
     std::cout << "Effective Bandwidth: " << metrics.effective_bandwidth_gb_s << " GB/s" << std::endl;
     
     auto close_status = db->Close();
@@ -744,6 +791,12 @@ int main(int argc, char** argv) {
             config.num_queries = std::stoull(argv[++i]);
         } else if (arg == "--topk" && i + 1 < argc) {
             config.top_k = std::stoull(argv[++i]);
+        } else if (arg == "--nlist" && i + 1 < argc) {
+            config.nlist = static_cast<uint32_t>(std::stoul(argv[++i]));
+        } else if (arg == "--nprobe" && i + 1 < argc) {
+            config.nprobe = static_cast<uint32_t>(std::stoul(argv[++i]));
+        } else if (arg == "--ef-search" && i + 1 < argc) {
+            config.ef_search = static_cast<uint32_t>(std::stoul(argv[++i]));
         } else if (arg == "--hnsw") {
             config.use_hnsw = true;
         } else if (arg == "--no-quantization") {
@@ -755,6 +808,9 @@ int main(int argc, char** argv) {
             std::cout << "  --dimension D     Vector dimension (default: 128)" << std::endl;
             std::cout << "  --queries N       Number of queries (default: 100)" << std::endl;
             std::cout << "  --topk K          Top-K results (default: 10)" << std::endl;
+            std::cout << "  --nlist N         Number of IVF clusters (default: 64)" << std::endl;
+            std::cout << "  --nprobe N        Number of clusters to probe (default: 16)" << std::endl;
+            std::cout << "  --ef-search N     Candidate pool size (default: 128)" << std::endl;
             std::cout << "  --hnsw            Enable HNSW analysis" << std::endl;
             std::cout << "  --no-quantization Disable SQ8 quantization" << std::endl;
             std::cout << "  --help            Show this help message" << std::endl;

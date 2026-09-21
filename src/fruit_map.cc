@@ -15,10 +15,12 @@ namespace pomai::manifest {
 FruitSnapshot::FruitSnapshot(uint64_t generation,
                              uint32_t dimension,
                              MetricType metric,
-                             std::vector<alloc::SharedPtr<storage::Locule>> locules)
+                             std::vector<alloc::SharedPtr<storage::Locule>> locules,
+                             uint32_t default_nprobe)
     : generation_(generation),
       dimension_(dimension),
       metric_(metric),
+      default_nprobe_(default_nprobe),
       locules_(std::move(locules)),
       compass_(metric) {
     compass_.UpdateLocules(locules_);
@@ -81,10 +83,11 @@ bool FruitSnapshot::IsDeleted(VectorId id) const {
 // FruitMap
 // -----------------------------------------------------------------------------
 
-FruitMap::FruitMap(std::string db_dir, uint32_t dim, MetricType metric)
+FruitMap::FruitMap(std::string db_dir, uint32_t dim, MetricType metric, uint32_t default_nprobe)
     : db_dir_(std::move(db_dir)),
       dimension_(dim),
-      metric_(metric) {
+      metric_(metric),
+      default_nprobe_(default_nprobe) {
     manifest_path_ = db_dir_ + "/fruit.manifest";
 }
 
@@ -177,7 +180,7 @@ Status FruitMap::Open() {
 
         void* raw = palloc_malloc_aligned(sizeof(FruitSnapshot), alignof(FruitSnapshot));
         if (!raw) return Status::IOError("FruitSnapshot allocation failed");
-        auto snap = alloc::SharedPtr<FruitSnapshot>::AdoptPalloc(new (raw) FruitSnapshot(current_generation_, dimension_, metric_, std::move(loaded_locules)));
+        auto snap = alloc::SharedPtr<FruitSnapshot>::AdoptPalloc(new (raw) FruitSnapshot(current_generation_, dimension_, metric_, std::move(loaded_locules), default_nprobe_));
         (void)InstallSnapshot(snap);
         return Status::Ok();
     }
@@ -185,7 +188,7 @@ Status FruitMap::Open() {
     // No manifest exists yet; initialize empty snapshot
     void* raw = palloc_malloc_aligned(sizeof(FruitSnapshot), alignof(FruitSnapshot));
     if (!raw) return Status::IOError("FruitSnapshot allocation failed");
-    auto snap = alloc::SharedPtr<FruitSnapshot>::AdoptPalloc(new (raw) FruitSnapshot(0, dimension_, metric_, std::vector<alloc::SharedPtr<storage::Locule>>{}));
+    auto snap = alloc::SharedPtr<FruitSnapshot>::AdoptPalloc(new (raw) FruitSnapshot(0, dimension_, metric_, std::vector<alloc::SharedPtr<storage::Locule>>{}, default_nprobe_));
     (void)InstallSnapshot(snap);
     return Status::Ok();
 }

@@ -217,12 +217,65 @@ void L2SqSq8_4x_Avx2(const float* query,
     __m256 v_min = _mm256_set1_ps(min_val);
     __m256 v_scale = _mm256_set1_ps(inv_scale);
 
-    __m256 acc0 = _mm256_setzero_ps();
-    __m256 acc1 = _mm256_setzero_ps();
-    __m256 acc2 = _mm256_setzero_ps();
-    __m256 acc3 = _mm256_setzero_ps();
+    __m256 acc0_a = _mm256_setzero_ps();
+    __m256 acc0_b = _mm256_setzero_ps();
+    __m256 acc1_a = _mm256_setzero_ps();
+    __m256 acc1_b = _mm256_setzero_ps();
+    __m256 acc2_a = _mm256_setzero_ps();
+    __m256 acc2_b = _mm256_setzero_ps();
+    __m256 acc3_a = _mm256_setzero_ps();
+    __m256 acc3_b = _mm256_setzero_ps();
 
     size_t i = 0;
+    for (; i + 15 < dim; i += 16) {
+        __m256 q_lo = _mm256_loadu_ps(query + i);
+        __m256 q_hi = _mm256_loadu_ps(query + i + 8);
+
+        // Vector 0
+        __m128i r0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c0 + i));
+        __m256 f0_lo = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(r0));
+        __m256 f0_hi = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_srli_si128(r0, 8)));
+        __m256 val0_lo = _mm256_fmadd_ps(f0_lo, v_scale, v_min);
+        __m256 val0_hi = _mm256_fmadd_ps(f0_hi, v_scale, v_min);
+        __m256 diff0_lo = _mm256_sub_ps(q_lo, val0_lo);
+        __m256 diff0_hi = _mm256_sub_ps(q_hi, val0_hi);
+        acc0_a = _mm256_fmadd_ps(diff0_lo, diff0_lo, acc0_a);
+        acc0_b = _mm256_fmadd_ps(diff0_hi, diff0_hi, acc0_b);
+
+        // Vector 1
+        __m128i r1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c1 + i));
+        __m256 f1_lo = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(r1));
+        __m256 f1_hi = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_srli_si128(r1, 8)));
+        __m256 val1_lo = _mm256_fmadd_ps(f1_lo, v_scale, v_min);
+        __m256 val1_hi = _mm256_fmadd_ps(f1_hi, v_scale, v_min);
+        __m256 diff1_lo = _mm256_sub_ps(q_lo, val1_lo);
+        __m256 diff1_hi = _mm256_sub_ps(q_hi, val1_hi);
+        acc1_a = _mm256_fmadd_ps(diff1_lo, diff1_lo, acc1_a);
+        acc1_b = _mm256_fmadd_ps(diff1_hi, diff1_hi, acc1_b);
+
+        // Vector 2
+        __m128i r2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c2 + i));
+        __m256 f2_lo = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(r2));
+        __m256 f2_hi = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_srli_si128(r2, 8)));
+        __m256 val2_lo = _mm256_fmadd_ps(f2_lo, v_scale, v_min);
+        __m256 val2_hi = _mm256_fmadd_ps(f2_hi, v_scale, v_min);
+        __m256 diff2_lo = _mm256_sub_ps(q_lo, val2_lo);
+        __m256 diff2_hi = _mm256_sub_ps(q_hi, val2_hi);
+        acc2_a = _mm256_fmadd_ps(diff2_lo, diff2_lo, acc2_a);
+        acc2_b = _mm256_fmadd_ps(diff2_hi, diff2_hi, acc2_b);
+
+        // Vector 3
+        __m128i r3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c3 + i));
+        __m256 f3_lo = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(r3));
+        __m256 f3_hi = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_srli_si128(r3, 8)));
+        __m256 val3_lo = _mm256_fmadd_ps(f3_lo, v_scale, v_min);
+        __m256 val3_hi = _mm256_fmadd_ps(f3_hi, v_scale, v_min);
+        __m256 diff3_lo = _mm256_sub_ps(q_lo, val3_lo);
+        __m256 diff3_hi = _mm256_sub_ps(q_hi, val3_hi);
+        acc3_a = _mm256_fmadd_ps(diff3_lo, diff3_lo, acc3_a);
+        acc3_b = _mm256_fmadd_ps(diff3_hi, diff3_hi, acc3_b);
+    }
+
     for (; i + 7 < dim; i += 8) {
         __m256 q = _mm256_loadu_ps(query + i);
 
@@ -231,34 +284,34 @@ void L2SqSq8_4x_Avx2(const float* query,
         __m256 f0 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(r0));
         __m256 val0 = _mm256_fmadd_ps(f0, v_scale, v_min);
         __m256 diff0 = _mm256_sub_ps(q, val0);
-        acc0 = _mm256_fmadd_ps(diff0, diff0, acc0);
+        acc0_a = _mm256_fmadd_ps(diff0, diff0, acc0_a);
 
         // Vector 1
         __m128i r1 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(c1 + i));
         __m256 f1 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(r1));
         __m256 val1 = _mm256_fmadd_ps(f1, v_scale, v_min);
         __m256 diff1 = _mm256_sub_ps(q, val1);
-        acc1 = _mm256_fmadd_ps(diff1, diff1, acc1);
+        acc1_a = _mm256_fmadd_ps(diff1, diff1, acc1_a);
 
         // Vector 2
         __m128i r2 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(c2 + i));
         __m256 f2 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(r2));
         __m256 val2 = _mm256_fmadd_ps(f2, v_scale, v_min);
         __m256 diff2 = _mm256_sub_ps(q, val2);
-        acc2 = _mm256_fmadd_ps(diff2, diff2, acc2);
+        acc2_a = _mm256_fmadd_ps(diff2, diff2, acc2_a);
 
         // Vector 3
         __m128i r3 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(c3 + i));
         __m256 f3 = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(r3));
         __m256 val3 = _mm256_fmadd_ps(f3, v_scale, v_min);
         __m256 diff3 = _mm256_sub_ps(q, val3);
-        acc3 = _mm256_fmadd_ps(diff3, diff3, acc3);
+        acc3_a = _mm256_fmadd_ps(diff3, diff3, acc3_a);
     }
 
-    float s0 = HorizontalSum(acc0);
-    float s1 = HorizontalSum(acc1);
-    float s2 = HorizontalSum(acc2);
-    float s3 = HorizontalSum(acc3);
+    float s0 = HorizontalSum(_mm256_add_ps(acc0_a, acc0_b));
+    float s1 = HorizontalSum(_mm256_add_ps(acc1_a, acc1_b));
+    float s2 = HorizontalSum(_mm256_add_ps(acc2_a, acc2_b));
+    float s3 = HorizontalSum(_mm256_add_ps(acc3_a, acc3_b));
 
     for (; i < dim; ++i) {
         float q = query[i];

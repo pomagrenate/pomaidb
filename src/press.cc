@@ -35,13 +35,22 @@ std::vector<PartitionedLocule> PartitionItemsSpatially(
     uint32_t dim,
     MetricType metric,
     size_t locule_capacity,
-    uint32_t base_id) {
+    uint32_t base_id,
+    size_t target_clusters = 0) {
 
     if (all_items.empty()) return {};
 
-    if (locule_capacity == 0) locule_capacity = 50000;
-    size_t num_locules = (all_items.size() + locule_capacity - 1) / locule_capacity;
-    if (num_locules == 0) num_locules = 1;
+    size_t num_locules = 1;
+    if (target_clusters > 1) {
+        size_t max_clusters = all_items.size() / 16;
+        if (max_clusters < 1) max_clusters = 1;
+        num_locules = std::min(target_clusters, max_clusters);
+        locule_capacity = (all_items.size() + num_locules - 1) / num_locules;
+    } else {
+        if (locule_capacity == 0) locule_capacity = 50000;
+        num_locules = (all_items.size() + locule_capacity - 1) / locule_capacity;
+        if (num_locules == 0) num_locules = 1;
+    }
 
     std::vector<PartitionedLocule> result(num_locules);
     for (size_t l = 0; l < num_locules; ++l) {
@@ -205,60 +214,66 @@ std::vector<PartitionedLocule> PartitionItemsSpatially(
             priorities[i] = {i, best_c, second_best_d - best_d};
         }
 
-        std::sort(priorities.begin(), priorities.end(), [](const ItemPriority& a, const ItemPriority& b) {
-            return a.margin > b.margin;
-        });
+        if (target_clusters > 0) {
+            for (const auto& p : priorities) {
+                assignment[p.item_idx] = p.best_cluster;
+            }
+        } else {
+            std::sort(priorities.begin(), priorities.end(), [](const ItemPriority& a, const ItemPriority& b) {
+                return a.margin > b.margin;
+            });
 
-        std::vector<size_t> cluster_counts(K, 0);
-        for (const auto& p : priorities) {
-            size_t chosen_k = p.best_cluster;
-            if (cluster_counts[chosen_k] >= max_cluster_cap) {
-                float next_best_d = 1e30f;
-                size_t next_best_k = chosen_k;
+            std::vector<size_t> cluster_counts(K, 0);
+            for (const auto& p : priorities) {
+                size_t chosen_k = p.best_cluster;
+                if (cluster_counts[chosen_k] >= max_cluster_cap) {
+                    float next_best_d = 1e30f;
+                    size_t next_best_k = chosen_k;
 
-                size_t k = 0;
-                for (; k + 3 < K; k += 4) {
-                    if (cluster_counts[k] < max_cluster_cap ||
-                        cluster_counts[k + 1] < max_cluster_cap ||
-                        cluster_counts[k + 2] < max_cluster_cap ||
-                        cluster_counts[k + 3] < max_cluster_cap) {
-                        float d[4];
-                        if (metric == MetricType::kCosine || metric == MetricType::kInnerProduct) {
-                            compute::DotF32_4x(all_items[p.item_idx].vec.data(),
-                                               centroids[k + 0].data(), centroids[k + 1].data(),
-                                               centroids[k + 2].data(), centroids[k + 3].data(),
-                                               dim, d);
-                            for (int m = 0; m < 4; ++m) d[m] = 1.0f - d[m];
-                        } else {
-                            compute::L2SqF32_4x(all_items[p.item_idx].vec.data(),
-                                                centroids[k + 0].data(), centroids[k + 1].data(),
-                                                centroids[k + 2].data(), centroids[k + 3].data(),
-                                                dim, d);
-                        }
-                        for (int m = 0; m < 4; ++m) {
-                            if (cluster_counts[k + m] < max_cluster_cap && d[m] < next_best_d) {
-                                next_best_d = d[m];
-                                next_best_k = k + m;
+                    size_t k = 0;
+                    for (; k + 3 < K; k += 4) {
+                        if (cluster_counts[k] < max_cluster_cap ||
+                            cluster_counts[k + 1] < max_cluster_cap ||
+                            cluster_counts[k + 2] < max_cluster_cap ||
+                            cluster_counts[k + 3] < max_cluster_cap) {
+                            float d[4];
+                            if (metric == MetricType::kCosine || metric == MetricType::kInnerProduct) {
+                                compute::DotF32_4x(all_items[p.item_idx].vec.data(),
+                                                   centroids[k + 0].data(), centroids[k + 1].data(),
+                                                   centroids[k + 2].data(), centroids[k + 3].data(),
+                                                   dim, d);
+                                for (int m = 0; m < 4; ++m) d[m] = 1.0f - d[m];
+                            } else {
+                                compute::L2SqF32_4x(all_items[p.item_idx].vec.data(),
+                                                    centroids[k + 0].data(), centroids[k + 1].data(),
+                                                    centroids[k + 2].data(), centroids[k + 3].data(),
+                                                    dim, d);
+                            }
+                            for (int m = 0; m < 4; ++m) {
+                                if (cluster_counts[k + m] < max_cluster_cap && d[m] < next_best_d) {
+                                    next_best_d = d[m];
+                                    next_best_k = k + m;
+                                }
                             }
                         }
                     }
-                }
 
-                for (; k < K; ++k) {
-                    if (cluster_counts[k] < max_cluster_cap) {
-                        float d = (metric == MetricType::kCosine || metric == MetricType::kInnerProduct)
-                            ? (1.0f - core::Dot(all_items[p.item_idx].vec, centroids[k]))
-                            : core::L2Sq(all_items[p.item_idx].vec, centroids[k]);
-                        if (d < next_best_d) {
-                            next_best_d = d;
-                            next_best_k = k;
+                    for (; k < K; ++k) {
+                        if (cluster_counts[k] < max_cluster_cap) {
+                            float d = (metric == MetricType::kCosine || metric == MetricType::kInnerProduct)
+                                ? (1.0f - core::Dot(all_items[p.item_idx].vec, centroids[k]))
+                                : core::L2Sq(all_items[p.item_idx].vec, centroids[k]);
+                            if (d < next_best_d) {
+                                next_best_d = d;
+                                next_best_k = k;
+                            }
                         }
                     }
+                    chosen_k = next_best_k;
                 }
-                chosen_k = next_best_k;
+                cluster_counts[chosen_k]++;
+                assignment[p.item_idx] = chosen_k;
             }
-            cluster_counts[chosen_k]++;
-            assignment[p.item_idx] = chosen_k;
         }
 
         // Centroid update
@@ -418,9 +433,13 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
     // 3. Reseeding: Spatial Locule Partitioning (Balanced Spherical/Euclidean K-Means)
     size_t locule_capacity = options_.target_aril_vector_count * options_.target_locule_aril_count;
     if (locule_capacity == 0) locule_capacity = 50000;
+    size_t target_clusters = 0;
+    if (options_.index_params.type == IndexType::kIvfFlat && all_items.size() >= 32) {
+        target_clusters = options_.index_params.nlist > 0 ? options_.index_params.nlist : 32;
+    }
 
     auto partitioned = PartitionItemsSpatially(
-        std::move(all_items), dim_, metric_, locule_capacity, 0);
+        std::move(all_items), dim_, metric_, locule_capacity, 0, target_clusters);
 
     std::vector<std::string> new_locule_files;
     std::vector<alloc::SharedPtr<storage::Locule>> new_locules;
@@ -475,7 +494,7 @@ Status Press::Compact(ingest::Rind* rind, manifest::FruitMap* fruit_map) {
     void* raw = palloc_malloc_aligned(sizeof(manifest::FruitSnapshot), alignof(manifest::FruitSnapshot));
     if (!raw) return Status::IOError("FruitSnapshot allocation failed");
     auto new_snap = alloc::SharedPtr<manifest::FruitSnapshot>::AdoptPalloc(new (raw) manifest::FruitSnapshot(
-        next_gen, dim_, metric_, std::move(new_locules)));
+        next_gen, dim_, metric_, std::move(new_locules), options_.index_params.nprobe));
     (void)fruit_map->InstallSnapshot(new_snap);
 
     // 6. Purge old locules
@@ -546,9 +565,13 @@ Status Press::PressFrozenRindOnly(ingest::Rind* rind, manifest::FruitMap* fruit_
 
     size_t locule_capacity = options_.target_aril_vector_count * options_.target_locule_aril_count;
     if (locule_capacity == 0) locule_capacity = 50000;
+    size_t target_clusters = 0;
+    if (options_.index_params.type == IndexType::kIvfFlat && items.size() >= 32) {
+        target_clusters = options_.index_params.nlist > 0 ? options_.index_params.nlist : 32;
+    }
 
     auto partitioned = PartitionItemsSpatially(
-        std::move(items), dim_, metric_, locule_capacity, base_id);
+        std::move(items), dim_, metric_, locule_capacity, base_id, target_clusters);
 
     for (auto& pl : partitioned) {
         format::LoculeAnchor anchor = std::move(pl.anchor);
@@ -596,7 +619,7 @@ Status Press::PressFrozenRindOnly(ingest::Rind* rind, manifest::FruitMap* fruit_
     void* raw = palloc_malloc_aligned(sizeof(manifest::FruitSnapshot), alignof(manifest::FruitSnapshot));
     if (!raw) return Status::IOError("FruitSnapshot allocation failed");
     auto new_snap = alloc::SharedPtr<manifest::FruitSnapshot>::AdoptPalloc(new (raw) manifest::FruitSnapshot(
-        next_gen, dim_, metric_, std::move(all_locules)));
+        next_gen, dim_, metric_, std::move(all_locules), options_.index_params.nprobe));
     (void)fruit_map->InstallSnapshot(new_snap);
 
     return Status::Ok();

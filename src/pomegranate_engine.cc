@@ -84,7 +84,8 @@ PomegranateEngine::~PomegranateEngine() {
 Status PomegranateEngine::Open() {
     if (opened_) return Status::Ok();
 
-    fruit_map_ = alloc::UniquePtr<manifest::FruitMap>::Make(nullptr, opt_.path, opt_.dim, metric_);
+    uint32_t default_nprobe = opt_.index_params.nprobe > 0 ? opt_.index_params.nprobe : 16;
+    fruit_map_ = alloc::UniquePtr<manifest::FruitMap>::Make(nullptr, opt_.path, opt_.dim, metric_, default_nprobe);
     Status s = fruit_map_->Open();
     if (!s.ok()) {
         fruit_map_.reset();
@@ -102,9 +103,7 @@ Status PomegranateEngine::Open() {
 
     compact::PressOptions press_opts;
     press_opts.index_params = opt_.index_params;
-    if (press_opts.index_params.type == IndexType::kIvfFlat) {
-        // PomegranateEngine uses HNSW for its sub-linear intra-Locule graph search.
-        press_opts.index_params.type = IndexType::kHnsw;
+    if (press_opts.index_params.type == IndexType::kHnsw) {
         if (press_opts.index_params.hnsw_m == 0) press_opts.index_params.hnsw_m = 16;
         if (press_opts.index_params.hnsw_ef_construction == 0) press_opts.index_params.hnsw_ef_construction = 200;
         if (press_opts.index_params.hnsw_ef_search == 0) press_opts.index_params.hnsw_ef_search = 64;
