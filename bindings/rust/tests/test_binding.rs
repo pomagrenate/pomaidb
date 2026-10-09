@@ -18,7 +18,7 @@ fn test_basic_crud_and_search() {
     assert!(db.exists(1).expect("exists check failed"));
 
     // Multi-membrane
-    db.create_membrane("test_mem", 4, 1).expect("create_membrane failed");
+    db.create_membrane("test_mem", 4).expect("create_membrane failed");
     db.open_membrane("test_mem").expect("open_membrane failed");
 
     db.put_with_options(
