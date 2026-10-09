@@ -106,9 +106,9 @@ func Open(opts Options) (*DB, error) {
 	cOpts.path = cPath
 	cOpts.dim = C.uint32_t(opts.Dim)
 	if opts.Shards > 0 {
-		cOpts.shards = C.uint32_t(opts.Shards)
+		cOpts.reserved0 = C.uint32_t(opts.Shards)
 	} else {
-		cOpts.shards = 1
+		cOpts.reserved0 = 1
 	}
 	cOpts.metric = C.uint8_t(opts.Metric)
 	cOpts.quant_type = C.uint8_t(opts.QuantType)
@@ -413,11 +413,7 @@ func (db *DB) CreateMembrane(name string, dim uint32, shardCount uint32) error {
 	cName := C.CString(name)
 	defer C.free(unsafe.Pointer(cName))
 
-	shards := shardCount
-	if shards == 0 {
-		shards = 1
-	}
-	return checkStatus(C.pomai_create_membrane_kind(db.handle, cName, C.uint32_t(dim), C.uint32_t(shards), 0))
+	return checkStatus(C.pomai_create_membrane_kind(db.handle, cName, C.uint32_t(dim), C.uint32_t(shardCount)))
 }
 
 func (db *DB) DropMembrane(name string) error {
