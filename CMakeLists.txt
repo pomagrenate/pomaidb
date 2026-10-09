@@ -914,6 +914,10 @@ add_executable(round3_rind_concurrency_fix benchmarks/round3_rind_concurrency_fi
 target_link_libraries(round3_rind_concurrency_fix PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
 target_include_directories(round3_rind_concurrency_fix PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
+add_executable(enterprise_edge_benchmark benchmarks/enterprise_edge_benchmark.cc)
+target_link_libraries(enterprise_edge_benchmark PRIVATE ${POMAI_EXE_DEPS} Threads::Threads)
+target_include_directories(enterprise_edge_benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
 # Bounded benchmark smoke tests (avoid ctest default 1500s timeout on heavy workloads).
 if (POMAI_REGISTER_BENCH_CTEST)
   set(POMAI_BENCH_TIMEOUT_LONG 600)

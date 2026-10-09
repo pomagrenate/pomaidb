@@ -1,0 +1,47 @@
+{
+  "benchmark": "PomaiDB Enterprise Edge Benchmark",
+  "workload": {
+    "num_vectors": 20000,
+    "dim": 128,
+    "num_queries": 1000,
+    "topk": 10,
+    "threads": 4
+  },
+  "usability": {
+    "multi_membrane": true,
+    "predicate_filtering": true,
+    "snapshot_scan": true,
+    "status": "PASSED"
+  },
+  "performance": {
+    "single_ingest_qps": 86987.9,
+    "single_ingest_mb_sec": 42.4746,
+    "batch_ingest_qps": 586063,
+    "batch_ingest_mb_sec": 286.164,
+    "search_qps": 4073.24,
+    "latency_us": {
+      "min": 183.337,
+      "mean": 244.192,
+      "p50": 216.259,
+      "p90": 303.819,
+      "p99": 691.447,
+      "max": 1386.62
+    },
+    "recall_at_10": 1
+  },
+  "stability": {
+    "concurrent_queries": 2244,
+    "concurrent_writes": 2369,
+    "memory_initial_mb": 52.2383,
+    "memory_post_churn_mb": 77.0898,
+    "memory_peak_hwm_mb": 102.605,
+    "crash_recovery_verified": true
+  },
+  "edge_suitability": {
+    "raw_size_mb": 9.76562,
+    "on_disk_size_mb": 23.0437,
+    "compression_ratio": 0.423788,
+    "latency_jitter_ratio": 3.19731,
+    "zero_oom_budget_met": true
+  }
+}

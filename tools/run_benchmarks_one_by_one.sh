@@ -16,7 +16,8 @@ run() { echo "===== $* ====="; "$@"; echo ""; }
 echo "Running PomaiDB benchmarks (bounded args, POMAI_BENCH_LOW_MEMORY for benchmark_a)..."
 echo ""
 
-# Core / ingest / RAG / CI gate
+# Core / ingest / RAG / CI gate / Enterprise Benchmark
+run ./enterprise_edge_benchmark --vectors 20000 --dim 128 --queries 1000 --topk 10 --threads 4
 run ./comprehensive_bench --dataset small
 run ./ingestion_bench 10000 128
 run ./rag_bench 100 64 32
