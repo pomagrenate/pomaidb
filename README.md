@@ -577,6 +577,8 @@ The benchmark suite includes an end-to-end **Enterprise Edge Benchmark** designe
 
 ```text
 CPU:     Intel(R) Core(TM) i7-10700 @ 2.90GHz (8 cores, 16 threads)
+GPU 1:   NVIDIA GeForce GTX 1650 SUPER (4 GB Dedicated VRAM, Vulkan 1.4, Driver 580.178.04)
+GPU 2:   Intel(R) UHD Graphics 630 (Integrated GPU / UMA, Vulkan 1.4)
 RAM:     32 GB DDR4
 OS:      Ubuntu 24.04 LTS (Linux 6.8.0, x86_64)
 Storage: High-Speed NVMe / SSD
@@ -604,6 +606,40 @@ Profile: C++20 Release Build (GCC 13.3.0, palloc allocator)
 | **Edge Suitability** | Latency Jitter Predictability (P99 / P50 Ratio) | **3.20x** | **Deterministic Tail** |
 | **Edge Suitability** | Storage Compression Ratio (SQ8 Int8 Quantization) | **~4x Memory Reduction** | **Flash-Friendly** |
 
+### ⚡ Vulkan GPU Memory Bridge & Transfer Benchmark
+
+PomaiDB provides first-class GPU integration through **Khronos Vulkan 1.1+** with dynamic dispatch (`volk`), bounded staging ring buffers, and zero-copy host memory importing (`VK_EXT_external_memory_host`). This enables high-speed ingestion and zero-copy hand-off to downstream AI inference runtimes (TensorRT, PyTorch CUDA, ONNX Runtime).
+
+```bash
+# Run the Vulkan GPU transfer benchmark across both discrete and integrated GPUs
+./build/vulkan_transfer_bench
+
+# Run the hardware GPU verification probe
+./build/pomaidb_gpu_probe
+```
+
+#### 1. Discrete GPU (Dedicated VRAM) — NVIDIA GeForce GTX 1650 SUPER
+*4.3 GB Dedicated GDDR6 VRAM, Turing Architecture, PCIe DMA Transfer*
+
+| Payload Size | Equivalent Vectors | Host-Mapped Latency | Mapped Bandwidth | Device-Local VRAM Upload | VRAM Upload Bandwidth |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **64 KiB** | ~128 × 128-dim vectors | 0.205 ms | 0.30 GB/s | 0.261 ms | 0.23 GB/s |
+| **256 KiB** | ~512 × 128-dim vectors | 0.245 ms | 1.00 GB/s | 0.281 ms | 0.87 GB/s |
+| **1 MiB** | ~2,048 × 128-dim vectors | 0.472 ms | 2.07 GB/s | 0.456 ms | 2.14 GB/s |
+| **4 MiB** | ~8,192 × 128-dim vectors | 1.579 ms | 2.47 GB/s | 1.111 ms | 3.52 GB/s |
+| **16 MiB** | ~32,768 × 128-dim vectors | 5.082 ms | 3.07 GB/s | 3.210 ms | **4.87 GB/s** |
+
+#### 2. Integrated GPU (Unified Memory / UMA) — Intel UHD Graphics 630
+*Shared System RAM, Zero-Copy Host Pointer Import*
+
+| Payload Size | Equivalent Vectors | Host-Mapped Latency | Mapped Bandwidth | Device-Local VRAM Upload | VRAM Upload Bandwidth |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **64 KiB** | ~128 × 128-dim vectors | **0.036 ms** (35.6 µs) | 1.71 GB/s | 0.406 ms | 0.15 GB/s |
+| **256 KiB** | ~512 × 128-dim vectors | **0.094 ms** (94.1 µs) | 2.59 GB/s | 0.456 ms | 0.54 GB/s |
+| **1 MiB** | ~2,048 × 128-dim vectors | 0.511 ms | 1.91 GB/s | 1.128 ms | 0.87 GB/s |
+| **4 MiB** | ~8,192 × 128-dim vectors | 1.622 ms | 2.41 GB/s | 3.122 ms | 1.25 GB/s |
+| **16 MiB** | ~32,768 × 128-dim vectors | 6.314 ms | 2.47 GB/s | 7.506 ms | 2.08 GB/s |
+
 ### Suite Micro-Benchmarks
 
 | Benchmark | Workload | Result |
@@ -616,7 +652,6 @@ Profile: C++20 Release Build (GCC 13.3.0, palloc allocator)
 | **Low-Memory Edge Profile** | 50K vector sustained churn | **19.3 MiB peak RSS** |
 
 > **Note:** Benchmark results depend on CPU architecture, clock frequencies, storage medium, filesystem, `fsync` durability policy, vector dimensionality, and configured memory limits.
-
 
 ---
 

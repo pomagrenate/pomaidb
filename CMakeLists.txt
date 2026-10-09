@@ -859,6 +859,11 @@ target_link_libraries(vulkan_transfer_bench PRIVATE ${POMAI_EXE_DEPS})
 target_include_directories(vulkan_transfer_bench SYSTEM PRIVATE ${POMAI_VULKAN_HEADERS_DIR})
 target_include_directories(vulkan_transfer_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
 
+add_executable(pomaidb_gpu_probe tools/pomaidb_gpu_probe.cc)
+target_link_libraries(pomaidb_gpu_probe PRIVATE ${POMAI_EXE_DEPS})
+target_include_directories(pomaidb_gpu_probe SYSTEM PRIVATE ${POMAI_VULKAN_HEADERS_DIR})
+target_include_directories(pomaidb_gpu_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)
+
 add_executable(kernel_dispatch_bench benchmarks/kernel_dispatch_bench.cc)
 target_link_libraries(kernel_dispatch_bench PRIVATE ${POMAI_EXE_DEPS})
 target_include_directories(kernel_dispatch_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/capi ${CMAKE_CURRENT_SOURCE_DIR}/src/utils)

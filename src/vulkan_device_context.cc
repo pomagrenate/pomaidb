@@ -41,14 +41,28 @@ bool DeviceHasExtension(vk::PhysicalDevice pd, const char* name) {
     return false;
 }
 
-void SortDevicesIntegratedFirst(std::vector<vk::PhysicalDevice>* devices) {
-    std::sort(devices->begin(), devices->end(), [](vk::PhysicalDevice a, vk::PhysicalDevice b) {
+void SortDevices(std::vector<vk::PhysicalDevice>* devices, bool prefer_unified_memory) {
+    std::sort(devices->begin(), devices->end(), [prefer_unified_memory](vk::PhysicalDevice a, vk::PhysicalDevice b) {
         const auto pa = a.getProperties();
         const auto pb = b.getProperties();
-        const bool ai = (pa.deviceType == vk::PhysicalDeviceType::eIntegratedGpu);
-        const bool bi = (pb.deviceType == vk::PhysicalDeviceType::eIntegratedGpu);
-        if (ai != bi) {
-            return ai && !bi;
+        // Ignore CPU emulation devices like llvmpipe if a hardware GPU exists
+        const bool acpu = (pa.deviceType == vk::PhysicalDeviceType::eCpu);
+        const bool bcpu = (pb.deviceType == vk::PhysicalDeviceType::eCpu);
+        if (acpu != bcpu) {
+            return !acpu;
+        }
+        if (prefer_unified_memory) {
+            const bool ai = (pa.deviceType == vk::PhysicalDeviceType::eIntegratedGpu);
+            const bool bi = (pb.deviceType == vk::PhysicalDeviceType::eIntegratedGpu);
+            if (ai != bi) {
+                return ai && !bi;
+            }
+        } else {
+            const bool ad = (pa.deviceType == vk::PhysicalDeviceType::eDiscreteGpu);
+            const bool bd = (pb.deviceType == vk::PhysicalDeviceType::eDiscreteGpu);
+            if (ad != bd) {
+                return ad && !bd;
+            }
         }
         return pa.deviceID < pb.deviceID;
     });
@@ -76,7 +90,7 @@ Status VulkanComputeContext::Create(const BridgeOptions& opts, VulkanComputeCont
         return st;
     }
 
-    SortDevicesIntegratedFirst(&devices);
+    SortDevices(&devices, opts.prefer_unified_memory);
 
     vk::PhysicalDevice chosen{};
     uint32_t qfam = std::numeric_limits<uint32_t>::max();
