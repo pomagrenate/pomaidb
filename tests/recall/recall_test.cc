@@ -67,6 +67,10 @@ POMAI_TEST(Recall_Clustered_Basic) {
     std::string path = pomai::test::TempDir("recall_test_harness");
     
     pomai::IndexParams index_opts;
+    index_opts.type = IndexType::kHnsw;
+    index_opts.hnsw_m = 16;
+    index_opts.hnsw_ef_construction = 200;
+    index_opts.hnsw_ef_search = 64;
     pomai::DBOptions opt;
     opt.path = path;
     opt.dim = dopt.dim;
